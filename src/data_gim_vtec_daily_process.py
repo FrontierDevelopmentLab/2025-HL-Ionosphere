@@ -127,12 +127,9 @@ def main():
                 print(f"Creating tar file for year {current_year}...")
                 with tarfile.open(tar_filename, "w:gz") as tar:
                     for npy_file in tqdm(glob.glob(os.path.join(args.output_dir, f"GIM_vTEC_{current_year}*.npy")), desc=f"Year: {current_year}, Creating tar: {tar_filename}"):
-                        print(npy_file)
-                        file_stem = Path(npy_file).stem
-                        print(file_stem)
-                        # import pdb; pdb.set_trace()
                         # derive arcname from npy_file and use WebDataset convention:
                         # YYYY/MM/DD/HHMM.gim_vtec.npy
+                        file_stem = Path(npy_file).stem
 
                         split_name = file_stem.split("_")
                         year_month_day = split_name[2]
@@ -140,14 +137,12 @@ def main():
                         year = year_month_day[:4]
                         month = year_month_day[4:6]
                         day = year_month_day[6:8]
-                        hour = hour_minute[:2]
-                        minute = hour_minute[2:4]
+                        # hour = hour_minute[:2]
+                        # minute = hour_minute[2:4]
 
                         arcname = f"{year}/{month}/{day}/{hour_minute}.gim_vtec.npy" 
 
-#               arcname = f"VTEC/{date_str}.gim_vtec.npy"
-
-                        print(f"Adding {file_stem} as {arcname} to tar file {tar_filename}")
+                        # print(f"Adding {file_stem} as {arcname} to tar file {tar_filename}")
                         tar.add(npy_file, arcname=arcname)
                 print(f"Created tar file: {tar_filename}")
                 # remove individual .npy files after archiving
