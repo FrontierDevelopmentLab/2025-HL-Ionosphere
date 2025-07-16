@@ -77,7 +77,7 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, JPLD GIM data downloader'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-07-27T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--cadence', type=int, default=1, help='Cadence (days)')
     parser.add_argument('--remote_root', type=str, default='https://sideshow.jpl.nasa.gov/pub/iono_daily/gim_for_research/jpld/', help='Remote root')
     parser.add_argument('--target_dir', type=str, help='Local root', required=True)
