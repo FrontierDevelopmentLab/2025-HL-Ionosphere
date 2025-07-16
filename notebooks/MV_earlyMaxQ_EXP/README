@@ -13,4 +13,7 @@ Orthographic takes flat plots and shows them as globes. Both sunny side and the 
 What about the moon? during this time frame, where is it.. can it also drag things around?? lets see. 
 I did another experiment to plot the orbits.. 
 
+Code to create Orbital parameter file from ephemeris and skyfield.api from 1996 jan 1. to 2025 Dec 31
+Code to normalize orbital parameter file. saved as a parquet
+
 Mike Vergalla 
