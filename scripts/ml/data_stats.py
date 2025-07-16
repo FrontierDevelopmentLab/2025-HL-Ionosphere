@@ -29,18 +29,19 @@ def main():
     parser.add_argument('--instruments', nargs='+', default=['jpld_gim'], help='List of instruments to process')
 
     args = parser.parse_args()
-    print(description)
-    print('Arguments:\n{}'.format(' '.join(sys.argv[1:])))
-    print('Config:')
-    pprint.pprint(vars(args), depth=2, width=50)
-
-    set_random_seed(args.seed)
 
     os.makedirs(args.target_dir, exist_ok=True)
     log_file = os.path.join(args.target_dir, 'log.txt')
 
+    set_random_seed(args.seed)
+
     with Tee(log_file):
+        print(description)
         print('Log file:', log_file)
+        print('Arguments:\n{}'.format(' '.join(sys.argv[1:])))
+        print('Config:')
+        pprint.pprint(vars(args), depth=2, width=50)
+
         start_time = datetime.datetime.now()
         print('Start time: {}'.format(start_time))
 
@@ -65,7 +66,7 @@ def main():
 
                 data = []
                 for i in tqdm(indices, desc='Processing samples', unit='sample'):
-                    data.append(dataset[int(i)][0])
+                    data.append(dataset[int(i)])
 
                 data = torch.stack(data).flatten()
                 print('Data shape: {}'.format(data.shape))

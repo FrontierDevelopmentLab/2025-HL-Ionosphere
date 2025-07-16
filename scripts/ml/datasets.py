@@ -8,20 +8,29 @@ import xarray as xr
 from functools import lru_cache
 
 
-JPLDGIM_mean = 8.76391315460205
-JPLDGIM_std = 5.762033939361572
+JPLDGIM_mean = 14.878721237182617
+JPLDGIM_std = 14.894197463989258
 
 
 
+# TODO: seems to be slow to do all data processing on the fly, consider working with a preprocessed dataset (netcdf -> npy done previously)
 class JPLDGIMDataset(Dataset):
-    def __init__(self, data_dir, normalize=False):
-        print('JPL GIM Dataset')
+    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True):
+        print('JPLD GIM Dataset')
         self.data_dir = data_dir
         self.normalize = normalize
         dates_avialable = self.find_date_range(data_dir)
         if dates_avialable is None:
             raise ValueError("No data found in the specified directory.")
-        self.date_start, self.date_end = dates_avialable
+        date_start_on_disk, date_end_on_disk = dates_avialable
+
+        self.date_start = date_start_on_disk if date_start is None else date_start
+        self.date_end = date_end_on_disk if date_end is None else date_end
+        if self.date_start > self.date_end:
+            raise ValueError("Start date cannot be after end date.")
+        if self.date_start < date_start_on_disk or self.date_end > date_end_on_disk:
+            raise ValueError("Specified date range is outside the available data range.")
+
         self.num_days = (self.date_end - self.date_start).days + 1
         cadence = 15 # minutes
         self.num_samples = int(self.num_days * (24 * 60 / cadence))
@@ -58,6 +67,7 @@ class JPLDGIMDataset(Dataset):
     @staticmethod
     def normalize(data):
         return (data - JPLDGIM_mean) / JPLDGIM_std
+        # return torch.log1p(data)
 
     @staticmethod
     def unnormalize(data):
