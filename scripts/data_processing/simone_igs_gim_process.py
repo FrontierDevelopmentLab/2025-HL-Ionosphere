@@ -1,3 +1,17 @@
+'''
+This file processes the downloaded daily vTEC global ionosphere maps (GIMs) from International GNSS Service (IGS): https://cddis.nasa.gov/archive/gnss/products/ionex/ 
+
+We choose the uqrg files from IGS, since they are 15 min resolution and Roma et al. 2018 (https://link.springer.com/article/10.1007/s00190-017-1088-9) showed they are the most accurate.
+
+Original file format: NNNNDDD0.YYi
+NNNN: name of the organization
+DDD: day of the year (001-365)
+0: flag
+YY: year (2000 + YY)
+i: some index, unsure
+
+Safe file format: YYYY/mm/dd/vTEC_YYYYmmdd.pkl
+'''
 
 import os, re, numpy as np, pandas as pd
 from datetime import datetime, timedelta

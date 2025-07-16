@@ -3,7 +3,7 @@ import os
 import numpy as np
 import datetime
 
-class IonosphereDataset(torch.utils.data.Dataset):
+class GIMDataset(torch.utils.data.Dataset):
     def __init__(self, directory, transform=None):
         super().__init__()
 
