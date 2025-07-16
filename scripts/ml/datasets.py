@@ -84,5 +84,3 @@ class JPLDGIMDataset(Dataset):
             data = data_tensor[time_index, :, :]  # Select the slice for the specific time index
 
         return data
-
-# dataset = JPLDGIMDataset(data_dir='/disk2-ssd-8tb/data/2025-hl-ionosphere/gim_jpld_20100513-20240731')
