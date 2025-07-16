@@ -1,5 +1,9 @@
 import sys
 import traceback
+import random
+import time
+import numpy as np
+import torch
 
 
 class Tee(object):
@@ -23,3 +27,12 @@ class Tee(object):
     def flush(self):
         self.file.flush()
         self.stdout.flush()
+
+
+def set_random_seed(seed=None):
+    if seed is None:
+        seed = int((time.time()*1e6) % 1e8)
+    print('Setting seed to {}'.format(seed))
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
