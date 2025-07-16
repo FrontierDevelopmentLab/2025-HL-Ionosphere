@@ -6,7 +6,7 @@ FROM --platform=$BUILDPLATFORM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 # Use LABEL instead of deprecated MAINTAINER
 LABEL maintainer="fs <frank.soboczenski@gmail.com>"
 LABEL version="2025.1-multiarch"
-LABEL description="NASA FDL Astronaut Health - Multi-architecture support"
+LABEL description="NASA Heliolab Team Ionosphere - Multi-architecture support"
 
 # Build arguments for cross-compilation
 ARG TARGETPLATFORM
