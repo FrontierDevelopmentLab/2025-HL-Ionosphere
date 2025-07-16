@@ -3,4 +3,14 @@ April 9-11 2024
 
 To start to explore merging datasets, visualizing, and training early models. 
 
+Celestrak data is explored. KP1 - KP8 and AP1 - AP8 are combined into Xarrays. Plotted for testing. 
+
+Gradients looks at not the values of tec but how tec is changing. 
+Suncentered explores moving the map such that the animations are from the sun's perspective. 
+is the ionosphere a mirror of the sun in some way.. The dark side of the ionosphere has sun side features, dragged into it... pretty cool to see from this perspective. 
+Orthographic takes flat plots and shows them as globes. Both sunny side and the "dark" side of the ionosphere. 
+
+What about the moon? during this time frame, where is it.. can it also drag things around?? lets see. 
+I did another experiment to plot the orbits.. 
+
 Mike Vergalla 
