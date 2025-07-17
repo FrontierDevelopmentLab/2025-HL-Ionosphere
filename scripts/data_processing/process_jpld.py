@@ -81,14 +81,22 @@ def main():
 
     timestamps = []
     tecmaps = []
+    skipped_files = []
     for file_name in tqdm(file_names, desc='Reading data from raw files'):
         date = jpld_filename_to_date(file_name)
         # print(file_name, date)
         with gzip.open(file_name, 'rb') as f:
-            ds = xr.open_dataset(f, engine='h5netcdf')            
-            data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (96, 180, 360)
+            try:
+                ds = xr.open_dataset(f, engine='h5netcdf')            
+                data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (96, 180, 360)
+            except Exception as e:
+                print(f"Skipping file due to error: {file_name}: {e}")
+                skipped_files.append(file_name)
+                continue
+
             if data.shape[0] != 96 or data.shape[1] != 180 or data.shape[2] != 360:
                 print(f"Skipping file {file_name} due to unexpected shape: {data.shape}")
+                skipped_files.append(file_name)
                 continue
             
             for time_index in range(data.shape[0]):
@@ -99,6 +107,12 @@ def main():
                 tecmaps.append(tecmap.tolist())
 
                 # time.sleep(0.2)  # Add a short delay for debugging purposes
+
+    print(f'Processed {len(timestamps):,} records from {len(file_names):,} files.')
+    if skipped_files:
+        print(f'Skipped {len(skipped_files):,} files due to errors or unexpected shapes:')
+        for skipped_file in skipped_files:
+            print(f' - {skipped_file}')
 
     print('Creating Parquet dataset...')
     datetime_array = pa.array(timestamps, type=pa.timestamp('s'))
