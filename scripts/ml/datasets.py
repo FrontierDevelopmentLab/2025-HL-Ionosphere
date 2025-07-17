@@ -76,7 +76,7 @@ class JPLDGIMDataset(Dataset):
     def __len__(self):
         return self.num_samples
     
-    @lru_cache(maxsize=1024) # number of days to cache in memory, roughly 3 MiB per day
+    @lru_cache(maxsize=4096) # number of days to cache in memory, roughly 3 MiB per day
     def _get_day_data(self, date):
         file_name = f"jpld{date:%j}0.{date:%y}i.nc.gz"
         file_path = os.path.join(self.data_dir, f"{date:%Y}", file_name)
@@ -113,4 +113,4 @@ class JPLDGIMDataset(Dataset):
         data = data[time_index, :, :]  # Select the specific time slice
         data = data.unsqueeze(0)  # Add a channel dimension
 
-        return data, str(date)
+        return data, date.isoformat()  # Return the data and the date as a string
