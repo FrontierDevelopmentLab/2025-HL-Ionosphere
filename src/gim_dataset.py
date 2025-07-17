@@ -1,5 +1,4 @@
 import torch
-from torch.utils.data import Dataset
 from glob import glob
 import os
 import datetime
@@ -11,7 +10,7 @@ JPLDGIM_mean = 14.878721237182617
 JPLDGIM_std = 14.894197463989258
 
 # TODO: seems to be slow to do all data processing on the fly, consider working with a preprocessed dataset (netcdf -> npy done previously)
-class JPLDGIMDataset(Dataset):
+class JPLDGIMDataset(torch.utils.data.Dataset):
     def __init__(self, data_dir, date_start=None, date_end=None, normalize=True):
         print('JPLD GIM Dataset')
         self.data_dir = data_dir
