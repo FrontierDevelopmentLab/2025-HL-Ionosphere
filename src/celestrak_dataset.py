@@ -4,13 +4,12 @@ Solar indices pytorch dataset
 Reads in data from the Celestrak dataset.
 
 Full dataset information:
-    Celestrak
-    kp_ap_timeseries.csv:
+    kp_ap_timeseries_processed.csv:
         Datetime, Ap, Kp
     example:
         1957-10-01 00:00:00,43.0,32.0
         ...
-    
+Whenever there isn't a measurement, the value is 0.0. This is dealth with by forward filling in process_celestrak_and_indices.py.
 '''
 
 import torch
@@ -31,8 +30,8 @@ class CelestrakDataset(torch.utils.data.Dataset):
         # Load the data file
         if not os.path.exists(data_file):
             raise FileNotFoundError(f"Data file not found: {data_file}")
-        self.df = pd.read_csv(data_file, parse_dates=['Datetime'], index_col='Datetime')
-        print(f"Head of data file: \n{self.df.head()}")
+        df = pd.read_csv(data_file, index_col='Datetime')
+        print(f"Head of data file: \n\n{df.head()}\n")
 
         # Normalize the data if required
         # Note: if
@@ -40,10 +39,12 @@ class CelestrakDataset(torch.utils.data.Dataset):
         #   celestrak.normalize // return True
         #   CelestrakDataset.normalize // function
         if normalize:
-            self.df = CelestrakDataset.normalize(self.df)
+            self.df = CelestrakDataset.normalize(df)
+        else:
+            self.df = df
 
         # Get the date range from the data file
-        dates_available = self.find_date_range(data_file)
+        dates_available = self.find_date_range(data_file, self.df)
         if dates_available is None:
             raise ValueError("No data found in the specified file.")
         date_start_on_disk, date_end_on_disk = dates_available
@@ -66,7 +67,7 @@ class CelestrakDataset(torch.utils.data.Dataset):
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
 
         # Calculate the size of the dataset on disk
-        size_on_disk = sum(os.path.getsize(f) for f in glob(data_file))
+        size_on_disk = sum(os.path.getsize(f) for f in glob.glob(data_file))
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
 
     @staticmethod
@@ -104,16 +105,21 @@ class CelestrakDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         if isinstance(index, datetime.datetime):
             date = index
+            date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+            df_index = self.df.index.searchsorted(date_string)
         elif isinstance(index, int):
             if index < 0 or index >= self.num_samples:
                 raise IndexError("Index out of range for the dataset.")
-            date = df.index[self.date_start + datetime.timedelta(minutes=index * self.cadence)]
+            df_index = index
+            date_string = self.df.index[df_index]
         else:
             raise TypeError("Index must be an integer or a datetime object.")
 
-        data = self.df.loc[date]
+        print(f"Index in DataFrame: {df_index}, Date: {date_string}, value: {self.df.iloc[df_index].values}")
+
         # Create a 1D tensor listing the associated values with date
-        data_tensor = torch.tensor(data.values, dtype=torch.float32)
+        data = self.df.iloc[df_index].values
+        data_tensor = torch.tensor(data, dtype=torch.float32)
 
         return data_tensor #, date ?
 

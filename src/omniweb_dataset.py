@@ -56,6 +56,7 @@ import numpy as np
 import datetime
 from glob import glob
 import pandas as pd
+import time
 
 
 # TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
@@ -74,14 +75,14 @@ class OMNIDataset(torch.utils.data.Dataset):
         super().__init__()
 
         print('OMNI Dataset')
-        self.data_dir = omni_dir
+        self.omni_dir = omni_dir
         self.normalize = normalize
         dates_avialable = self.find_date_range(omni_dir)
         if dates_avialable is None:
             raise ValueError("No data found in the specified directory.")
         if omni_columns is None:
                 # 'Year', 'Day', 'Hour', 'Minute',
-            omni_columns = [
+            self.omni_columns = [
                 # Solar
                 'B_mag', 'Bx_GSE', 'By_GSM', 'Bz_GSM', #IMF interplanetary magnetic field
                 'RMS_B_scalar', 'RMS_B_vector',
@@ -97,6 +98,8 @@ class OMNIDataset(torch.utils.data.Dataset):
                 # Solar particle flux
                 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
             ]
+        else:
+            self.omni_columns = omni_columns
 
         date_start_on_disk, date_end_on_disk = dates_avialable
 
@@ -123,12 +126,12 @@ class OMNIDataset(torch.utils.data.Dataset):
     
     @staticmethod
     def normalize(data):
-        pass
+        raise NotImplementedError("Normalization not implemented yet.")
         # return torch.log1p(data)
 
     @staticmethod
     def unnormalize(data):
-        pass
+        raise NotImplementedError("Unnormalization not implemented yet.")
 
     def __len__(self):
         return self.num_samples
@@ -144,8 +147,8 @@ class OMNIDataset(torch.utils.data.Dataset):
         else:
             raise TypeError("Index must be an integer or datetime object.")
         
-        data = self._get_data_by_date(date)
-        return data
+        data, shifted_date = self._get_data_by_date(date)
+        return data, shifted_date
     
     def _get_data_by_date(self, date: datetime.datetime):
         # get nearest available timestamp
@@ -153,28 +156,31 @@ class OMNIDataset(torch.utils.data.Dataset):
         date = date.replace(second = 0)
         date = date.replace(minute = nearest_minute)
 
-        filename = f"omni_5min{date.year:04d}.csv"
-        datetime_str = datetime.strftime(date, "%Y-%m-%d %H:%M:%S")
+        filename = os.path.join(self.omni_dir, f"omni_5min{date.year:04d}.csv")
+        datetime_str = datetime.datetime.strftime(date, "%Y-%m-%d %H:%M:%S")
+
         df = pd.read_csv(filename, compression="gzip")
         data_row = df[df["Datetime"] == datetime_str]
-        data = torch.tensor(data_row[self.omni_columns])
-        data_tensor = torch.tensor(data_row[self.omni_columns], dtype=torch.float32)
+
+        data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)
+
         if self.normalize:
             data_tensor = OMNIDataset.normalize(data_tensor)
-        return data
+        print()
+        return data_tensor, date
 
     @staticmethod
     def find_date_range(directory):
         # print("Checking date range of data in directory: {}".format(directory))
         files = sorted(glob(f"{directory}/*.csv"))
-        if len(days) == 0:
+        
+        if len(files) == 0:
             return None
 
-        years = [y.replace(directory, '') for y in years]
-        date_start_str = pd.csv_open(files[0], compression="gzip")["Datetime"].iloc[0] # '2006-01-01 00:00:00' example
-        date_end_str = pd.csv_open(files[-1], compression="gzip")["Datetime"].iloc[-1] # '2006-01-01 00:00:00' example
-        date_start = datetime.strptime(date_start_str, "%Y-%m-%d %H:%M:%S")
-        date_end = datetime.strptime(date_end_str, "%Y-%m-%d %H:%M:%S")
+        date_start_str = pd.read_csv(files[0], compression="gzip")["Datetime"].iloc[0] # '2006-01-01 00:00:00' example
+        date_end_str = pd.read_csv(files[-1], compression="gzip")["Datetime"].iloc[-1] # '2006-01-01 00:00:00' example
+        date_start = datetime.datetime.strptime(date_start_str, "%Y-%m-%d %H:%M:%S")
+        date_end = datetime.datetime.strptime(date_end_str, "%Y-%m-%d %H:%M:%S")
 
         print("Directory  : {}".format(directory))
         print("Start date : {}".format(date_start.strftime('%Y-%m-%d')))

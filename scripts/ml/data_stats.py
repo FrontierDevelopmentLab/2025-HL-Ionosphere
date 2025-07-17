@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from util import Tee
 from util import set_random_seed
 from datasets import JPLDGIMDataset
+from src.omniweb_dataset import OMNIDataset
 
 
 matplotlib.use('Agg')
@@ -26,7 +27,7 @@ def main():
     parser.add_argument('--jpld_gim_dir', type=str, default='jpld_gim_20100513-20240731', help='JPLD GIM dataset directory')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--num_samples', type=int, default=1000, help='Number of samples to use')
-    parser.add_argument('--instruments', nargs='+', default=['jpld_gim'], help='List of instruments to process')
+    parser.add_argument('--instruments', nargs='+', default=['jpld_gim', 'omniweb'], help='List of instruments to process')
 
     args = parser.parse_args()
 
@@ -53,10 +54,15 @@ def main():
                     ('normalized', JPLDGIMDataset(data_dir_jpld_gim, normalize=True), 'JPLD GIM (normalized)'),
                     ('unnormalized', JPLDGIMDataset(data_dir_jpld_gim, normalize=False), 'JPLD GIM'),
                 ]
+            elif instrument == 'omniweb':
+                runs = [
+                    ('normalized', OMNIDataset(data_dir_jpld_gim, normalize=True), 'OMNIWEB (normalized)'),
+                    ('unnormalized', OMNIDataset(data_dir_jpld_gim, normalize=False), 'OMNIWEB'),
+                ]
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
                 continue
-
+            
             for postfix, dataset, label in runs:
                 print('\nProcessing {} {}'.format(instrument, postfix))
                 if len(dataset) < args.num_samples:
