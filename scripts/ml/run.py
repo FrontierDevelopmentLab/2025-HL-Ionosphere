@@ -10,6 +10,8 @@ import numpy as np
 from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+
 
 from util import Tee
 from util import set_random_seed
@@ -20,42 +22,81 @@ from datasets import JPLDGIMDataset
 matplotlib.use('Agg')
 
 
-
-
-def plot_gims(gims, file_name):
-    # fig, axs = plt.subplots(2, 2, figsize=(16, 8))
-    # axs = axs.flatten()
-    # for j in range(4):
-    #     axs[j].imshow(samples[j, 0], cmap='gist_ncar')
-    #     axs[j].axis('off')
+def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
+    """
+    Plots a 180x360 global ionosphere image on a given Cartopy axes.
     
-    # print(f'Saving sample plot to {file_name}')
-    # # colorbar
-    # # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
-    
-    # plt.tight_layout()
-    # plt.savefig(file_name)
-    # plt.close()
+    Parameters:
+        ax (matplotlib.axes._subplots.AxesSubplot): Axes with a Cartopy projection.
+        image (np.ndarray): 2D numpy array with shape (180, 360), representing lat [-90, 90], lon [-180, 180].
+        cmap (str): Colormap to use for imshow.
+        vmin (float): Minimum value for colormap normalization.
+        vmax (float): Maximum value for colormap normalization.
+    """
+    if image.shape != (180, 360):
+        raise ValueError("Input image must have shape (180, 360) corresponding to lat [-90, 90], lon [-180, 180].")
 
+    im = ax.imshow(
+        image,
+        extent=[-180, 180, -90, 90],
+        origin='lower',
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        transform=ccrs.PlateCarree()
+    )
+    
+    ax.coastlines()
+    if title is not None:
+        ax.set_title(title, fontsize=12)
+
+    return im
+
+
+def plot_gims(gims, file_name, titles=None):
     num_samples = gims.shape[0]
+
+    if titles is None:
+        titles = [f'GIM TEC' for _ in range(num_samples)]
+
+    if len(titles) != num_samples:
+            raise ValueError("Number of titles must match number of samples.")
 
     print('Plotting {} samples to {}'.format(num_samples, file_name))
     
     # find the best grid size
     grid_size = int(np.ceil(np.sqrt(num_samples)))
-    fig, axs = plt.subplots(grid_size, grid_size, figsize=(16 * grid_size, 8 * grid_size))
-    axs = axs.flatten()
-
+    
+    # Create figure with Cartopy projection for each subplot
+    fig = plt.figure(figsize=(8 * grid_size + 1, 4 * grid_size))  # Extra width for colorbar
+    
+    # Create main grid for subplots
+    gs = fig.add_gridspec(grid_size, grid_size + 1, width_ratios=[1] * grid_size + [0.05])
+    
+    ims = []  # Store image objects for colorbar
+    
     for i in range(num_samples):
-        axs[i].imshow(gims[i, 0], cmap='gist_ncar')
-        axs[i].axis('off')
+        ax = fig.add_subplot(gs[i // grid_size, i % grid_size], projection=ccrs.PlateCarree())
+        gim = gims[i, 0]
+        print(gim.min(), gim.max(), gim.mean(), gim.std())
+        im = plot_global_ionosphere_map(ax, gim, cmap='jet', vmin=0, vmax=100, title=titles[i])
+        ims.append(im)
+        ax.axis('off')
+    
+    # Hide any unused subplots
+    for i in range(num_samples, grid_size * grid_size):
+        ax = fig.add_subplot(gs[i // grid_size, i % grid_size])
+        ax.axis('off')
+    
+    # Add colorbar on the right side
+    if ims:
+        cbar_ax = fig.add_subplot(gs[:, -1])
+        cbar = plt.colorbar(ims[0], cax=cbar_ax, label='TEC (TECU)')
+        cbar.set_ticks([0, 20, 40, 60, 80, 100])
 
     print(f'Saving GIM plot to {file_name}')
-    # colorbar
-    # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
-
     plt.tight_layout()
-    plt.savefig(file_name)
+    plt.savefig(file_name, dpi=150, bbox_inches='tight')
     plt.close()
 
 
@@ -71,12 +112,13 @@ def main():
     parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
     parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
+    parser.add_argument('--num_samples', type=int, default=9, help='Number of samples for various operations')
 
     args = parser.parse_args()
 
@@ -184,23 +226,25 @@ def main():
                     torch.manual_seed(args.seed)
 
                     # Reconstruct a batch from the validation set
-                    jpld_orig, _ = next(iter(valid_loader))
+                    jpld_orig, jpld_orig_dates = next(iter(valid_loader))
                     jpld_orig = jpld_orig.to(device)
                     jpld_recon, _, _ = model.forward(jpld_orig)
+                    jpld_orig = JPLDGIMDataset.unnormalize(jpld_orig)
                     jpld_recon = JPLDGIMDataset.unnormalize(jpld_recon)
 
                     # Sample a batch from the model
-                    jpld_sample = model.sample(n=args.batch_size)
+                    jpld_sample = model.sample(n=args.num_samples)
                     jpld_sample = JPLDGIMDataset.unnormalize(jpld_sample)
                     torch.set_rng_state(rng_state)
 
                     print(jpld_orig.shape, jpld_recon.shape, jpld_sample.shape)
+                    jpld_orig_dates = ['JPLD GIM TEC, ' + date for date in jpld_orig_dates]
 
                     recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
-                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file)
+                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, titles=jpld_orig_dates)
 
                     recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
-                    plot_gims(jpld_recon.cpu().numpy(), recon_file)
+                    plot_gims(jpld_recon.cpu().numpy(), recon_file, titles=jpld_orig_dates)
 
                     sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
                     plot_gims(jpld_sample.cpu().numpy(), sample_file)
@@ -219,4 +263,4 @@ if __name__ == '__main__':
 
 
 # Example
-# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 
+# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4
