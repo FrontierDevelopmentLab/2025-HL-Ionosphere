@@ -78,7 +78,7 @@ def plot_gims(gims, file_name, titles=None):
     for i in range(num_samples):
         ax = fig.add_subplot(gs[i // grid_size, i % grid_size], projection=ccrs.PlateCarree())
         gim = gims[i, 0]
-        print(gim.min(), gim.max(), gim.mean(), gim.std())
+        # print(gim.min(), gim.max(), gim.mean(), gim.std())
         im = plot_global_ionosphere_map(ax, gim, cmap='jet', vmin=0, vmax=100, title=titles[i])
         ims.append(im)
         ax.axis('off')
