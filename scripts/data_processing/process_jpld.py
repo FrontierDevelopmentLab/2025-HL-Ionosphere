@@ -123,8 +123,8 @@ def main():
         'tecmap': tecmap_array
     })
 
-    date_start = timestamps[0].strftime('%Y%m%d%H%M%S')
-    date_end = timestamps[-1].strftime('%Y%m%d%H%M%S')
+    date_start = timestamps[0].strftime('%Y%m%d%H%M')
+    date_end = timestamps[-1].strftime('%Y%m%d%H%M')
 
     target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.parquet')
     print(f'Saving data to {target_file}')
