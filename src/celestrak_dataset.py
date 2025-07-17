@@ -14,7 +14,7 @@ Full dataset information:
 '''
 
 import torch
-import torch.utils.data.Dataset as Dataset
+import glob as glob
 import os
 import numpy as np
 import datetime
@@ -35,8 +35,12 @@ class CelestrakDataset(torch.utils.data.Dataset):
         print(f"Head of data file: \n{self.df.head()}")
 
         # Normalize the data if required
+        # Note: if
+        #   celestrak = CelestrakDataset()
+        #   celestrak.normalize // return True
+        #   CelestrakDataset.normalize // function
         if normalize:
-            self.df = self.normalize(self.df)
+            self.df = CelestrakDataset.normalize(self.df)
 
         # Get the date range from the data file
         dates_available = self.find_date_range(data_file)
@@ -66,12 +70,12 @@ class CelestrakDataset(torch.utils.data.Dataset):
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
 
     @staticmethod
-    def find_date_range():
+    def find_date_range(data_file, df):
         print("Checking date range of data in file: {}".format(data_file))
 
         # Get the first and last dates from self.df
-        start_idx = self.df.index.min()
-        end_idx = self.df.index.max()
+        start_idx = df.index.min()
+        end_idx = df.index.max()
 
         # Convert to datetime objects
         date_start = datetime.datetime.strptime(start_idx, '%Y-%m-%d %H:%M:%S')
