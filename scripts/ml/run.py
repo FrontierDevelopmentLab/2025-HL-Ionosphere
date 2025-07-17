@@ -5,6 +5,7 @@ import os
 import sys
 from matplotlib import pyplot as plt
 import torch
+from torch.utils.data import DataLoader, random_split
 import numpy as np
 from tqdm import tqdm
 import matplotlib
@@ -12,6 +13,7 @@ import matplotlib.pyplot as plt
 
 from util import Tee
 from util import set_random_seed
+from models import VAE1
 from datasets import JPLDGIMDataset
 
 
@@ -26,9 +28,12 @@ def main():
     parser.add_argument('--jpld_gim_dir', type=str, default='jpld_gim_20100513-20240731', help='JPLD GIM dataset directory')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs for training')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
+    parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
+    parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for data loading')
+    parser.add_argument('--device', type=str, default='cpu', help='Device')
 
     args = parser.parse_args()
 
@@ -36,6 +41,7 @@ def main():
     log_file = os.path.join(args.target_dir, 'log.txt')
 
     set_random_seed(args.seed)
+    device = torch.device(args.device)
 
     with Tee(log_file):
         print(description)
@@ -44,20 +50,56 @@ def main():
         print('Config:')
         pprint.pprint(vars(args), depth=2, width=50)
 
-
-
         start_time = datetime.datetime.now()
         print('Start time: {}'.format(start_time))
 
-        data_dir_jpld_gim = os.path.join(args.data_dir, args.jpld_gim_dir)
-
-        dataset_jpld_gim = JPLDGIMDataset(data_dir_jpld_gim, normalize=True)
-
         if args.mode == 'train':
             print('Training mode selected.')
-            # Here you would implement your training logic
-            # For example, initializing a model, optimizer, and running the training loop
-            pass
+
+            data_dir_jpld_gim = os.path.join(args.data_dir, args.jpld_gim_dir)
+            dataset_jpld_gim = JPLDGIMDataset(data_dir_jpld_gim, normalize=True)
+            
+            valid_size = int(args.valid_proportion * len(dataset_jpld_gim))
+            train_size = len(dataset_jpld_gim) - valid_size
+            dataset_train, dataset_valid = random_split(dataset_jpld_gim, [train_size, valid_size])
+
+            print('\nTrain size: {:,}'.format(len(dataset_train)))
+            print('Valid size: {:,}'.format(len(dataset_valid)))
+
+            train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+            valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+
+
+            model = VAE1(z_dim=512, sigma_vae=False)
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+            iteration = 0
+            train_losses = []
+            valid_losses = []
+            model = model.to(device)
+
+            model.train()
+
+            num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print('\nNumber of parameters: {:,}\n'.format(num_params))
+            
+            for epoch in range(args.epochs):
+                with tqdm(total=len(train_loader)) as pbar:
+                    for i, batch in enumerate(train_loader):
+                        jpld_gim, _ = batch
+                        jpld_gim = jpld_gim.to(device)
+
+
+                        optimizer.zero_grad()
+                        loss = model.loss(jpld_gim)
+                        loss.backward()
+
+                        optimizer.step()
+
+                        train_losses.append(loss.item())
+                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, Loss: {loss.item():.4f}')
+                        pbar.update(1)
+
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
 
