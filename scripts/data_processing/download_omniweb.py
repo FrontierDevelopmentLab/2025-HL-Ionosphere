@@ -88,7 +88,7 @@ if __name__ == "__main__":
         1981, 2025,
         concat=False,
         save_csv=True,
-        csv_dir="/mnt/ionosphere-data/omniweb",
+        csv_dir="/mnt/ionosphere-data/omniweb/raw",
         csv_compress="gzip"   # or True
     )
 
