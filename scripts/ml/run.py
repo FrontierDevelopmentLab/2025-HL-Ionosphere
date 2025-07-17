@@ -22,21 +22,39 @@ matplotlib.use('Agg')
 
 
 
-def plot_samples(samples, file_name):
-    fig, axs = plt.subplots(2, 2, figsize=(16, 8))
-    axs = axs.flatten()
-    for j in range(4):
-        axs[j].imshow(samples[j, 0], cmap='gist_ncar')
-        axs[j].axis('off')
+def plot_gims(gims, file_name):
+    # fig, axs = plt.subplots(2, 2, figsize=(16, 8))
+    # axs = axs.flatten()
+    # for j in range(4):
+    #     axs[j].imshow(samples[j, 0], cmap='gist_ncar')
+    #     axs[j].axis('off')
     
-    print(f'Saving sample plot to {file_name}')
+    # print(f'Saving sample plot to {file_name}')
+    # # colorbar
+    # # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
+    
+    # plt.tight_layout()
+    # plt.savefig(file_name)
+    # plt.close()
+
+    num_samples = gims.shape[0]
+    
+    # find the best grid size
+    grid_size = int(np.ceil(np.sqrt(num_samples)))
+    fig, axs = plt.subplots(grid_size, grid_size, figsize=(16 * grid_size, 8 * grid_size))
+    axs = axs.flatten()
+
+    for i in range(num_samples):
+        axs[i].imshow(gims[i, 0], cmap='gist_ncar')
+        axs[i].axis('off')
+
+    print(f'Saving GIM plot to {file_name}')
     # colorbar
     # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
-    
+
     plt.tight_layout()
     plt.savefig(file_name)
     plt.close()
-
 
 
 def main():
@@ -44,15 +62,14 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
-    parser.add_argument('--jpld_gim_dir', type=str, default='jpld_gim_20100513-20240731', help='JPLD GIM dataset directory')
+    parser.add_argument('--jpld_gim_filename', type=str, default='jpld_gim/parquet/jpld_gim_20100513000000_20100522234500.parquet', help='JPLD GIM dataset directory')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs for training')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
-    parser.add_argument('--valid_interval', type=int, default=10, help='Interval for validation during training')
-    parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for data loading')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
 
     args = parser.parse_args()
@@ -76,8 +93,8 @@ def main():
         if args.mode == 'train':
             print('Training mode selected.')
 
-            data_dir_jpld_gim = os.path.join(args.data_dir, args.jpld_gim_dir)
-            dataset_jpld_gim = JPLDGIMDataset(data_dir_jpld_gim, normalize=True)
+            dataset_jpld_gim_filename = os.path.join(args.data_dir, args.jpld_gim_filename)
+            dataset_jpld_gim = JPLDGIMDataset(dataset_jpld_gim_filename, normalize=True)
             
             valid_size = int(args.valid_proportion * len(dataset_jpld_gim))
             train_size = len(dataset_jpld_gim) - valid_size
@@ -104,6 +121,7 @@ def main():
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
             for epoch in range(args.epochs):
+                # Training
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
 
@@ -122,43 +140,55 @@ def main():
                         pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, Loss: {loss.item():.4f}')
                         pbar.update(1)
 
-                        if iteration % args.valid_interval == 0:
-                            print(f'\nValidating')
-                            plot_file = os.path.join(args.target_dir, f'loss-{iteration}.pdf')
-                            print(f'Saving plot to {plot_file}')
-                            plt.figure(figsize=(10, 5))
-                            plt.plot(*zip(*train_losses), label='Train Loss')
-                            plt.plot(*zip(*valid_losses), label='Valid Loss')
-                            plt.xlabel('Iteration')
-                            plt.ylabel('Loss')
-                            plt.title('Loss over iterations')
-                            plt.yscale('log')
-                            plt.grid(True)
-                            plt.legend()
-                            plt.savefig(plot_file)
-                            plt.close()
+                # Validation
+                # print(f'\nValidating')
+                model.eval()
+                valid_loss = 0.0
+                with torch.no_grad():
+                    for jpld_gim, _ in valid_loader:
+                        jpld_gim = jpld_gim.to(device)
+                        loss = model.loss(jpld_gim)
+                        valid_loss += loss.item()
+                valid_loss /= len(valid_loader)
+                valid_losses.append((iteration, valid_loss))
+                print(f'Validation Loss: {valid_loss:.4f}')
 
-                            # sample a batch from the VAE
-                            model.eval()
-                            with torch.no_grad():
-                                sample = model.sample(n=4)
-                                sample = JPLDGIMDataset.unnormalize(sample)
-                                sample = sample.cpu().numpy()
+                file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
-                                sample_file = os.path.join(args.target_dir, f'sample-{iteration}.pdf')
-                                plot_samples(sample, sample_file)
+                plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
+                print(f'Saving plot to {plot_file}')
+                plt.figure(figsize=(10, 5))
+                plt.plot(*zip(*train_losses), label='Training')
+                plt.plot(*zip(*valid_losses), label='Validation')
+                plt.xlabel('Iteration')
+                plt.ylabel('Loss')
+                plt.yscale('log')
+                plt.grid(True)
+                plt.legend()
+                plt.savefig(plot_file)
+                plt.close()
 
-                                recon_original_file = os.path.join(args.target_dir, f'reconstruction-{iteration}-original.pdf')
-                                plot_samples(jpld_gim.cpu().numpy(), recon_original_file)
+                # sample a batch from the VAE
+                model.eval()
+                with torch.no_grad():
+                    sample = model.sample(n=4)
+                    sample = JPLDGIMDataset.unnormalize(sample)
+                    sample = sample.cpu().numpy()
+
+                    sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
+                    plot_gims(sample, sample_file)
+
+                    recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
+                    plot_gims(jpld_gim.cpu().numpy(), recon_original_file)
 
 
-                                # plot last minibatch of data and its reconstruction
-                                recon, _, _ = model.forward(jpld_gim)
-                                recon = JPLDGIMDataset.unnormalize(recon)
-                                recon = recon.cpu().numpy()
+                    # plot last minibatch of data and its reconstruction
+                    recon, _, _ = model.forward(jpld_gim)
+                    recon = JPLDGIMDataset.unnormalize(recon)
+                    recon = recon.cpu().numpy()
 
-                                recon_file = os.path.join(args.target_dir, f'reconstruction-{iteration}.pdf')
-                                plot_samples(recon, recon_file)
+                    recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
+                    plot_gims(recon, recon_file)
 
             
 

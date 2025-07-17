@@ -25,10 +25,8 @@ import traceback
 # https://sideshow.jpl.nasa.gov/pub/iono_daily/gim_for_research/jpld/2017/jpld0010.17i.nc.gz
 
 
-def date_to_filename(date):
+def jpld_date_to_filename(date):
     file_name = f"jpld{date:%j}0.{date:%y}i.nc.gz"
-    # print(date, file_name)
-    # a = 1/0
     return file_name
 
 
@@ -109,7 +107,7 @@ def main():
     file_names = []
     while current < date_end:
 
-        file_name = date_to_filename(current)
+        file_name = jpld_date_to_filename(current)
         remote_file_name = os.path.join(args.remote_root, '{:%Y}'.format(current), file_name)
         # print('Remote: {}'.format(remote_file_name))
         local_file_name = os.path.join(args.target_dir, '{:%Y}'.format(current), file_name)
