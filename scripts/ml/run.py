@@ -29,9 +29,10 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
-    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
+    parser.add_argument('--valid_interval', type=int, default=10, help='Interval for validation during training')
     parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
 
@@ -86,9 +87,9 @@ def main():
             for epoch in range(args.epochs):
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
+
                         jpld_gim, _ = batch
                         jpld_gim = jpld_gim.to(device)
-
 
                         optimizer.zero_grad()
                         loss = model.loss(jpld_gim)
@@ -96,9 +97,48 @@ def main():
 
                         optimizer.step()
 
-                        train_losses.append(loss.item())
+                        iteration += 1
+
+                        train_losses.append((iteration, float(loss)))
                         pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, Loss: {loss.item():.4f}')
                         pbar.update(1)
+
+                        if iteration % args.valid_interval == 0:
+                            print(f'\nValidating')
+                            plot_file = os.path.join(args.target_dir, f'loss_{iteration}.pdf')
+                            print(f'Saving plot to {plot_file}')
+                            plt.figure(figsize=(10, 5))
+                            plt.plot(*zip(*train_losses), label='Train Loss')
+                            plt.plot(*zip(*valid_losses), label='Valid Loss')
+                            plt.xlabel('Iteration')
+                            plt.ylabel('Loss')
+                            plt.title('Loss over iterations')
+                            plt.yscale('log')
+                            plt.grid(True)
+                            plt.legend()
+                            plt.savefig(plot_file)
+                            plt.close()
+
+                            # sample a batch from the VAE
+                            model.eval()
+                            with torch.no_grad():
+                                sample = model.sample(n=4)
+                                sample = JPLDGIMDataset.unnormalize(sample)
+                                sample = sample.cpu().numpy()
+                                # plot a grid of samples
+                                fig, axs = plt.subplots(2, 2, figsize=(16, 8))
+                                axs = axs.flatten()
+                                for j in range(4):
+                                    axs[j].imshow(sample[j, 0], cmap='gist_ncar')
+                                    axs[j].axis('off')
+                                sample_file = os.path.join(args.target_dir, f'sample_{iteration}.pdf')
+                                print(f'Saving sample plot to {sample_file}')
+                                # colorbar
+                                # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
+                                
+                                plt.tight_layout()
+                                plt.savefig(sample_file)
+                                plt.close()
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
