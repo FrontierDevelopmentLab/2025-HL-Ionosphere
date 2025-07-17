@@ -14,6 +14,6 @@ What about the moon? during this time frame, where is it.. can it also drag thin
 I did another experiment to plot the orbits.. 
 
 Code to create Orbital parameter file from ephemeris and skyfield.api from 1996 jan 1. to 2025 Dec 31
-Code to normalize orbital parameter file. saved as a parquet
+Code to normalize orbital parameter file. saved as a parquet _ todo. dont normalize constants... 
 
 Mike Vergalla 
