@@ -237,17 +237,18 @@ def main():
                     jpld_sample = JPLDGIMDataset.unnormalize(jpld_sample)
                     torch.set_rng_state(rng_state)
 
-                    print(jpld_orig.shape, jpld_recon.shape, jpld_sample.shape)
-                    jpld_orig_dates = ['JPLD GIM TEC, ' + date for date in jpld_orig_dates]
+                    jpld_orig_titles = ['JPLD GIM TEC, ' + datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S') for date in jpld_orig_dates]
+                    jpld_recon_titles = [t + ' (reconstruction)' for t in jpld_orig_titles]
 
                     recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
-                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, titles=jpld_orig_dates)
+                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, titles=jpld_orig_titles)
 
                     recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
-                    plot_gims(jpld_recon.cpu().numpy(), recon_file, titles=jpld_orig_dates)
+                    plot_gims(jpld_recon.cpu().numpy(), recon_file, titles=jpld_recon_titles)
 
+                    sample_titles = [f'JPLD GIM TEC (sampled from model)' for _ in range(args.num_samples)]
                     sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
-                    plot_gims(jpld_sample.cpu().numpy(), sample_file)
+                    plot_gims(jpld_sample.cpu().numpy(), sample_file, titles=sample_titles)
 
 
         elif args.mode == 'test':
