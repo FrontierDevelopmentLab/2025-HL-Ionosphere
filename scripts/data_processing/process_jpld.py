@@ -50,6 +50,7 @@ def main():
     parser.add_argument('--input_dir', type=str, help='Input directory with raw files', required=True)
     parser.add_argument('--target_dir', type=str, help='Target directory for Parquet files', required=True)
     parser.add_argument('--num_max_files', type=int, default=None, help='Maximum number of files to process')
+    parser.add_argument('--batch_size', type=int, default=100, help='Batch size for writing to Parquet')
     
     args = parser.parse_args()
 
@@ -79,61 +80,108 @@ def main():
         file_names = file_names[:args.num_max_files]
         print('Processing only the first {:,} files.'.format(args.num_max_files))
 
-    timestamps = []
-    tecmaps = []
+    # Define schema for Parquet file
+    schema = pa.schema([
+        ('date', pa.timestamp('s')),
+        ('tecmap', pa.list_(pa.list_(pa.float32())))
+    ])
+
+    # Create output filename with placeholder dates (will update later)
+    target_file = os.path.join(args.target_dir, 'jpld_gim_temp.parquet')
+    
+    # Initialize batch data and counters
+    batch_timestamps = []
+    batch_tecmaps = []
     skipped_files = []
-    for file_name in tqdm(file_names, desc='Reading data from raw files'):
-        date = jpld_filename_to_date(file_name)
-        # print(file_name, date)
-        with gzip.open(file_name, 'rb') as f:
-            try:
-                ds = xr.open_dataset(f, engine='h5netcdf')            
-                data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (96, 180, 360)
-            except Exception as e:
-                print(f"Skipping file due to error: {file_name}: {e}")
-                skipped_files.append(file_name)
-                continue
-
-            if data.shape[0] != 96 or data.shape[1] != 180 or data.shape[2] != 360:
-                print(f"Skipping file {file_name} due to unexpected shape: {data.shape}")
-                skipped_files.append(file_name)
-                continue
+    total_records = 0
+    first_timestamp = None
+    last_timestamp = None
+    
+    # Create ParquetWriter
+    parquet_writer = pq.ParquetWriter(target_file, schema, compression='snappy')
+    
+    try:
+        for file_name in tqdm(file_names, desc='Processing files'):
+            date = jpld_filename_to_date(file_name)
             
-            for time_index in range(data.shape[0]):
-                tecmap = data[time_index, :, :]
-                tecmap_date = date + datetime.timedelta(minutes=time_index * 15)  # Assuming 15-minute cadence
-                # print(tecmap_date, tecmap.shape)
-                timestamps.append(tecmap_date)
-                tecmaps.append(tecmap.tolist())
+            with gzip.open(file_name, 'rb') as f:
+                try:
+                    ds = xr.open_dataset(f, engine='h5netcdf')            
+                    data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (96, 180, 360)
+                except Exception as e:
+                    print(f"Skipping file due to error: {file_name}: {e}")
+                    skipped_files.append(file_name)
+                    continue
 
-                # time.sleep(0.2)  # Add a short delay for debugging purposes
+                if data.shape[0] != 96 or data.shape[1] != 180 or data.shape[2] != 360:
+                    print(f"Skipping file {file_name} due to unexpected shape: {data.shape}")
+                    skipped_files.append(file_name)
+                    continue
+                
+                for time_index in range(data.shape[0]):
+                    tecmap = data[time_index, :, :]
+                    tecmap_date = date + datetime.timedelta(minutes=time_index * 15)  # Assuming 15-minute cadence
+                    
+                    # Track first and last timestamps
+                    if first_timestamp is None:
+                        first_timestamp = tecmap_date
+                    last_timestamp = tecmap_date
+                    
+                    batch_timestamps.append(tecmap_date)
+                    batch_tecmaps.append(tecmap.tolist())
+                    
+                    # Write batch when it reaches the specified size
+                    if len(batch_timestamps) >= args.batch_size:
+                        datetime_array = pa.array(batch_timestamps, type=pa.timestamp('s'))
+                        tecmap_array = pa.array(batch_tecmaps, type=pa.list_(pa.list_(pa.float32())))
+                        
+                        batch_table = pa.table({
+                            'date': datetime_array,
+                            'tecmap': tecmap_array
+                        })
+                        
+                        parquet_writer.write_table(batch_table)
+                        total_records += len(batch_timestamps)
+                        
+                        # Clear batch data
+                        batch_timestamps = []
+                        batch_tecmaps = []
+        
+        # Write remaining data
+        if batch_timestamps:
+            datetime_array = pa.array(batch_timestamps, type=pa.timestamp('s'))
+            tecmap_array = pa.array(batch_tecmaps, type=pa.list_(pa.list_(pa.float32())))
+            
+            batch_table = pa.table({
+                'date': datetime_array,
+                'tecmap': tecmap_array
+            })
+            
+            parquet_writer.write_table(batch_table)
+            total_records += len(batch_timestamps)
+            
+    finally:
+        # Close the writer
+        parquet_writer.close()
+    
+    # Rename file with proper date range
+    if first_timestamp and last_timestamp:
+        date_start = first_timestamp.strftime('%Y%m%d%H%M')
+        date_end = last_timestamp.strftime('%Y%m%d%H%M')
+        final_target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.parquet')
+        os.rename(target_file, final_target_file)
+        target_file = final_target_file
 
-    print(f'Processed {len(timestamps):,} records from {len(file_names):,} files.')
+    print(f'Processed {total_records:,} records from {len(file_names):,} files.')
     if skipped_files:
         print(f'Skipped {len(skipped_files):,} files due to errors or unexpected shapes:')
         for skipped_file in skipped_files:
             print(f' - {skipped_file}')
 
-    print('Creating Parquet dataset...')
-    datetime_array = pa.array(timestamps, type=pa.timestamp('s'))
-    tecmap_array = pa.array(tecmaps, type=pa.list_(pa.list_(pa.float32())))
-
-    table = pa.table({
-        'date': datetime_array,
-        'tecmap': tecmap_array
-    })
-
-    date_start = timestamps[0].strftime('%Y%m%d%H%M')
-    date_end = timestamps[-1].strftime('%Y%m%d%H%M')
-
-    target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.parquet')
-    print(f'Saving data to {target_file}')
-    pq.write_table(table, target_file, compression='snappy')
-
     print('Parquet dataset created successfully.')
-    print('Total records   : {:,}'.format(table.num_rows))
-    print('Start date      : {}'.format(table['date'][0]))
-    print('End date        : {}'.format(table['date'][-1]))
+    print('Total records   : {:,}'.format(total_records))
+    print('Start date      : {}'.format(first_timestamp))
+    print('End date        : {}'.format(last_timestamp))
     print('Size on disk    : {:.2f} GiB'.format(os.path.getsize(target_file) / (1024 ** 3)))
 
     print('End time: {}'.format(datetime.datetime.now()))
