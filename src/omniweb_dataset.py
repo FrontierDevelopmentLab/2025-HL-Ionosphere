@@ -54,6 +54,9 @@ import torch
 import os
 import numpy as np
 import datetime
+from glob import glob
+import pandas as pd
+
 
 # TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
 # TODO: Compute mean and std, will update data_stats.py
@@ -71,9 +74,9 @@ class OMNIDataset(torch.utils.data.Dataset):
         super().__init__()
 
         print('OMNI Dataset')
-        self.data_dir = data_dir
+        self.data_dir = omni_dir
         self.normalize = normalize
-        dates_avialable = self.find_date_range(data_dir)
+        dates_avialable = self.find_date_range(omni_dir)
         if dates_avialable is None:
             raise ValueError("No data found in the specified directory.")
         if omni_columns is None:
@@ -114,7 +117,7 @@ class OMNIDataset(torch.utils.data.Dataset):
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
 
         # size on disk
-        size_on_disk = sum(os.path.getsize(f) for f in glob(f"{data_dir}/*.csv"))
+        size_on_disk = sum(os.path.getsize(f) for f in glob(f"{omni_dir}/*.csv"))
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
     
     
@@ -136,8 +139,8 @@ class OMNIDataset(torch.utils.data.Dataset):
         elif isinstance(index, int):
             if index < 0 or index >= self.num_samples:
                 raise IndexError("Index out of range.")
-                minutes = index * self.sampled_cadence
-                date = self.date_start + datetime.timedelta(minutes=minutes)
+            minutes = index * self.sampled_cadence
+            date = self.date_start + datetime.timedelta(minutes=minutes)
         else:
             raise TypeError("Index must be an integer or datetime object.")
         
@@ -146,7 +149,7 @@ class OMNIDataset(torch.utils.data.Dataset):
     
     def _get_data_by_date(self, date: datetime.datetime):
         # get nearest available timestamp
-        nearest_minute = date.minute - date.minnute % self.true_cadence
+        nearest_minute = date.minute - date.minute % self.true_cadence #
         date = date.replace(second = 0)
         date = date.replace(minute = nearest_minute)
 
