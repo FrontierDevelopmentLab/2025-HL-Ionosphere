@@ -4,13 +4,12 @@ Solar indices pytorch dataset
 Reads in data from the Celestrak dataset.
 
 Full dataset information:
-    Celestrak
-    kp_ap_timeseries.csv:
+    kp_ap_timeseries_processed.csv:
         Datetime, Ap, Kp
     example:
         1957-10-01 00:00:00,43.0,32.0
         ...
-    
+Whenever there isn't a measurement, the value is 0.0. This is dealth with by forward filling in process_celestrak_and_indices.py.
 '''
 
 import torch

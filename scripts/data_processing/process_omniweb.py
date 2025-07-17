@@ -12,7 +12,7 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, process omniweb data'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--input_dir', type=str, help='Input directory with raw files', required=True)
-    parser.add_argument('--target_dir', type=str, help='Target directory for Parquet files', required=True)
+    parser.add_argument('--target_dir', type=str, help='Target directory for csv.gz files', required=True)
     
     args = parser.parse_args()
 
