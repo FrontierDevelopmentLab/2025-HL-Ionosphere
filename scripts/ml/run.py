@@ -38,6 +38,7 @@ def plot_gims(gims, file_name):
     # plt.close()
 
     num_samples = gims.shape[0]
+    
     # find the best grid size
     grid_size = int(np.ceil(np.sqrt(num_samples)))
     fig, axs = plt.subplots(grid_size, grid_size, figsize=(16 * grid_size, 8 * grid_size))
@@ -140,7 +141,7 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                print(f'\nValidating')
+                # print(f'\nValidating')
                 model.eval()
                 valid_loss = 0.0
                 with torch.no_grad():

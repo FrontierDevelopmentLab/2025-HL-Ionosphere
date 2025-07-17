@@ -15,8 +15,10 @@ JPLDGIM_std = 14.894197463989258
 
 
 
-# TODO: seems to be slow to do all data processing on the fly, consider working with a preprocessed dataset (netcdf -> npy done previously)
-class JPLDGIMDatasetRaw(Dataset):
+# JPLD GIM Dataset working with raw NetCDF files
+# Note: seems to be slow to do all data processing on the fly
+# Preferred to use the Parquet dataset for faster access
+class JPLDGIMDatasetOld(Dataset):
     def __init__(self, data_dir, date_start=None, date_end=None, normalize=True):
         print('JPLD GIM Dataset')
         self.data_dir = data_dir
@@ -93,7 +95,7 @@ class JPLDGIMDatasetRaw(Dataset):
             # data_tensor shape torch.Size([96, 180, 360]) where 96 is nepochs, 180 is nlats, and 360 is nlons
             data_tensor = torch.tensor(data, dtype=torch.float32)
             if self.normalize:
-                data_tensor = JPLDGIMDatasetRaw.normalize(data_tensor)
+                data_tensor = JPLDGIMDatasetOld.normalize(data_tensor)
 
             return data_tensor
 
