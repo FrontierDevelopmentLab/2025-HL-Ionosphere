@@ -55,6 +55,8 @@ import os
 import numpy as np
 import datetime
 
+# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
+# TODO: Compute mean and std, will update data_stats.py
 class OMNIDataset(torch.utils.data.Dataset):
     def __init__(
         self, 
@@ -62,7 +64,9 @@ class OMNIDataset(torch.utils.data.Dataset):
         date_start=None, 
         date_end=None, 
         normalize=True,
-        transform=None
+        transform=None,
+        omni_columns = None,
+        sampled_cadence = 15,
         ):
         super().__init__()
 
@@ -72,6 +76,25 @@ class OMNIDataset(torch.utils.data.Dataset):
         dates_avialable = self.find_date_range(data_dir)
         if dates_avialable is None:
             raise ValueError("No data found in the specified directory.")
+        if omni_columns is None:
+                # 'Year', 'Day', 'Hour', 'Minute',
+            omni_columns = [
+                # Solar
+                'B_mag', 'Bx_GSE', 'By_GSM', 'Bz_GSM', #IMF interplanetary magnetic field
+                'RMS_B_scalar', 'RMS_B_vector',
+                # Solar
+                'V_flow', 'Vx', 'Vy', 'Vz',
+                'Density', 'Temp', 
+                # Solar derivations (tbd on including)
+                #'P_dyn', 'E_field', 'Beta', 'Mach_Alfven',
+
+                # Geomagnetic
+                'AE', 'AL', 'AU', 'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
+
+                # Solar particle flux
+                'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
+            ]
+
         date_start_on_disk, date_end_on_disk = dates_avialable
 
         self.date_start = date_start_on_disk if date_start is None else date_start
@@ -83,8 +106,9 @@ class OMNIDataset(torch.utils.data.Dataset):
             raise ValueError("Specified date range is outside the available data range.")
 
         self.num_days = (self.date_end - self.date_start).days + 1
-        self.cadence = 15 # minutes (actual cadence is 5 minutes but sample at 15 minutes for consistency)
-        self.num_samples = int(self.num_days * (24 * 60 / self.cadence))
+        self.true_cadence = 5 # minutes
+        self.sampled_cadence = sampled_cadence # minutes (actual cadence is 5 minutes but sample at 15 minutes for consistency)
+        self.num_samples = int(self.num_days * (24 * 60 / self.sampled_cadence))
 
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
@@ -94,12 +118,48 @@ class OMNIDataset(torch.utils.data.Dataset):
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
     
     
-    def __len__(self):
+    @staticmethod
+    def normalize(data):
+        pass
+        # return torch.log1p(data)
+
+    @staticmethod
+    def unnormalize(data):
         pass
 
-    def __getitem__(self, idx):
-        pass
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, index):
+        if isinstance(index, datetime.datetime):
+            date = index
+        elif isinstance(index, int):
+            if index < 0 or index >= self.num_samples:
+                raise IndexError("Index out of range.")
+                minutes = index * self.sampled_cadence
+                date = self.date_start + datetime.timedelta(minutes=minutes)
+        else:
+            raise TypeError("Index must be an integer or datetime object.")
+        
+        data = self._get_data_by_date(date)
+        return data
     
+    def _get_data_by_date(self, date: datetime.datetime):
+        # get nearest available timestamp
+        nearest_minute = date.minute - date.minnute % self.true_cadence
+        date = date.replace(second = 0)
+        date = date.replace(minute = nearest_minute)
+
+        filename = f"omni_5min{date.year:04d}.csv"
+        datetime_str = datetime.strftime(date, "%Y-%m-%d %H:%M:%S")
+        df = pd.read_csv(filename, compression="gzip")
+        data_row = df[df["Datetime"] == datetime_str]
+        data = torch.tensor(data_row[self.omni_columns])
+        data_tensor = torch.tensor(data_row[self.omni_columns], dtype=torch.float32)
+        if self.normalize:
+            data_tensor = OMNIDataset.normalize(data_tensor)
+        return data
+
     @staticmethod
     def find_date_range(directory):
         # print("Checking date range of data in directory: {}".format(directory))
@@ -118,82 +178,3 @@ class OMNIDataset(torch.utils.data.Dataset):
         print("End date   : {}".format(date_end.strftime('%Y-%m-%d')))
 
         return date_start, date_end
-
-
-
-
-class JPLDGIMDataset(Dataset):
-    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True):
-        print('JPLD GIM Dataset')
-        self.data_dir = data_dir
-        self.normalize = normalize
-        dates_avialable = self.find_date_range(data_dir)
-        if dates_avialable is None:
-            raise ValueError("No data found in the specified directory.")
-        date_start_on_disk, date_end_on_disk = dates_avialable
-
-        self.date_start = date_start_on_disk if date_start is None else date_start
-        self.date_end = date_end_on_disk if date_end is None else date_end
-        if self.date_start > self.date_end:
-            raise ValueError("Start date cannot be after end date.")
-        if self.date_start < date_start_on_disk or self.date_end > date_end_on_disk:
-            raise ValueError("Specified date range is outside the available data range.")
-
-        self.num_days = (self.date_end - self.date_start).days + 1
-        self.cadence = 15 # minutes
-        self.num_samples = int(self.num_days * (24 * 60 / cadence))
-        print('Number of days in dataset   : {:,}'.format(self.num_days))
-        print('Number of samples in dataset: {:,}'.format(self.num_samples))
-        # size on disk
-        size_on_disk = sum(os.path.getsize(f) for f in glob(f"{data_dir}/*/*.nc.gz"))
-        print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
-
-    @staticmethod
-    def normalize(data):
-        return (data - JPLDGIM_mean) / JPLDGIM_std
-        # return torch.log1p(data)
-
-    @staticmethod
-    def unnormalize(data):
-        return data * JPLDGIM_std + JPLDGIM_mean
-
-    def __len__(self):
-        return self.num_samples
-    
-    @lru_cache(maxsize=1024) # number of days to cache in memory, roughly 3 MiB per day
-    def _get_day_data(self, date):
-        file_name = f"jpld{date:%j}0.{date:%y}i.nc.gz"
-        file_path = os.path.join(self.data_dir, f"{date:%Y}", file_name)
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        with gzip.open(file_path, 'rb') as f:
-            ds = xr.open_dataset(f, engine='h5netcdf')
-            
-            # Assuming 'tecmap' is the variable of interest
-            data = ds['tecmap'].values
-            # data_tensor shape torch.Size([96, 180, 360]) where 96 is nepochs, 180 is nlats, and 360 is nlons
-            data_tensor = torch.tensor(data, dtype=torch.float32)
-            if self.normalize:
-                data_tensor = JPLDGIMDataset.normalize(data_tensor)
-
-            return data_tensor
-
-    def __getitem__(self, index):
-        samples_per_day = 24 * 60 // self.cadence  
-        if isinstance(index, datetime.datetime):
-            date = index
-        elif isinstance(index, int):
-            if index < 0 or index >= self.num_samples:
-                raise IndexError("Index out of range for the dataset.")
-            days = index // samples_per_day
-            minutes = (index % samples_per_day) * 15
-            date = self.date_start + datetime.timedelta(days=days, minutes=minutes)
-        else:
-            raise TypeError("Index must be an integer or a datetime object.")
-
-        data = self._get_day_data(date)
-        time_index = (index % samples_per_day)  # Get the time index within the
-        data = data[time_index, :, :]  # Select the specific time slice
-
-        return data
