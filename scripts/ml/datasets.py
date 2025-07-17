@@ -111,5 +111,6 @@ class JPLDGIMDataset(Dataset):
         data = self._get_day_data(date)
         time_index = (index % samples_per_day)  # Get the time index within the
         data = data[time_index, :, :]  # Select the specific time slice
+        data = data.unsqueeze(0)  # Add a channel dimension
 
-        return data
+        return data, str(date)
