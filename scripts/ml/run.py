@@ -20,6 +20,25 @@ from datasets import JPLDGIMDataset
 matplotlib.use('Agg')
 
 
+
+
+def plot_samples(samples, file_name):
+    fig, axs = plt.subplots(2, 2, figsize=(16, 8))
+    axs = axs.flatten()
+    for j in range(4):
+        axs[j].imshow(samples[j, 0], cmap='gist_ncar')
+        axs[j].axis('off')
+    
+    print(f'Saving sample plot to {file_name}')
+    # colorbar
+    # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
+    
+    plt.tight_layout()
+    plt.savefig(file_name)
+    plt.close()
+
+
+
 def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
@@ -105,7 +124,7 @@ def main():
 
                         if iteration % args.valid_interval == 0:
                             print(f'\nValidating')
-                            plot_file = os.path.join(args.target_dir, f'loss_{iteration}.pdf')
+                            plot_file = os.path.join(args.target_dir, f'loss-{iteration}.pdf')
                             print(f'Saving plot to {plot_file}')
                             plt.figure(figsize=(10, 5))
                             plt.plot(*zip(*train_losses), label='Train Loss')
@@ -125,20 +144,23 @@ def main():
                                 sample = model.sample(n=4)
                                 sample = JPLDGIMDataset.unnormalize(sample)
                                 sample = sample.cpu().numpy()
-                                # plot a grid of samples
-                                fig, axs = plt.subplots(2, 2, figsize=(16, 8))
-                                axs = axs.flatten()
-                                for j in range(4):
-                                    axs[j].imshow(sample[j, 0], cmap='gist_ncar')
-                                    axs[j].axis('off')
-                                sample_file = os.path.join(args.target_dir, f'sample_{iteration}.pdf')
-                                print(f'Saving sample plot to {sample_file}')
-                                # colorbar
-                                # fig.colorbar(axs[0].imshow(sample[0, 0], cmap='gist_ncar'), ax=axs, orientation='horizontal', fraction=0.02, pad=0.04)
-                                
-                                plt.tight_layout()
-                                plt.savefig(sample_file)
-                                plt.close()
+
+                                sample_file = os.path.join(args.target_dir, f'sample-{iteration}.pdf')
+                                plot_samples(sample, sample_file)
+
+                                recon_original_file = os.path.join(args.target_dir, f'reconstruction-{iteration}-original.pdf')
+                                plot_samples(jpld_gim.cpu().numpy(), recon_original_file)
+
+
+                                # plot last minibatch of data and its reconstruction
+                                recon, _, _ = model.forward(jpld_gim)
+                                recon = JPLDGIMDataset.unnormalize(recon)
+                                recon = recon.cpu().numpy()
+
+                                recon_file = os.path.join(args.target_dir, f'reconstruction-{iteration}.pdf')
+                                plot_samples(recon, recon_file)
+
+            
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
