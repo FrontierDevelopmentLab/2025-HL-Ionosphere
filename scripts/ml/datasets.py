@@ -6,6 +6,8 @@ import datetime
 import gzip
 import xarray as xr
 from functools import lru_cache
+import pandas as pd
+import numpy as np
 
 
 JPLDGIM_mean = 14.878721237182617
@@ -14,7 +16,7 @@ JPLDGIM_std = 14.894197463989258
 
 
 # TODO: seems to be slow to do all data processing on the fly, consider working with a preprocessed dataset (netcdf -> npy done previously)
-class JPLDGIMDataset(Dataset):
+class JPLDGIMDatasetRaw(Dataset):
     def __init__(self, data_dir, date_start=None, date_end=None, normalize=True):
         print('JPLD GIM Dataset')
         self.data_dir = data_dir
@@ -91,7 +93,7 @@ class JPLDGIMDataset(Dataset):
             # data_tensor shape torch.Size([96, 180, 360]) where 96 is nepochs, 180 is nlats, and 360 is nlons
             data_tensor = torch.tensor(data, dtype=torch.float32)
             if self.normalize:
-                data_tensor = JPLDGIMDataset.normalize(data_tensor)
+                data_tensor = JPLDGIMDatasetRaw.normalize(data_tensor)
 
             return data_tensor
 
@@ -114,3 +116,40 @@ class JPLDGIMDataset(Dataset):
         data = data.unsqueeze(0)  # Add a channel dimension
 
         return data, date.isoformat()  # Return the data and the date as a string
+
+
+# Parquet dataset for JPLD GIM
+class JPLDGIMDataset(Dataset):
+    def __init__(self, parquet_file, normalize=True):
+        self.data = pd.read_parquet(parquet_file)
+        self.normalize = normalize
+    
+    @staticmethod
+    def normalize(data):
+        return (data - JPLDGIM_mean) / JPLDGIM_std
+        # return torch.log1p(data)
+
+    @staticmethod
+    def unnormalize(data):
+        return data * JPLDGIM_std + JPLDGIM_mean
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        if isinstance(index, datetime.datetime):
+            index = self.data[self.data['date'] == index.isoformat()].index[0]
+        elif isinstance(index, int):
+            if index < 0 or index >= len(self.data):
+                raise IndexError("Index out of range for the dataset.")
+        else:
+            raise TypeError("Index must be an integer or a datetime object.")
+        
+        row = self.data.iloc[index]
+        tecmap = np.array(row['tecmap'].tolist())
+        if self.normalize:
+            tecmap = JPLDGIMDataset.normalize(tecmap)
+        tecmap = torch.tensor(tecmap, dtype=torch.float32)
+        tecmap = tecmap.unsqueeze(0)  # Add a channel dimension
+        date = row['date']
+        return tecmap, date.isoformat()
