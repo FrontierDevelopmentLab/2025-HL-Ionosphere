@@ -172,3 +172,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# Example
+# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 
