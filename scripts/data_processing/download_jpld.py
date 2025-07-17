@@ -107,7 +107,7 @@ def main():
     file_names = []
     while current < date_end:
 
-        file_name = jpld_date_to_filename(date):(current)
+        file_name = jpld_date_to_filename(current)
         remote_file_name = os.path.join(args.remote_root, '{:%Y}'.format(current), file_name)
         # print('Remote: {}'.format(remote_file_name))
         local_file_name = os.path.join(args.target_dir, '{:%Y}'.format(current), file_name)
