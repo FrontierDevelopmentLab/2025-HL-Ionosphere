@@ -53,7 +53,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     return im
 
 
-def plot_gims(gims, file_name, titles=None):
+def plot_gims(gims, file_name, cmap='jet', vmin=None, vmax=None, titles=None):
     num_samples = gims.shape[0]
 
     if titles is None:
@@ -79,7 +79,7 @@ def plot_gims(gims, file_name, titles=None):
         ax = fig.add_subplot(gs[i // grid_size, i % grid_size], projection=ccrs.PlateCarree())
         gim = gims[i, 0]
         # print(gim.min(), gim.max(), gim.mean(), gim.std())
-        im = plot_global_ionosphere_map(ax, gim, cmap='jet', vmin=0, vmax=100, title=titles[i])
+        im = plot_global_ionosphere_map(ax, gim, cmap=cmap, vmin=vmin, vmax=vmax, title=titles[i])
         ims.append(im)
         ax.axis('off')
     
@@ -92,7 +92,7 @@ def plot_gims(gims, file_name, titles=None):
     if ims:
         cbar_ax = fig.add_subplot(gs[:, -1])
         cbar = plt.colorbar(ims[0], cax=cbar_ax, label='TEC (TECU)')
-        cbar.set_ticks([0, 20, 40, 60, 80, 100])
+        # cbar.set_ticks([0, 20, 40, 60, 80, 100])
 
     print(f'Saving GIM plot to {file_name}')
     plt.tight_layout()
@@ -235,16 +235,17 @@ def main():
                     # Sample a batch from the model
                     jpld_sample = model.sample(n=args.num_samples)
                     jpld_sample = JPLDGIMDataset.unnormalize(jpld_sample)
+                    jpld_sample = jpld_sample.clamp(0, 100)
                     torch.set_rng_state(rng_state)
 
                     jpld_orig_titles = ['JPLD GIM TEC, ' + datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S') for date in jpld_orig_dates]
                     jpld_recon_titles = [t + ' (reconstruction)' for t in jpld_orig_titles]
 
                     recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
-                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, titles=jpld_orig_titles)
+                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, vmin=0, vmax=100, titles=jpld_orig_titles)
 
                     recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
-                    plot_gims(jpld_recon.cpu().numpy(), recon_file, titles=jpld_recon_titles)
+                    plot_gims(jpld_recon.cpu().numpy(), recon_file, vmin=0, vmax=100, titles=jpld_recon_titles)
 
                     sample_titles = [f'JPLD GIM TEC (sampled from model)' for _ in range(args.num_samples)]
                     sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
