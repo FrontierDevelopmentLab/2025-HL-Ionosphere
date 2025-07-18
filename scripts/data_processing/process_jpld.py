@@ -129,9 +129,11 @@ def main():
                 
                 for time_index in range(data.shape[0]):
                     tecmap = data[time_index, :, :]
-                    # Convert numpy datetime64 to seconds since epoch, then to datetime
-                    timestamp_seconds = times[time_index].astype('datetime64[s]').astype(int)
-                    tecmap_date = datetime.datetime.fromtimestamp(timestamp_seconds, tz=datetime.timezone.utc).replace(tzinfo=None)
+                    # Convert from J2000 epoch (2000-01-01 12:00:00 UTC) to datetime
+                    # J2000 epoch is January 1, 2000, 12:00:00 UTC
+                    j2000_epoch = datetime.datetime(2000, 1, 1, 12, 0, 0)
+                    timestamp_seconds = int(times[time_index].astype('datetime64[s]').astype(int))
+                    tecmap_date = j2000_epoch + datetime.timedelta(seconds=timestamp_seconds)
                     
                     # Track first and last timestamps
                     if first_timestamp is None:
@@ -139,6 +141,7 @@ def main():
                     last_timestamp = tecmap_date
                     
                     batch_timestamps.append(tecmap_date)
+                    print(tecmap_date)
                     batch_tecmaps.append(tecmap.tolist())
                     
                     # Write batch when it reaches the specified size
