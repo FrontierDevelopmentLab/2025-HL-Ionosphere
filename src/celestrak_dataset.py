@@ -31,7 +31,6 @@ class CelestrakDataset(torch.utils.data.Dataset):
         if not os.path.exists(data_file):
             raise FileNotFoundError(f"Data file not found: {data_file}")
         df = pd.read_csv(data_file, index_col='Datetime')
-        print(f"Head of data file: \n\n{df.head()}\n")
 
         # Normalize the data if required
         # Note: if
@@ -42,6 +41,8 @@ class CelestrakDataset(torch.utils.data.Dataset):
             self.df = CelestrakDataset.normalize(df)
         else:
             self.df = df
+
+        print(f"Head of data file: \n\n{df.head()}\n")
 
         # Get the date range from the data file
         dates_available = self.find_date_range(data_file, self.df)

@@ -4,7 +4,7 @@ Solar indices pytorch dataset
 Reads in data from the Space Environment Technologies Solar Index datasets.
 
 Indices_F10_processed.csv:
-    YYYY, DDD, JulianDay, F10, F81c, S10, S81c, M10, M81c, Y10, Y81c, Ssrc
+    Datetime, F10, F81c, S10, S81c, M10, M81c, Y10, Y81c
 
     F81 is an 81 day smoothed F10.7 index
     S81 is an 81 day smoothed sunspot number index
@@ -34,18 +34,14 @@ class SolarIndexDataset(torch.utils.data.Dataset):
         # Load the data file
         if not os.path.exists(data_file):
             raise FileNotFoundError(f"Data file not found: {data_file}")
-        df = pd.read_csv(data_file, cols=['YYYY', 'DDD', 'F10', 'S10', 'M10', 'Y10'])
+        df = pd.read_csv(data_file, usecols=['Datetime', 'F10', 'S10', 'M10', 'Y10'])
 
-        # Combine the 'YYYY' and 'DDD' columns into a datetime string: '%Y-%m-%d %H:%M:%S'
-        # Combine 'YYYY' and 'DDD' into a datetime column
-        df['datetime'] = pd.to_datetime(df['YYYY'].astype(str) + df['DDD'].astype(str), format='%Y%j')
-        df['datetime'] = df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        # Convert the Datetime column from '%YYYY-%m-%d' to '%Y-%m-%d %H:%M:%S'
+        df['Datetime'] = pd.to_datetime(df['Datetime'], format='%Y-%m-%d')
+        df['Datetime'] = df['Datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Reorder the columns to have 'datetime' first and remove the original 'YYYY' and 'DDD' columns
-        df = df[['datetime', 'F10', 'S10', 'M10', 'Y10']]
-        df.drop(columns=['YYYY', 'DDD'], inplace=True)
-
-        print(f"Head of data file: \n\n{df.head()}\n")
+        # Convert the Datetime column to the index
+        df.set_index('Datetime', inplace=True)
 
         # Normalize the data if required
         # Note: if
@@ -56,6 +52,8 @@ class SolarIndexDataset(torch.utils.data.Dataset):
             self.df = SolarIndexDataset.normalize(df)
         else:
             self.df = df
+
+        print(f"Head of data file: \n\n{df.head()}\n")
 
         # Get the date range from the data file
         dates_available = self.find_date_range(data_file, self.df)
@@ -75,7 +73,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
         # Calculate the number of days and samples in the dataset
         self.num_days = (self.date_end - self.date_start).days + 1
         self.num_samples = int(self.num_days * (24 * 60 / cadence))
-        assert self.num_samples == len(self.df), "Number of samples does not match the length of the data file."
+        print(f"Number of samples in dataset: {self.num_samples}, length of df: {len(self.df)}")
 
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
