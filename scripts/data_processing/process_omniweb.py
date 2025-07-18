@@ -15,7 +15,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Target directory for csv.gz files', required=True)
     
     args = parser.parse_args()
-
+    
     print(description)    
     
     start_time = datetime.datetime.now()
