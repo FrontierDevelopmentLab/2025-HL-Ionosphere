@@ -3,6 +3,10 @@ Solar indices pytorch dataset
 
 Reads in data from the Celestrak dataset.
 
+Original file columns:
+    DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,
+    AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,F10.7_DATA_TYPE,F10.7_OBS_CENTER81,F10.7_OB
+
 Full dataset information:
     kp_ap_timeseries_processed.csv:
         Datetime, Ap, Kp

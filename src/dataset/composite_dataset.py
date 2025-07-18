@@ -5,7 +5,7 @@ from src.dataset.celestrak_dataset import CelestrakDataset
 from src.dataset.omniweb_dataset import OMNIDataset
 
 # Combine all datasets into one
-class CompositeDatasset(torch.utils.data.Dataset):
+class CompositeDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
             gim_parquet_file, 

@@ -20,10 +20,6 @@ Full dataset information:
         # NaN values fill data timestamp where data is not present
         # each file is actuall a csv.gzip file
 
-    Celestrak
-        DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,
-        AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,F10.7_DATA_TYPE,F10.7_OBS_CENTER81,F10.7_OB
-
 We only use the following columns (for initial research):
 OMNIWeb
     'Year', 'Day', 'Hour', 'Minute',
@@ -44,9 +40,6 @@ OMNIWeb
 
     # Solar particle flux
     'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
-
-
-Celestrak
     
 '''
 
