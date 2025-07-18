@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 import gzip
 import xarray as xr
 import time
+import pandas as pd
 
 # File Naming Convention	YYYY/SSSSDDD#.YYi.nc.gz
 # where:
@@ -107,20 +108,30 @@ def main():
             with gzip.open(file_name, 'rb') as f:
                 try:
                     ds = xr.open_dataset(f, engine='h5netcdf')            
-                    data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (96, 180, 360)
+                    data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (N, 180, 360)
+                    times = ds['time'].values  # Read actual timestamps from the file
                 except Exception as e:
                     print(f"Skipping file due to error: {file_name}: {e}")
                     skipped_files.append(file_name)
                     continue
 
-                if data.shape[0] != 96 or data.shape[1] != 180 or data.shape[2] != 360:
+                # Check if we have valid data dimensions (time can vary, but lat/lon should be 180x360)
+                if len(data.shape) != 3 or data.shape[1] != 180 or data.shape[2] != 360:
                     print(f"Skipping file {file_name} due to unexpected shape: {data.shape}")
+                    skipped_files.append(file_name)
+                    continue
+                
+                # Check if time dimension matches between data and timestamps
+                if data.shape[0] != len(times):
+                    print(f"Skipping file {file_name} due to time dimension mismatch: data={data.shape[0]}, times={len(times)}")
                     skipped_files.append(file_name)
                     continue
                 
                 for time_index in range(data.shape[0]):
                     tecmap = data[time_index, :, :]
-                    tecmap_date = date + datetime.timedelta(minutes=time_index * 15)  # Assuming 15-minute cadence
+                    # Convert numpy datetime64 to seconds since epoch, then to datetime
+                    timestamp_seconds = times[time_index].astype('datetime64[s]').astype(int)
+                    tecmap_date = datetime.datetime.fromtimestamp(timestamp_seconds, tz=datetime.timezone.utc).replace(tzinfo=None)
                     
                     # Track first and last timestamps
                     if first_timestamp is None:
