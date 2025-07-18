@@ -87,7 +87,7 @@ def save_gim_plot(gim, file_name, cmap='jet', vmin=None, vmax=None, title=None):
     plt.close()
 
 # Save a sequence of GIM images as a video, exactly the same as save_gim_plot but for a sequence of images
-def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, titles=None, fps=1):
+def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, titles=None, fps=2):
     print(f'Saving GIM video to {file_name}')
 
     fig = plt.figure(figsize=(10, 5))
