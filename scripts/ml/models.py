@@ -13,7 +13,7 @@ def gaussian_nll(mu, log_sigma, x):
 
 
 class VAE(nn.Module):
-    def __init__(self, z_dim=512, sigma_vae=False, hmi_mask=None, hmi_mask_value=0.5):
+    def __init__(self, z_dim=512, sigma_vae=False):
         super().__init__()
         self.z_dim = z_dim
         self.sigma_vae = sigma_vae

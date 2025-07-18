@@ -6,11 +6,13 @@ import sys
 from matplotlib import pyplot as plt
 import torch
 from torch.utils.data import DataLoader, random_split
+import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
+import glob
 
 
 from util import Tee
@@ -100,6 +102,43 @@ def plot_gims(gims, file_name, cmap='jet', vmin=None, vmax=None, titles=None):
     plt.close()
 
 
+def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
+    print('Saving model to {}'.format(file_name))
+    if isinstance(model, VAE1):
+        checkpoint = {
+            'model': 'VAE1',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'model_z_dim': model.z_dim
+        }
+    else:
+        raise ValueError('Unknown model type: {}'.format(model))
+    torch.save(checkpoint, file_name)
+
+
+def load_model(file_name, device):
+    checkpoint = torch.load(file_name, weights_only=False)
+    if checkpoint['model'] == 'VAE1':
+        model_z_dim = checkpoint['model_z_dim']
+        model = VAE1(z_dim=model_z_dim)
+    else:
+        raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    optimizer = optim.Adam(model.parameters())
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    iteration = checkpoint['iteration']
+    train_losses = checkpoint['train_losses']
+    valid_losses = checkpoint['valid_losses']
+    return model, optimizer, epoch, iteration, train_losses, valid_losses
+
+
 def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
@@ -114,7 +153,9 @@ def main():
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
+    parser.add_argument('--model_type', type=str, choices=['VAE1'], default='VAE1', help='Type of model to use')
     parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
     parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
@@ -157,21 +198,39 @@ def main():
             train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
             valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
+            # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
+            model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
+            if len(model_files) > 0:
+                model_files.sort()
+                model_file = model_files[-1]
+                print('Resuming training from model file: {}'.format(model_file))
+                model, optimizer, epoch, iteration, train_losses, valid_losses = load_model(model_file, device)
+                epoch_start = epoch + 1
+                iteration = iteration + 1
+                print('Next epoch    : {:,}'.format(epoch_start+1))
+                print('Next iteration: {:,}'.format(iteration+1))
+            else:
+                print('Creating new model')
+                if args.model_type == 'VAE1':
+                    model = VAE1(z_dim=512, sigma_vae=False)
+                else:
+                    raise ValueError('Unknown model type: {}'.format(args.model_type))
 
-            model = VAE1(z_dim=512, sigma_vae=False)
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-
-            iteration = 0
-            train_losses = []
-            valid_losses = []
-            model = model.to(device)
+                optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+                iteration = 0
+                epoch_start = 0
+                train_losses = []
+                valid_losses = []
+                model = model.to(device)
 
             model.train()
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
-            for epoch in range(args.epochs):
+            for epoch in range(epoch_start, args.epochs):
+                print('\n*** Epoch {:,}/{:,} started {}'.format(epoch+1, args.epochs, epoch_start))
+                print('*** Training')
                 # Training
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
@@ -192,7 +251,7 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                # print(f'\nValidating')
+                print('*** Validation')
                 model.eval()
                 valid_loss = 0.0
                 with torch.no_grad():
@@ -206,6 +265,11 @@ def main():
 
                 file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
+                # Save model
+                model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
+                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
+
+                # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
                 print(f'Saving plot to {plot_file}')
                 plt.figure(figsize=(10, 5))
@@ -219,7 +283,7 @@ def main():
                 plt.savefig(plot_file)
                 plt.close()
 
-                # sample a batch from the VAE
+                # Plot model outputs
                 model.eval()
                 with torch.no_grad():
                     rng_state = torch.get_rng_state()
