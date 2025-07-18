@@ -55,51 +55,32 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     return im
 
 
-def plot_gims(gims, file_name, cmap='jet', vmin=None, vmax=None, titles=None):
-    num_samples = gims.shape[0]
-
-    if titles is None:
-        titles = [f'GIM TEC' for _ in range(num_samples)]
-
-    if len(titles) != num_samples:
-            raise ValueError("Number of titles must match number of samples.")
-
-    print('Plotting {} samples to {}'.format(num_samples, file_name))
+def plot_gim(gim, file_name, cmap='jet', vmin=None, vmax=None, title=None):
+    """
+    Plots a single 180x360 global ionosphere image.
     
-    # find the best grid size
-    grid_size = int(np.ceil(np.sqrt(num_samples)))
-    
-    # Create figure with Cartopy projection for each subplot
-    fig = plt.figure(figsize=(8 * grid_size + 1, 4 * grid_size))  # Extra width for colorbar
-    
-    # Create main grid for subplots
-    gs = fig.add_gridspec(grid_size, grid_size + 1, width_ratios=[1] * grid_size + [0.05])
-    
-    ims = []  # Store image objects for colorbar
-    
-    for i in range(num_samples):
-        ax = fig.add_subplot(gs[i // grid_size, i % grid_size], projection=ccrs.PlateCarree())
-        gim = gims[i, 0]
-        # print(gim.min(), gim.max(), gim.mean(), gim.std())
-        im = plot_global_ionosphere_map(ax, gim, cmap=cmap, vmin=vmin, vmax=vmax, title=titles[i])
-        ims.append(im)
-        ax.axis('off')
-    
-    # Hide any unused subplots
-    for i in range(num_samples, grid_size * grid_size):
-        ax = fig.add_subplot(gs[i // grid_size, i % grid_size])
-        ax.axis('off')
-    
-    # Add colorbar on the right side
-    if ims:
-        cbar_ax = fig.add_subplot(gs[:, -1])
-        cbar = plt.colorbar(ims[0], cax=cbar_ax, label='TEC (TECU)')
-        # cbar.set_ticks([0, 20, 40, 60, 80, 100])
-
-    print(f'Saving GIM plot to {file_name}')
+    Parameters:
+        gim (np.ndarray): 2D numpy array with shape (180, 360), representing lat [-90, 90], lon [-180, 180].
+        file_name (str): Path to save the plot.
+        cmap (str): Colormap to use for imshow.
+        vmin (float): Minimum value for colormap normalization.
+        vmax (float): Maximum value for colormap normalization.
+        title (str): Title for the plot.
+    """
+    print(f'Plotting GIM to {file_name}')
+    if gim.shape != (180, 360):
+        raise ValueError("Input image must have shape (180, 360) corresponding to lat [-90, 90], lon [-180, 180].")
+    fig = plt.figure(figsize=(10, 5))
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+    im = plot_global_ionosphere_map(ax, gim, cmap=cmap, vmin=vmin, vmax=vmax, title=title)
     plt.tight_layout()
-    plt.savefig(file_name, dpi=150, bbox_inches='tight')
+    
+    # Make colorbar same height as the plot
+    cbar = plt.colorbar(im, ax=ax, label='TEC (TECU)', shrink=0.88, aspect=20)
+    
+    plt.savefig(file_name, dpi=150)
     plt.close()
+
 
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
@@ -229,7 +210,7 @@ def main():
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
             for epoch in range(epoch_start, args.epochs):
-                print('\n*** Epoch {:,}/{:,} started {}'.format(epoch+1, args.epochs, epoch_start))
+                print('\n*** Epoch {:,}/{:,} started'.format(epoch+1, args.epochs))
                 print('*** Training')
                 # Training
                 with tqdm(total=len(train_loader)) as pbar:
@@ -286,34 +267,55 @@ def main():
                 # Plot model outputs
                 model.eval()
                 with torch.no_grad():
+                    num_evals = 4
+                    # Set random seed for reproducibility of evaluation samples across epochs
                     rng_state = torch.get_rng_state()
                     torch.manual_seed(args.seed)
 
                     # Reconstruct a batch from the validation set
                     jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                    if jpld_orig.shape[0] < num_evals:
+                        print(f'Warning: Batch size {jpld_orig.shape[0]} is less than num_evals {num_evals}. Using the batch size for num_evals.')
+                        num_evals = jpld_orig.shape[0]
+                    jpld_orig = jpld_orig[:num_evals]
+                    jpld_orig_dates = jpld_orig_dates[:num_evals]
+
                     jpld_orig = jpld_orig.to(device)
                     jpld_recon, _, _ = model.forward(jpld_orig)
                     jpld_orig = JPLDGIMDataset.unnormalize(jpld_orig)
                     jpld_recon = JPLDGIMDataset.unnormalize(jpld_recon)
 
                     # Sample a batch from the model
-                    jpld_sample = model.sample(n=args.num_samples)
+                    jpld_sample = model.sample(n=num_evals)
                     jpld_sample = JPLDGIMDataset.unnormalize(jpld_sample)
                     jpld_sample = jpld_sample.clamp(0, 100)
                     torch.set_rng_state(rng_state)
+                    # Resume with the original random state
 
-                    jpld_orig_titles = ['JPLD GIM TEC, ' + datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S') for date in jpld_orig_dates]
-                    jpld_recon_titles = [t + ' (reconstruction)' for t in jpld_orig_titles]
+                    # jpld_orig_titles = ['JPLD GIM TEC, ' + datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S') for date in jpld_orig_dates]
+                    # jpld_recon_titles = [t + ' (reconstruction)' for t in jpld_orig_titles]
 
-                    recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
-                    plot_gims(jpld_orig.cpu().numpy(), recon_original_file, vmin=0, vmax=100, titles=jpld_orig_titles)
+                    # recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original.pdf')
+                    # plot_gims(jpld_orig.cpu().numpy(), recon_original_file, vmin=0, vmax=100, titles=jpld_orig_titles)
 
-                    recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
-                    plot_gims(jpld_recon.cpu().numpy(), recon_file, vmin=0, vmax=100, titles=jpld_recon_titles)
+                    # recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction.pdf')
+                    # plot_gims(jpld_recon.cpu().numpy(), recon_file, vmin=0, vmax=100, titles=jpld_recon_titles)
 
-                    sample_titles = [f'JPLD GIM TEC (sampled from model)' for _ in range(args.num_samples)]
-                    sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
-                    plot_gims(jpld_sample.cpu().numpy(), sample_file, titles=sample_titles)
+                    # sample_titles = [f'JPLD GIM TEC (sampled from model)' for _ in range(args.num_samples)]
+                    # sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample.pdf')
+                    # plot_gims(jpld_sample.cpu().numpy(), sample_file, titles=sample_titles)
+
+                    for i in range(num_evals):
+                        date = jpld_orig_dates[i]
+                        date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
+                        recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                        plot_gim(jpld_orig[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+
+                        recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                        plot_gim(jpld_recon[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (reconstruction)')
+
+                        sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                        plot_gim(jpld_sample[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (sampled from model)')
 
 
         elif args.mode == 'test':
