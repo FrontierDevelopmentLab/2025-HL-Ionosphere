@@ -58,6 +58,8 @@ from glob import glob
 import pandas as pd
 import time
 
+stats_file = "/mnt/ionosphere-data/omniweb/processed/dataset_stats/omni_stats.csv"
+stats_df = pd.read_csv(stats_file)
 
 # TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
 # TODO: Compute mean and std, will update data_stats.py
@@ -76,6 +78,7 @@ class OMNIDataset(torch.utils.data.Dataset):
 
         print('OMNI Dataset')
         self.omni_dir = omni_dir
+       
         self.normalize = normalize
         dates_avialable = self.find_date_range(omni_dir)
         if dates_avialable is None:
@@ -124,14 +127,23 @@ class OMNIDataset(torch.utils.data.Dataset):
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
     
     
+    # I think this might be worth making into an instance method since need to pass in also
+    # which columns are expected, but kept it as a static method for consistency between classes
     @staticmethod
-    def normalize(data):
-        raise NotImplementedError("Normalization not implemented yet.")
-        # return torch.log1p(data)
+    def normalize(data, omni_columns): 
+        stats = torch.tensor(stats_df[omni_columns].values, dtype=torch.float32)
+        omni_means = stats[0]
+        omni_stds = stats[1]
+        print(data.shape, omni_means.shape, omni_stds.shape)
+        return (data - omni_means) / omni_stds
 
     @staticmethod
-    def unnormalize(data):
-        raise NotImplementedError("Unnormalization not implemented yet.")
+    def unnormalize(data, omni_columns):
+        stats = torch.tensor(stats_df[omni_columns].values, dtype=torch.float32)
+        omni_means = stats[0]
+        omni_stds = stats[1]
+        
+        return data * omni_stds + omni_means
 
     def __len__(self):
         return self.num_samples
@@ -165,7 +177,7 @@ class OMNIDataset(torch.utils.data.Dataset):
         data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)
 
         if self.normalize:
-            data_tensor = OMNIDataset.normalize(data_tensor)
+            data_tensor = OMNIDataset.normalize(data_tensor,self.omni_columns)
         print()
         return data_tensor, date
 

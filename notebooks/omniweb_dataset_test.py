@@ -6,7 +6,7 @@ def test_omniweb_dataset():
 
     date = datetime.strptime("2023-10-01 00:14:00", "%Y-%m-%d %H:%M:%S")
     # Test the OmniwebDataset class
-    dataset = src.omniweb_dataset.OMNIDataset(omni_dir, normalize=False)
+    dataset = src.omniweb_dataset.OMNIDataset(omni_dir, normalize=True)
     print(date, type(date))
     print(dataset.__getitem__(date))
     
