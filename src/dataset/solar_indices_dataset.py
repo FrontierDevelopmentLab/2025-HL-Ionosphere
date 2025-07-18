@@ -24,7 +24,7 @@ import datetime
 import pandas as pd
 
 class SolarIndexDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=180):
+    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=24*60):
         print('Solar Index Dataset')
 
         self.data_file = data_file
@@ -73,7 +73,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
         # Calculate the number of days and samples in the dataset
         self.num_days = (self.date_end - self.date_start).days + 1
         self.num_samples = int(self.num_days * (24 * 60 / cadence))
-        print(f"Number of samples in dataset: {self.num_samples}, length of df: {len(self.df)}")
+        assert self.num_samples == len(self.df), "Number of samples does not match the length of the data file."
 
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
