@@ -18,7 +18,7 @@ Full dataset information:
         # 'PC_N', 'Mach_sonic',
         # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV
         # NaN values fill data timestamp where data is not present
-        # each file is actuall a csv.gzip file
+
 
     Celestrak
         DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,
@@ -98,8 +98,8 @@ class OMNIDataset(torch.utils.data.Dataset):
                 # Geomagnetic
                 'AE', 'AL', 'AU', 'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
 
-                # Solar particle flux
-                'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
+                # # Solar particle flux # Unusable in Omni dataset
+                # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
             ]
         else:
             self.omni_columns = omni_columns
@@ -168,18 +168,20 @@ class OMNIDataset(torch.utils.data.Dataset):
         date = date.replace(second = 0)
         date = date.replace(minute = nearest_minute)
 
-        filename = os.path.join(self.omni_dir, f"omni_5min{date.year:04d}.csv")
+        filename = os.path.join(self.omni_dir, f"omni_5min_{date.year:04d}_cleaned.csv") # filename cleaned postfix should maybe be removed
         datetime_str = datetime.datetime.strftime(date, "%Y-%m-%d %H:%M:%S")
 
-        df = pd.read_csv(filename, compression="gzip")
+        df = pd.read_csv(filename)
         data_row = df[df["Datetime"] == datetime_str]
-
+        print(f"data_row: {data_row}")
+        print(f"data_row: {data_row[self.omni_columns].values}")
+        print(f"datetime str: {datetime_str}")
         data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)
 
         if self.normalize:
             data_tensor = OMNIDataset.normalize(data_tensor,self.omni_columns)
         print()
-        return data_tensor, date
+        return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 
     @staticmethod
     def find_date_range(directory):
@@ -189,8 +191,8 @@ class OMNIDataset(torch.utils.data.Dataset):
         if len(files) == 0:
             return None
 
-        date_start_str = pd.read_csv(files[0], compression="gzip")["Datetime"].iloc[0] # '2006-01-01 00:00:00' example
-        date_end_str = pd.read_csv(files[-1], compression="gzip")["Datetime"].iloc[-1] # '2006-01-01 00:00:00' example
+        date_start_str = pd.read_csv(files[0])["Datetime"].iloc[0] # '2006-01-01 00:00:00' example
+        date_end_str = pd.read_csv(files[-1])["Datetime"].iloc[-1] # '2006-01-01 00:00:00' example
         date_start = datetime.datetime.strptime(date_start_str, "%Y-%m-%d %H:%M:%S")
         date_end = datetime.datetime.strptime(date_end_str, "%Y-%m-%d %H:%M:%S")
 
