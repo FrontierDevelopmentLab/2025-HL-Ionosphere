@@ -153,7 +153,7 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
-    parser.add_argument('--jpld_filename', type=str, default='jpld_gim/parquet/jpld_gim_201005130000_202407312345.parquet', help='JPLD GIM dataset directory')
+    parser.add_argument('--jpld_filename', type=str, default='jpld_gim/hdf5/jpld_gim_201005130000_201009182345.h5', help='JPLD GIM dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')

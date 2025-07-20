@@ -8,7 +8,7 @@ import xarray as xr
 from functools import lru_cache
 import pandas as pd
 import numpy as np
-import pyarrow.parquet as pq
+import h5py
 
 
 JPLDGIM_mean = 14.878721237182617
@@ -219,28 +219,28 @@ JPLDGIM_std = 14.894197463989258
         
 #         return tecmap, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 
-# More robust implementation that handles variable row group sizes
+# HDF5-based dataset for JPLD GIM
 class JPLDGIMDataset(Dataset):
-    def __init__(self, parquet_file, date_start=None, date_end=None, normalize=True):
-        self.parquet_file = parquet_file
+    def __init__(self, hdf5_file, date_start=None, date_end=None, normalize=True):
+        self.hdf5_file = hdf5_file
         self.normalize = normalize
+        self._h5_file = None  # Will be lazily initialized per worker
+        self._current_pid = None  # Track process ID for multiprocessing safety
         
-        # Open parquet file with PyArrow
-        self.parquet_table = pq.ParquetFile(parquet_file)
+        # Open HDF5 file temporarily to get metadata
+        with h5py.File(hdf5_file, 'r') as f:
+            # Read all timestamps to determine available date range
+            all_timestamps = f['timestamps'][:]
+            
+            # Convert timestamps to datetime objects
+            all_datetimes = [
+                datetime.datetime.fromisoformat(ts.decode('utf-8') if isinstance(ts, bytes) else ts)
+                for ts in all_timestamps
+            ]
         
-        # Build row group index mapping
-        self._build_row_group_index()
-        
-        # Read only the date column to get metadata
-        date_table = self.parquet_table.read(columns=['date'])
-        all_dates = date_table['date'].to_pylist()
-        
-        # Convert to datetime objects for filtering
-        all_datetimes = [pd.to_datetime(date).to_pydatetime() for date in all_dates]
-        
-        # Determine date range
+        # Determine available date range
         available_start = min(all_datetimes)
-        available_end = max(all_datetimes) + datetime.timedelta(minutes=15)  # Add 15 minutes to include the last sample
+        available_end = max(all_datetimes)
         
         # Set date range (use available range if not specified)
         self.date_start = date_start if date_start is not None else available_start
@@ -254,52 +254,57 @@ class JPLDGIMDataset(Dataset):
                            f"is outside the available data range ({available_start.strftime('%Y-%m-%d')} to {available_end.strftime('%Y-%m-%d')}).")
         
         # Filter data by date range
-        self._filter_by_date_range(all_dates, all_datetimes)
+        self._filter_by_date_range(all_timestamps, all_datetimes)
         
         print(f"Dataset date range: {self.date_start.strftime('%Y-%m-%d')} to {self.date_end.strftime('%Y-%m-%d')}")
-        print(f"Number of samples: {len(self.dates):,}")
+        print(f"Number of samples: {len(self.valid_indices):,}")
+        
+        # Get dataset info
+        total_size = os.path.getsize(hdf5_file)
+        print(f"HDF5 file size: {total_size / (1024**3):.2f} GiB")
     
-    def _filter_by_date_range(self, all_dates, all_datetimes):
-        """Filter dates and create mappings based on the specified date range"""
+    def _get_h5_file(self):
+        """Get HDF5 file handle, opening it lazily per worker process"""
+        current_pid = os.getpid()
+        
+        # Check if we need to open/reopen the file
+        if self._h5_file is None or self._current_pid != current_pid:
+            # Close existing handle if it exists (shouldn't happen, but safety first)
+            if self._h5_file is not None:
+                try:
+                    self._h5_file.close()
+                except:
+                    pass
+            
+            # Open new handle for this process
+            self._h5_file = h5py.File(self.hdf5_file, 'r')
+            self._current_pid = current_pid
+            
+        return self._h5_file
+    
+    def _filter_by_date_range(self, all_timestamps, all_datetimes):
+        """Filter data indices based on the specified date range"""
         # Find indices within the date range
         valid_indices = []
-        filtered_dates = []
+        filtered_timestamps = []
         filtered_datetimes = []
         
         for idx, dt in enumerate(all_datetimes):
             if self.date_start <= dt <= self.date_end:
                 valid_indices.append(idx)
-                filtered_dates.append(all_dates[idx])
+                filtered_timestamps.append(all_timestamps[idx])
                 filtered_datetimes.append(dt)
         
         # Store filtered data
-        self.dates = filtered_dates
-        self._length = len(self.dates)
+        self.valid_indices = valid_indices
+        self.timestamps = filtered_timestamps
+        self.datetimes = filtered_datetimes
+        self._length = len(valid_indices)
         
         # Create mapping from datetime to filtered index
-        self._date_to_index = {
+        self._date_to_filtered_index = {
             dt: idx for idx, dt in enumerate(filtered_datetimes)
         }
-        
-        # Create mapping from filtered index to original index
-        self._filtered_to_original = {
-            filtered_idx: original_idx 
-            for filtered_idx, original_idx in enumerate(valid_indices)
-        }
-    
-    def _build_row_group_index(self):
-        """Build a mapping from global row index to (row_group, local_index)"""
-        self.row_group_mapping = []
-        cumulative_rows = 0
-        
-        for rg_idx in range(self.parquet_table.num_row_groups):
-            rg_metadata = self.parquet_table.metadata.row_group(rg_idx)
-            num_rows = rg_metadata.num_rows
-            
-            for local_idx in range(num_rows):
-                self.row_group_mapping.append((rg_idx, local_idx))
-            
-            cumulative_rows += num_rows
     
     @staticmethod
     def normalize(data):
@@ -314,9 +319,9 @@ class JPLDGIMDataset(Dataset):
 
     def __getitem__(self, index):
         if isinstance(index, datetime.datetime):
-            if index not in self._date_to_index:
+            if index not in self._date_to_filtered_index:
                 raise KeyError(f"Date {index.isoformat()} not found in dataset")
-            filtered_index = self._date_to_index[index]
+            filtered_index = self._date_to_filtered_index[index]
         elif isinstance(index, int):
             if index < 0 or index >= self._length:
                 raise IndexError("Index out of range for the dataset.")
@@ -324,22 +329,34 @@ class JPLDGIMDataset(Dataset):
         else:
             raise TypeError("Index must be an integer or a datetime object.")
         
-        # Map filtered index to original index
-        original_index = self._filtered_to_original[filtered_index]
+        # Map filtered index to original HDF5 index
+        original_index = self.valid_indices[filtered_index]
         
-        # Get row group and local index for original data
-        row_group_idx, local_index = self.row_group_mapping[original_index]
+        # Get the HDF5 file handle (lazy initialization per worker)
+        h5_file = self._get_h5_file()
         
-        # Read the specific row group and slice the target row
-        table = self.parquet_table.read_row_group(row_group_idx)
-        row = table.slice(local_index, 1).to_pandas().iloc[0]
+        # Read single TEC map and timestamp
+        tecmap = h5_file['tecmaps'][original_index]  # Shape: (180, 360)
+        timestamp = h5_file['timestamps'][original_index]
         
-        tecmap = torch.from_numpy(np.array(row['tecmap'].tolist(), dtype=np.float32))
+        # Convert to tensor and normalize if requested
+        tecmap = torch.from_numpy(tecmap.astype(np.float32))
         
         if self.normalize:
             tecmap = JPLDGIMDataset.normalize(tecmap)
             
-        tecmap = tecmap.unsqueeze(0)  # Add a channel dimension
-        date = row['date']
+        tecmap = tecmap.unsqueeze(0)  # Add channel dimension: (1, 180, 360)
         
-        return tecmap, date.isoformat() if hasattr(date, 'isoformat') else str(date)
+        # Handle timestamp decoding
+        if isinstance(timestamp, bytes):
+            timestamp = timestamp.decode('utf-8')
+        
+        return tecmap, timestamp
+    
+    def __del__(self):
+        """Clean up HDF5 file handle when dataset is destroyed"""
+        if hasattr(self, '_h5_file') and self._h5_file is not None:
+            try:
+                self._h5_file.close()
+            except:
+                pass  # Ignore errors during cleanup
