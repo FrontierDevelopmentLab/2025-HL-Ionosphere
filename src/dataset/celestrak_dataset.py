@@ -29,7 +29,7 @@ class CelestrakDataset(torch.utils.data.Dataset):
 
         self.data_file = data_file
         self.normalize = normalize
-        self.cadence = cadence  # in minutes
+        self.sampled_cadence = cadence  # in minutes
 
         # Load the data file
         if not os.path.exists(data_file):
@@ -65,8 +65,7 @@ class CelestrakDataset(torch.utils.data.Dataset):
 
         # Calculate the number of days and samples in the dataset
         self.num_days = (self.date_end - self.date_start).days + 1
-        self.num_samples = int(self.num_days * (24 * 60 / cadence))
-        assert self.num_samples == len(self.df), "Number of samples does not match the length of the data file."
+        self.num_samples = int(self.num_days * (24 * 60 / self.sampled_cadence))
 
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
@@ -108,23 +107,36 @@ class CelestrakDataset(torch.utils.data.Dataset):
         return self.num_samples
 
     def __getitem__(self, index):
+        # If it's a datetime object, convert it to the corresponding index in the df
         if isinstance(index, datetime.datetime):
+            # Edge case
+            if index < self.date_start or index > self.date_end:
+                raise IndexError(f"Date {index} is outside the dataset range: {self.date_start} to {self.date_end}.")
+
+            # Convert datetime to string for indexing
             date = index
             date_string = date.strftime('%Y-%m-%d %H:%M:%S')
-            df_index = self.df.index.searchsorted(date_string)
+            df_index = self.df.index.searchsorted(date_string, side='left')
+
+        # If it is an integer, find the closest date based on the index
         elif isinstance(index, int):
+            # Edge case
             if index < 0 or index >= self.num_samples:
                 raise IndexError("Index out of range for the dataset.")
-            df_index = index
-            date_string = self.df.index[df_index]
+            
+            # Calculate the date based on the index
+            minutes = index * self.sampled_cadence
+            date = self.date_start + datetime.timedelta(minutes=minutes)
+            date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+            df_index = self.df.index.searchsorted(date_string, side='left')
         else:
             raise TypeError("Index must be an integer or a datetime object.")
-
-        print(f"Index in DataFrame: {df_index}, Date: {date_string}, value: {self.df.iloc[df_index].values}")
+        
+        # print(f"Index in DataFrame: {df_index}, Date: {date_string}, value: {self.df.iloc[df_index].values}")
 
         # Create a 1D tensor listing the associated values with date
         data = self.df.iloc[df_index].values
         data_tensor = torch.tensor(data, dtype=torch.float32)
 
-        return data_tensor #, date ?
+        return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 

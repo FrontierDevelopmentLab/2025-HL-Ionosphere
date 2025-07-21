@@ -5,12 +5,12 @@ import sys
 import pprint
 from tqdm import tqdm
 from glob import glob
-import pyarrow as pa
-import pyarrow.parquet as pq
+import h5py
 import gzip
 import xarray as xr
 import time
 import pandas as pd
+import numpy as np
 
 # File Naming Convention	YYYY/SSSSDDD#.YYi.nc.gz
 # where:
@@ -46,12 +46,11 @@ def jpld_filename_to_date(file_name):
 
 
 def main():
-    description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, JPLD GIM data converter raw to Parquet'
+    description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, JPLD GIM data converter raw to HDF5'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--input_dir', type=str, help='Input directory with raw files', required=True)
-    parser.add_argument('--target_dir', type=str, help='Target directory for Parquet files', required=True)
+    parser.add_argument('--target_dir', type=str, help='Target directory for HDF5 files', required=True)
     parser.add_argument('--num_max_files', type=int, default=None, help='Maximum number of files to process')
-    parser.add_argument('--batch_size', type=int, default=100, help='Batch size for writing to Parquet')
     
     args = parser.parse_args()
 
@@ -81,108 +80,83 @@ def main():
         file_names = file_names[:args.num_max_files]
         print('Processing only the first {:,} files.'.format(args.num_max_files))
 
-    # Define schema for Parquet file
-    schema = pa.schema([
-        ('date', pa.timestamp('s')),
-        ('tecmap', pa.list_(pa.list_(pa.float32())))
-    ])
-
     # Create output filename with placeholder dates (will update later)
-    target_file = os.path.join(args.target_dir, 'jpld_gim_temp.parquet')
+    target_file = os.path.join(args.target_dir, 'jpld_gim_temp.h5')
     
-    # Initialize batch data and counters
-    batch_timestamps = []
-    batch_tecmaps = []
+    # Initialize counters
     skipped_files = []
     total_records = 0
     first_timestamp = None
     last_timestamp = None
     
-    # Create ParquetWriter
-    parquet_writer = pq.ParquetWriter(target_file, schema, compression='snappy')
+    # Create HDF5 file
+    h5_file = h5py.File(target_file, 'w')
     
     try:
+        # Create datasets with initial size and enable resizing
+        # Use LZF compression for better training performance
+        timestamps_dataset = h5_file.create_dataset(
+            'timestamps', 
+            (0,), 
+            maxshape=(None,), 
+            dtype=h5py.special_dtype(vlen=str),
+            compression='lzf',  # LZF compression - much faster than gzip
+            chunks=(512,)  # Larger chunks = fewer I/O operations
+        )
+        
+        tecmaps_dataset = h5_file.create_dataset(
+            'tecmaps', 
+            (0, 180, 360), 
+            maxshape=(None, 180, 360), 
+            dtype=np.float32,
+            compression='lzf',  # LZF compression - ~3x faster decompression than gzip
+            chunks=(64, 180, 360)  # Larger chunks for better throughput
+        )
+        
         for file_name in tqdm(file_names, desc='Processing files'):
-            date = jpld_filename_to_date(file_name)
-            
             with gzip.open(file_name, 'rb') as f:
                 try:
                     ds = xr.open_dataset(f, engine='h5netcdf')            
-                    data = ds['tecmap'].values # this will be a 3d array (time, lat, lon) with shape (N, 180, 360)
-                    times = ds['time'].values  # Read actual timestamps from the file
+                    data = ds['tecmap'].values  # Shape: (N, 180, 360)
+                    times = ds['time'].values   # Shape: (N,)
                 except Exception as e:
-                    print(f"Skipping file due to error: {file_name}: {e}")
-                    skipped_files.append(file_name)
                     continue
 
-                # Check if we have valid data dimensions (time can vary, but lat/lon should be 180x360)
-                if len(data.shape) != 3 or data.shape[1] != 180 or data.shape[2] != 360:
-                    print(f"Skipping file {file_name} due to unexpected shape: {data.shape}")
-                    skipped_files.append(file_name)
-                    continue
+                # Process entire file at once
+                j2000_epoch = datetime.datetime(2000, 1, 1, 12, 0, 0)
+                file_timestamps = []
                 
-                # Check if time dimension matches between data and timestamps
-                if data.shape[0] != len(times):
-                    print(f"Skipping file {file_name} due to time dimension mismatch: data={data.shape[0]}, times={len(times)}")
-                    skipped_files.append(file_name)
-                    continue
-                
-                for time_index in range(data.shape[0]):
-                    tecmap = data[time_index, :, :]
-                    # Convert from J2000 epoch (2000-01-01 12:00:00 UTC) to datetime
-                    # J2000 epoch is January 1, 2000, 12:00:00 UTC
-                    j2000_epoch = datetime.datetime(2000, 1, 1, 12, 0, 0)
+                for time_index in range(len(times)):
                     timestamp_seconds = int(times[time_index].astype('datetime64[s]').astype(int))
                     tecmap_date = j2000_epoch + datetime.timedelta(seconds=timestamp_seconds)
-                    
+                    file_timestamps.append(tecmap_date.isoformat())
+                
                     # Track first and last timestamps
                     if first_timestamp is None:
                         first_timestamp = tecmap_date
                     last_timestamp = tecmap_date
-                    
-                    batch_timestamps.append(tecmap_date)
-                    print(tecmap_date)
-                    batch_tecmaps.append(tecmap.tolist())
-                    
-                    # Write batch when it reaches the specified size
-                    if len(batch_timestamps) >= args.batch_size:
-                        datetime_array = pa.array(batch_timestamps, type=pa.timestamp('s'))
-                        tecmap_array = pa.array(batch_tecmaps, type=pa.list_(pa.list_(pa.float32())))
-                        
-                        batch_table = pa.table({
-                            'date': datetime_array,
-                            'tecmap': tecmap_array
-                        })
-                        
-                        parquet_writer.write_table(batch_table)
-                        total_records += len(batch_timestamps)
-                        
-                        # Clear batch data
-                        batch_timestamps = []
-                        batch_tecmaps = []
-        
-        # Write remaining data
-        if batch_timestamps:
-            datetime_array = pa.array(batch_timestamps, type=pa.timestamp('s'))
-            tecmap_array = pa.array(batch_tecmaps, type=pa.list_(pa.list_(pa.float32())))
-            
-            batch_table = pa.table({
-                'date': datetime_array,
-                'tecmap': tecmap_array
-            })
-            
-            parquet_writer.write_table(batch_table)
-            total_records += len(batch_timestamps)
+
+                # Write entire file's data at once
+                current_size = timestamps_dataset.shape[0]
+                new_size = current_size + len(file_timestamps)
+                
+                timestamps_dataset.resize((new_size,))
+                tecmaps_dataset.resize((new_size, 180, 360))
+                
+                timestamps_dataset[current_size:new_size] = file_timestamps
+                tecmaps_dataset[current_size:new_size] = data
+                
+                total_records += len(file_timestamps)
             
     finally:
-        # Close the writer
-        parquet_writer.close()
+        # Close the HDF5 file
+        h5_file.close()
     
     # Rename file with proper date range
     if first_timestamp and last_timestamp:
         date_start = first_timestamp.strftime('%Y%m%d%H%M')
         date_end = last_timestamp.strftime('%Y%m%d%H%M')
-        final_target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.parquet')
+        final_target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.h5')
         os.rename(target_file, final_target_file)
         target_file = final_target_file
 
@@ -192,7 +166,7 @@ def main():
         for skipped_file in skipped_files:
             print(f' - {skipped_file}')
 
-    print('Parquet dataset created successfully.')
+    print('HDF5 dataset created successfully.')
     print('Total records   : {:,}'.format(total_records))
     print('Start date      : {}'.format(first_timestamp))
     print('End date        : {}'.format(last_timestamp))
