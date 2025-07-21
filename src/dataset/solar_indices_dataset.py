@@ -123,6 +123,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
             # Convert datetime to string for indexing
             date = index
             date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+            # Handle the case where the date is not exactly in the index, find the index to the left
             df_index = self.df.index.searchsorted(date_string, side='left')
 
         # If it is an integer, find the closest date based on the index
@@ -135,6 +136,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
             minutes = index * self.sampled_cadence
             date = self.date_start + datetime.timedelta(minutes=minutes)
             date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+            # Handle the case where the date is not exactly in the index, find the index to the left
             df_index = self.df.index.searchsorted(date_string, side='left')
         else:
             raise TypeError("Index must be an integer or a datetime object.")
