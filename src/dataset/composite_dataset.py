@@ -3,8 +3,16 @@ from src.dataset.gim_dataset import JPLDGIMDataset
 from src.dataset.solar_indices_dataset import SolarIndexDataset
 from src.dataset.celestrak_dataset import CelestrakDataset
 from src.dataset.omniweb_dataset import OMNIDataset
-
+# from gim_dataset import JPLDGIMDataset
+# from solar_indices_dataset import SolarIndexDataset
+# from celestrak_dataset import CelestrakDataset
+# from omniweb_dataset import OMNIDataset
+import datetime
 # Combine all datasets into one
+
+# TODO : Currently if start date isnt set each dataset will ahve a different start date and their integer based indexing will not be synched up 
+# with one another, should have getter/setter methods for start / end date and set start / end date as the intersction between all datasets OR 
+# need a more intelligent integer index to timestamp conversion within each dataset class 
 class CompositeDatasset(torch.utils.data.Dataset):
     def __init__(
             self, 
@@ -16,6 +24,7 @@ class CompositeDatasset(torch.utils.data.Dataset):
             date_end=None, 
             normalize=True
     ):
+    
         
         self.gim_dataset = JPLDGIMDataset(gim_parquet_file, date_start, date_end, normalize)
         self.celestrak_dataset = CelestrakDataset(celestrak_data_file, date_start, date_end, normalize)
@@ -32,7 +41,7 @@ class CompositeDatasset(torch.utils.data.Dataset):
         return self._length
 
     def __getitem__(self, index):
-        if isinstance(index, datetime.datetime or isinstance(index, int)):
+        if isinstance(index, datetime.datetime) or isinstance(index, int):
             gim_data = self.gim_dataset[index]
             celestrak_data = self.celestrak_dataset[index]
             solar_index_data = self.solar_index_dataset[index]

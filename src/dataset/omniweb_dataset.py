@@ -50,6 +50,11 @@ Celestrak
     
 '''
 
+# TODO: should be made more robust to certain conditions (what if omni_rows empty) Also what if other parameters have major nan issues like the goes rows, this is more of a preprocessing problem
+# TODO: not great to load the csvs each time, 
+# 
+
+
 import torch
 import os
 import numpy as np
@@ -173,7 +178,7 @@ class OMNIDataset(torch.utils.data.Dataset):
 
         df = pd.read_csv(filename)
         data_row = df[df["Datetime"] == datetime_str]
-        print(f"data_row: {data_row}")
+        print(f"data_row: {data_row[self.omni_columns]}")
         print(f"data_row: {data_row[self.omni_columns].values}")
         print(f"datetime str: {datetime_str}")
         data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)

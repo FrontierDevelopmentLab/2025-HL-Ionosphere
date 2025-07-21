@@ -113,6 +113,7 @@ class CelestrakDataset(torch.utils.data.Dataset):
                 raise IndexError("Index out of range for the dataset.")
             df_index = index
             date_string = self.df.index[df_index]
+            date = datetime.datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S') # convert to datetime obj for return
         else:
             raise TypeError("Index must be an integer or a datetime object.")
 
@@ -122,5 +123,5 @@ class CelestrakDataset(torch.utils.data.Dataset):
         data = self.df.iloc[df_index].values
         data_tensor = torch.tensor(data, dtype=torch.float32)
 
-        return data_tensor #, date ?
+        return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 
