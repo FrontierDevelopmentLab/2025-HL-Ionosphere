@@ -33,8 +33,6 @@ class JPLDGIMDataset(Dataset):
         # # Convert to datetime objects for filtering
         # all_datetimes = [pd.to_datetime(date).to_pydatetime() for date in all_dates]
 
-        ################ CHATGPT SPEED UP FIX MAY BE BUGGY ################
-
         # Faster date read using pyarrow.dataset
         dataset = ds.dataset(parquet_file, format="parquet")
         df = dataset.to_table(columns=['date']).to_pandas()
@@ -43,8 +41,6 @@ class JPLDGIMDataset(Dataset):
         all_dates = df['date'].tolist()
         all_datetimes = all_dates # NOTE: the type of this <class 'pandas._libs.tslibs.timestamps.Timestamp'>
   
-        ################ CHATGPT SPEED UP FIX MAY BE BUGGY ################
-
         # Determine date range
         available_start = min(all_datetimes)
         available_end = max(all_datetimes) + datetime.timedelta(minutes=15)  # Add 15 minutes to include the last sample
