@@ -153,12 +153,12 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
-    parser.add_argument('--jpld_filename', type=str, default='jpld_gim/hdf5/jpld_gim_201005130000_201009182345.h5', help='JPLD GIM dataset directory')
+    parser.add_argument('--jpld_filename', type=str, default='jpld_gim/hdf5/jpld_gim_201005130000_201008202345.h5', help='JPLD GIM dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
-    # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
-    # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2010-08-20T00:00:00', help='End date')
+    # parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
+    # parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
@@ -209,7 +209,15 @@ def main():
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
 
-            train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+            train_loader = DataLoader(
+                dataset_train, 
+                batch_size=args.batch_size, 
+                shuffle=True,
+                num_workers=8,
+                pin_memory=True,
+                persistent_workers=True,
+                prefetch_factor=8,  # Increase prefetching
+            )
             valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
