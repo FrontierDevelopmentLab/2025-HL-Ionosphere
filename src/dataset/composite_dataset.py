@@ -1,19 +1,20 @@
 import torch
-# from src.dataset.gim_dataset import JPLDGIMDataset
-# from src.dataset.solar_indices_dataset import SolarIndexDataset
-# from src.dataset.celestrak_dataset import CelestrakDataset
-# from src.dataset.omniweb_dataset import OMNIDataset
-from gim_dataset import JPLDGIMDataset
-from solar_indices_dataset import SolarIndexDataset
-from celestrak_dataset import CelestrakDataset
-from omniweb_dataset import OMNIDataset
+import datetime
+from src.dataset.gim_dataset import JPLDGIMDataset
+from src.dataset.solar_indices_dataset import SolarIndexDataset
+from src.dataset.celestrak_dataset import CelestrakDataset
+from src.dataset.omniweb_dataset import OMNIDataset
+# from gim_dataset import JPLDGIMDataset
+# from solar_indices_dataset import SolarIndexDataset
+# from celestrak_dataset import CelestrakDataset
+# from omniweb_dataset import OMNIDataset
 import datetime
 # Combine all datasets into one
 
 # TODO : Currently if start date isnt set each dataset will ahve a different start date and their integer based indexing will not be synched up 
 # with one another, should have getter/setter methods for start / end date and set start / end date as the intersction between all datasets OR 
 # need a more intelligent integer index to timestamp conversion within each dataset class 
-class CompositeDatasset(torch.utils.data.Dataset):
+class CompositeDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
             gim_parquet_file, 
@@ -24,14 +25,13 @@ class CompositeDatasset(torch.utils.data.Dataset):
             date_end=None, 
             normalize=True
     ):
-    
         
         self.gim_dataset = JPLDGIMDataset(gim_parquet_file, date_start, date_end, normalize)
         self.celestrak_dataset = CelestrakDataset(celestrak_data_file, date_start, date_end, normalize)
         self.solar_index_dataset = SolarIndexDataset(solar_index_data_file, date_start, date_end, normalize)
         self.omniweb_dataset = OMNIDataset(omniweb_dir, date_start, date_end, normalize)
 
-        if date_start is None or date_end is None:
+        if date_start is None or date_end is None: 
             gim_start, gim_end = self.gim_dataset.get_date_range()
             celestrak_start, celestrak_end = self.celestrak_dataset.get_date_range()
             solar_index_start, solar_index_end = self.solar_index_dataset.get_date_range()
