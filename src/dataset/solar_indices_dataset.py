@@ -82,6 +82,13 @@ class SolarIndexDataset(torch.utils.data.Dataset):
         size_on_disk = sum(os.path.getsize(f) for f in glob.glob(data_file))
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
 
+
+    def get_date_range(self):
+        return self.date_start, self.date_end
+
+    def set_date_range(self, date_start, date_end):
+        self.date_start, self.date_end = date_start, date_end
+        
     @staticmethod
     def find_date_range(data_file, df):
         print("Checking date range of data in file: {}".format(data_file))

@@ -101,10 +101,11 @@ class OMNIDataset(torch.utils.data.Dataset):
                 #'P_dyn', 'E_field', 'Beta', 'Mach_Alfven',
 
                 # Geomagnetic
-                'AE', 'AL', 'AU', 'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
+                # 'AE', 'AL', 'AU', #  (Missing in 2019-2020)
+                'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
 
                 # # Solar particle flux # Unusable in Omni dataset
-                # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
+                # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV' # (missing)
             ]
         else:
             self.omni_columns = omni_columns
@@ -187,6 +188,13 @@ class OMNIDataset(torch.utils.data.Dataset):
             data_tensor = OMNIDataset.normalize(data_tensor,self.omni_columns)
         print()
         return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
+
+
+    def get_date_range(self):
+        return self.date_start, self.date_end
+    
+    def set_date_range(self, date_start, date_end):
+        self.date_start, self.date_end = date_start, date_end
 
     @staticmethod
     def find_date_range(directory):
