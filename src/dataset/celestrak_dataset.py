@@ -158,7 +158,7 @@ import datetime
 import pandas as pd
 
 class CelestrakDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=180):
+    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=15): # default sampled cadence set to candence of JPLD GIM 
         print('Celestrak Dataset')
 
         self.data_file = data_file

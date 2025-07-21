@@ -24,7 +24,7 @@ import datetime
 import pandas as pd
 
 class SolarIndexDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=24*60):
+    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=15): # cadence is set to match JPLD GIM dataset
         print('Solar Index Dataset')
 
         self.data_file = data_file
