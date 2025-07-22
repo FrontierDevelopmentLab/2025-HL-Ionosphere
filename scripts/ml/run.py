@@ -18,8 +18,8 @@ import glob
 
 from util import Tee
 from util import set_random_seed
-from models import VAE1
-from datasets import JPLD
+from models import VAE1, IonCastConvLSTM
+from datasets import JPLD, Sequences
 
 
 matplotlib.use('Agg')
@@ -37,7 +37,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
         vmax (float): Maximum value for colormap normalization.
     """
     if image.shape != (180, 360):
-        raise ValueError("Input image must have shape (180, 360) corresponding to lat [-90, 90], lon [-180, 180].")
+        raise ValueError("Input image must have shape (180, 360), but got shape {}.".format(image.shape))
 
     im = ax.imshow(
         image,
@@ -88,6 +88,7 @@ def save_gim_plot(gim, file_name, cmap='jet', vmin=None, vmax=None, title=None):
 
 # Save a sequence of GIM images as a video, exactly the same as save_gim_plot but for a sequence of images
 def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, titles=None, fps=2):
+    # gim_sequence has shape (num_frames, 180, 360)
     print(f'Saving GIM video to {file_name}')
 
     fig = plt.figure(figsize=(10, 5))
@@ -124,6 +125,17 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, e
             'model_z_dim': model.z_dim,
             'eval_data': eval_data
         }
+    elif isinstance(model, IonCastConvLSTM):
+        checkpoint = {
+            'model': 'IonCastConvLSTM',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'eval_data': eval_data
+        }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
@@ -134,6 +146,8 @@ def load_model(file_name, device):
     if checkpoint['model'] == 'VAE1':
         model_z_dim = checkpoint['model_z_dim']
         model = VAE1(z_dim=model_z_dim)
+    elif checkpoint['model'] == 'IonCastConvLSTM':
+        model = IonCastConvLSTM()
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -155,21 +169,23 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
-    parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    # parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
-    # parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
+    # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
+    # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
-    parser.add_argument('--model_type', type=str, choices=['VAE1'], default='VAE1', help='Type of model to use')
-    parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
+    parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
+    parser.add_argument('--valid_proportion', type=float, default=0.1, help='Proportion of data to use for validation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
+    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
+    parser.add_argument('--eval_window', type=int, default=4, help='Evaluation window size for the model')
 
     args = parser.parse_args()
 
@@ -200,11 +216,23 @@ def main():
             date_end = datetime.datetime.fromisoformat(args.date_end)
 
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-            dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
 
-            valid_size = int(args.valid_proportion * len(dataset_jpld))
-            train_size = len(dataset_jpld) - valid_size
-            dataset_train, dataset_valid = random_split(dataset_jpld, [train_size, valid_size])
+            if args.model_type == 'VAE1':
+                dataset = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
+            elif args.model_type == 'IonCastConvLSTM':
+                dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
+                dataset = Sequences(
+                    datasets=[dataset_jpld],
+                    delta_minutes=15,  # 15 minutes for JPLD
+                    sequence_length=args.context_window + args.eval_window
+                )
+            else:
+                raise ValueError('Unknown model type: {}'.format(args.model_type))
+
+
+            valid_size = int(args.valid_proportion * len(dataset))
+            train_size = len(dataset) - valid_size
+            dataset_train, dataset_valid = random_split(dataset, [train_size, valid_size])
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
@@ -235,6 +263,20 @@ def main():
                 print('Creating new model')
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
+                    eval_data = {
+                    'eval_reconstructions': None, # numpy array of shape (num_evals, num_epochs, 180, 360)
+                    'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 180, 360)
+                    'eval_reconstructions_dates': None, # list of dates of length num_evals
+                    'eval_samples': None # numpy array of shape (num_evals, num_epochs, 180, 360)
+                    }
+                elif args.model_type == 'IonCastConvLSTM':
+                    model = IonCastConvLSTM(input_channels=1, output_channels=1)
+                    eval_data = {
+                        'eval_forecasts': None, # numpy array of shape (num_epochs, num_evals, eval_window, 180, 360)
+                        'eval_forecasts_originals': None, # numpy array of shape (num_evals, eval_window, 180, 360)
+                        'eval_forecasts_dates': None, # a list of length num_evals, where each element is the start date of the forecast
+                        'eval_contexts': None, # numpy array of shape (num_epochs, num_evals, context_window, 180, 360)
+                    }
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -243,15 +285,8 @@ def main():
                 epoch_start = 0
                 train_losses = []
                 valid_losses = []
-                eval_data = {
-                    'eval_reconstructions': None, # numpy array of shape (num_evals, num_epochs, 180, 360)
-                    'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 180, 360)
-                    'eval_reconstructions_dates': None, # list of dates of length num_evals
-                    'eval_samples': None # numpy array of shape (num_evals, num_epochs, 180, 360)
-                }
-                model = model.to(device)
 
-            model.train()
+                model = model.to(device)
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
@@ -260,19 +295,27 @@ def main():
                 print('\n*** Epoch {:,}/{:,} started'.format(epoch+1, args.epochs))
                 print('*** Training')
                 # Training
+                model.train()
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
                         # a = 1/0
-
-                        jpld, _ = batch
-                        jpld = jpld.to(device)
-
                         optimizer.zero_grad()
-                        loss = model.loss(jpld)
+
+                        if args.model_type == 'VAE1':
+                            jpld, _ = batch
+                            jpld = jpld.to(device)
+
+                            loss = model.loss(jpld)
+                        elif args.model_type == 'IonCastConvLSTM':
+                            jpld_seq, _ = batch
+                            jpld_seq = jpld_seq.to(device)
+                            
+                            loss = model.loss(jpld_seq, context_window=args.context_window)
+                        else:
+                            raise ValueError('Unknown model type: {}'.format(args.model_type))
+                        
                         loss.backward()
-
                         optimizer.step()
-
                         iteration += 1
 
                         train_losses.append((iteration, float(loss)))
@@ -284,9 +327,17 @@ def main():
                 model.eval()
                 valid_loss = 0.0
                 with torch.no_grad():
-                    for jpld, _ in valid_loader:
-                        jpld = jpld.to(device)
-                        loss = model.loss(jpld)
+                    for batch in valid_loader:
+                        if args.model_type == 'VAE1':
+                            jpld, _ = batch
+                            jpld = jpld.to(device)
+                            loss = model.loss(jpld)
+                        elif args.model_type == 'IonCastConvLSTM':
+                            jpld_seq, _ = batch
+                            jpld_seq = jpld_seq.to(device)
+                            loss = model.loss(jpld_seq, context_window=args.context_window)
+                        else:
+                            raise ValueError('Unknown model type: {}'.format(args.model_type))
                         valid_loss += loss.item()
                 valid_loss /= len(valid_loader)
                 valid_losses.append((iteration, valid_loss))
@@ -312,78 +363,129 @@ def main():
                 plt.savefig(plot_file)
                 plt.close()
 
-                # Plot model outputs
+                # Plot model eval results
                 model.eval()
                 with torch.no_grad():
                     num_evals = args.num_evals
-                    # Set random seed for reproducibility of evaluation samples across epochs
-                    rng_state = torch.get_rng_state()
-                    torch.manual_seed(args.seed)
 
-                    # Reconstruct a batch from the validation set
-                    jpld_orig, jpld_orig_dates = next(iter(valid_loader))
-                    jpld_orig = jpld_orig[:num_evals]
-                    jpld_orig_dates = jpld_orig_dates[:num_evals]
+                    if args.model_type == 'VAE1':
+                        # Set random seed for reproducibility of evaluation samples across epochs
+                        rng_state = torch.get_rng_state()
+                        torch.manual_seed(args.seed)
 
-                    jpld_orig = jpld_orig.to(device)
-                    jpld_recon, _, _ = model.forward(jpld_orig)
-                    jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
-                    jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
+                        # Reconstruct a batch from the validation set
+                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                        jpld_orig = jpld_orig[:num_evals]
+                        jpld_orig_dates = jpld_orig_dates[:num_evals]
 
-                    # Sample a batch from the model
-                    jpld_sample = model.sample(n=num_evals)
-                    jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
-                    jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
-                    torch.set_rng_state(rng_state)
-                    # Resume with the original random state
+                        jpld_orig = jpld_orig.to(device)
+                        jpld_recon, _, _ = model.forward(jpld_orig)
+                        jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
 
-                    if eval_data['eval_reconstructions_originals'] is None:
-                        eval_data['eval_reconstructions_originals'] = jpld_orig_unnormalized.cpu().numpy()
-                        eval_data['eval_reconstructions_dates'] = jpld_orig_dates
+                        # Sample a batch from the model
+                        jpld_sample = model.sample(n=num_evals)
+                        jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
+                        torch.set_rng_state(rng_state)
+                        # Resume with the original random state
 
-                    # eval_data = {
-                    #     'eval_reconstructions': None, # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
-                    #     'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 1, 180, 360)
-                    #     'eval_reconstructions_dates': None, # list of dates of length num_evals
-                    #     'eval_samples': None # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
-                    # }
+                        if eval_data['eval_reconstructions_originals'] is None:
+                            eval_data['eval_reconstructions_originals'] = jpld_orig_unnormalized.cpu().numpy()
+                            eval_data['eval_reconstructions_dates'] = jpld_orig_dates
 
-                    if eval_data['eval_reconstructions'] is None:
-                        eval_data['eval_reconstructions'] = jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
-                        eval_data['eval_samples'] = jpld_sample_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
-                    else:
-                        eval_data['eval_reconstructions'] = np.concatenate((eval_data['eval_reconstructions'], jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
-                        eval_data['eval_samples'] = np.concatenate((eval_data['eval_samples'], jpld_sample.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
+                        # eval_data = {
+                        #     'eval_reconstructions': None, # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
+                        #     'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 1, 180, 360)
+                        #     'eval_reconstructions_dates': None, # list of dates of length num_evals
+                        #     'eval_samples': None # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
+                        # }
 
-                    # Save plots
-                    for i in range(num_evals):
-                        date = jpld_orig_dates[i]
-                        date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
+                        if eval_data['eval_reconstructions'] is None:
+                            eval_data['eval_reconstructions'] = jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
+                            eval_data['eval_samples'] = jpld_sample_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
+                        else:
+                            eval_data['eval_reconstructions'] = np.concatenate((eval_data['eval_reconstructions'], jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
+                            eval_data['eval_samples'] = np.concatenate((eval_data['eval_samples'], jpld_sample.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
 
-                        recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
-                        save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+                        # Save plots
+                        for i in range(num_evals):
+                            date = jpld_orig_dates[i]
+                            date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
 
-                        recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
-                        save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
+                            recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
 
-                        sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
-                        save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
+                            recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
 
-                        # Save a video of the reconstructions for this evaluation
-                        recon_video_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.mp4')
-                        save_gim_video(
-                            eval_data['eval_reconstructions'][:, i, 0, :, :],
-                            recon_video_file,
-                            vmin=0, vmax=100,
-                            titles=[f'JPLD GIM TEC, {date_str} (Reconstruction), Epoch {e+1}' for e in range(eval_data['eval_reconstructions'].shape[0])])
-                        
-                        # Save a video of the samples for this evaluation
-                        sample_video_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.mp4')
-                        save_gim_video(
-                            eval_data['eval_samples'][:, i, 0, :, :],
-                            sample_video_file,
-                            vmin=0, vmax=100,
-                            titles=[f'JPLD GIM TEC (Sampled from model), Epoch {e+1}' for e in range(eval_data['eval_samples'].shape[0])])
+                            sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
+
+                            # Save a video of the reconstructions for this evaluation
+                            recon_video_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.mp4')
+                            save_gim_video(
+                                eval_data['eval_reconstructions'][:, i, 0, :, :],
+                                recon_video_file,
+                                vmin=0, vmax=100,
+                                titles=[f'JPLD GIM TEC, {date_str} (Reconstruction), Epoch {e+1}' for e in range(eval_data['eval_reconstructions'].shape[0])])
+                            
+                            # Save a video of the samples for this evaluation
+                            sample_video_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.mp4')
+                            save_gim_video(
+                                eval_data['eval_samples'][:, i, 0, :, :],
+                                sample_video_file,
+                                vmin=0, vmax=100,
+                                titles=[f'JPLD GIM TEC (Sampled from model), Epoch {e+1}' for e in range(eval_data['eval_samples'].shape[0])])
+
+                    elif args.model_type == 'IonCastConvLSTM':
+                        # eval_data = {
+                        #     'eval_forecasts': None, # numpy array of shape (num_epochs, num_evals, eval_window, 180, 360)
+                        #     'eval_forecasts_originals': None, # numpy array of shape (num_evals, eval_window, 180, 360)
+                        #     'eval_forecasts_dates': None, # a list of length num_evals, where each element is the list of dates in the context + eval window
+                        #     'eval_contexts': None, # numpy array of shape (num_epochs, num_evals, context_window, 180, 360)
+                        # }
+
+                        jpld_seq, jpld_seq_dates = next(iter(valid_loader))
+                        jpld_seq = jpld_seq[:num_evals]
+                        jpld_seq_dates = jpld_seq_dates[:num_evals]
+                        jpld_seq = jpld_seq.to(device)
+
+                        jpld_contexts = jpld_seq[:, :args.context_window, :, :]
+                        jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
+
+                        # Forecasts
+                        model.init(batch_size=num_evals)
+                        jpld_forecasts = model.predict(jpld_contexts, eval_window=args.eval_window)
+
+                        jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
+                        jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
+                        jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
+
+                        if eval_data['eval_forecasts'] is None:
+                            eval_data['eval_forecasts'] = jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)
+                            eval_data['eval_contexts'] = jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)
+                            eval_data['eval_forecasts_originals'] = jpld_forecasts_originals_unnormalized.cpu().numpy()
+                            eval_data['eval_forecasts_dates'] = jpld_seq_dates
+                        else:
+                            eval_data['eval_forecasts'] = np.concatenate((eval_data['eval_forecasts'], jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)), axis=0)
+                            eval_data['eval_contexts'] = np.concatenate((eval_data['eval_contexts'], jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)), axis=0)
+
+                        # save forecasts
+                        for i in range(num_evals):
+                            dates = jpld_seq_dates[i]
+                            dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
+                            dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.eval_window]]
+                            dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.eval_window)]
+                            
+                            # save videos of the forecasts
+                            forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
+                            save_gim_video(
+                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
+                                forecast_video_file,
+                                vmin=0, vmax=100,
+                                titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                            )
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")

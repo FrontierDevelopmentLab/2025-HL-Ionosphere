@@ -348,3 +348,83 @@ class JPLD(Dataset):
     @staticmethod
     def unnormalize(data):
         return jpld_unnormalize(data)
+    
+
+
+
+class Sequences(Dataset):
+    def __init__(self, datasets, delta_minutes=15, sequence_length=4):
+        super().__init__()
+        self.datasets = datasets
+        self.delta_minutes = delta_minutes
+        self.sequence_length = sequence_length
+
+        self.date_start = max([dataset.date_start for dataset in self.datasets])
+        self.date_end = min([dataset.date_end for dataset in self.datasets])
+        if self.date_start > self.date_end:
+            raise ValueError('No overlapping date range between datasets')
+
+        print('\nSequences')
+        print('Start date              : {}'.format(self.date_start))
+        print('End date                : {}'.format(self.date_end))
+        print('Delta                   : {} minutes'.format(self.delta_minutes))
+        print('Sequence length         : {}'.format(self.sequence_length))
+        print('Sequence duration       : {} minutes'.format(self.delta_minutes*self.sequence_length))
+
+        self.sequences = self.find_sequences()
+        if len(self.sequences) == 0:
+            print('**** No sequences found ****')
+        print('Number of sequences     : {:,}'.format(len(self.sequences)))
+        if len(self.sequences) > 0:
+            print('First sequence          : {}'.format([date.isoformat() for date in self.sequences[0]]))
+            print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))
+
+    def __len__(self):
+        return len(self.sequences)
+    
+    def __getitem__(self, index):
+        # print('constructing sequence')
+        sequence = self.sequences[index]
+        sequence_data = []
+        for dataset in self.datasets:
+            data = []
+            for i, date in enumerate(sequence):
+                if i == 0:
+                    # All data is available at the first step in sequence (by construction of sequences by find_sequence)
+                    d, _ = dataset[date]
+                    data.append(d)
+                else:
+                    if date in dataset.dates_set:
+                        d, _ = dataset[date]
+                        data.append(d)
+                    else:
+                        data.append(data[i-1])
+            data = torch.stack(data)
+            sequence_data.append(data)
+        sequence_data.append([date.isoformat() for date in sequence])
+        # print('done constructing sequence')
+        return tuple(sequence_data)
+
+
+    def find_sequences(self):
+        sequences = []
+        sequence_start = self.date_start
+        while sequence_start <= self.date_end - datetime.timedelta(minutes=(self.sequence_length-1)*self.delta_minutes):
+            # New sequence
+            sequence = []
+            sequence_available = True
+            for i in range(self.sequence_length):
+                date = sequence_start + datetime.timedelta(minutes=i*self.delta_minutes)
+                if i == 0:
+                    for dataset in self.datasets:
+                        if date not in dataset.dates_set:
+                            sequence_available = False
+                            break
+                if not sequence_available:
+                    break
+                sequence.append(date)
+            if sequence_available:
+                sequences.append(sequence)
+            # Move to next sequence
+            sequence_start += datetime.timedelta(minutes=self.delta_minutes)
+        return sequences
