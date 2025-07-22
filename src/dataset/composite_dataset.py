@@ -11,6 +11,9 @@ import datetime
 # TODO: 
 # TODO: dont allow index based indexing, rather convert to timestamp within the __getitem__ of the composite dataset class, then pass in the timestamp
 # for indexing within composite dataset, even if some missing data, wont have compounding deletion error
+# TODO: Incorporate a date_exclusion, similar to JPLDGIMDataset, This should be handled in composite and keep from getting those dates
+# TODO: Handle all of the indexing wrt individual cadences in CompositeDataset, instead of indiducal datasets. This will clean up code of the individuals and 
+# make it readable in CompositeDataset to understand how each indivudal dataset is sampled/organized.
 class CompositeDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
@@ -29,6 +32,7 @@ class CompositeDataset(torch.utils.data.Dataset):
         self.solar_index_dataset = SolarIndexDataset(solar_index_data_file, date_start, date_end, normalize, self.cadence)
         self.omniweb_dataset = OMNIDataset(omniweb_dir, date_start, date_end, normalize, sampled_cadence=self.cadence)
 
+        # Set the date start and end based on the datasets
         if date_start is None or date_end is None: 
             gim_start, gim_end = self.gim_dataset.get_date_range()
             celestrak_start, celestrak_end = self.celestrak_dataset.get_date_range()
