@@ -92,7 +92,7 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
     print(f'Saving GIM video to {file_name}')
 
     fig = plt.figure(figsize=(10, 5))
-    gs = fig.add_gridspec(1, 2, width_ratios=[20, 1], wspace=0.05, left=0.05, right=0.98, top=0.9, bottom=0.1)
+    gs = fig.add_gridspec(1, 2, width_ratios=[20, 1], wspace=0.05, left=0.05, right=0.92, top=0.9, bottom=0.1)
     ax = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
     cbar_ax = fig.add_subplot(gs[0, 1])
     cbar = None
@@ -172,7 +172,7 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2024-07-10T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -308,6 +308,11 @@ def main():
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, _ = batch
+                            # # dates_seq is a nested list of dates with shape (context_window + eval_window, batch_size)
+                            # for b in range(args.batch_size):
+                            #     print(f'Batch {b+1}/{args.batch_size} dates:')
+                            #     for t in range(args.context_window + args.eval_window):
+                            #         print(dates_seq[t][b])
                             jpld_seq = jpld_seq.to(device)
                             
                             loss = model.loss(jpld_seq, context_window=args.context_window)
@@ -442,13 +447,13 @@ def main():
                         # eval_data = {
                         #     'eval_forecasts': None, # numpy array of shape (num_epochs, num_evals, eval_window, 180, 360)
                         #     'eval_forecasts_originals': None, # numpy array of shape (num_evals, eval_window, 180, 360)
-                        #     'eval_forecasts_dates': None, # a list of length num_evals, where each element is the list of dates in the context + eval window
+                        #     'eval_forecasts_dates': None, # a list of length context_window + eval_window, where each element is a list of dates of length num_evals
                         #     'eval_contexts': None, # numpy array of shape (num_epochs, num_evals, context_window, 180, 360)
                         # }
 
-                        jpld_seq, jpld_seq_dates = next(iter(valid_loader))
+                        jpld_seq, dates_seq = next(iter(valid_loader))
                         jpld_seq = jpld_seq[:num_evals]
-                        jpld_seq_dates = jpld_seq_dates[:num_evals]
+                        dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.eval_window)]
                         jpld_seq = jpld_seq.to(device)
 
                         jpld_contexts = jpld_seq[:, :args.context_window, :, :]
@@ -466,14 +471,20 @@ def main():
                             eval_data['eval_forecasts'] = jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)
                             eval_data['eval_contexts'] = jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)
                             eval_data['eval_forecasts_originals'] = jpld_forecasts_originals_unnormalized.cpu().numpy()
-                            eval_data['eval_forecasts_dates'] = jpld_seq_dates
+                            eval_data['eval_forecasts_dates'] = dates_seq
                         else:
                             eval_data['eval_forecasts'] = np.concatenate((eval_data['eval_forecasts'], jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)), axis=0)
                             eval_data['eval_contexts'] = np.concatenate((eval_data['eval_contexts'], jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)), axis=0)
 
                         # save forecasts
+
+                        # # jpld_seq_dates is a nested list of dates with shape (context_window + eval_window, batch_size)
+                        # for b in range(args.batch_size):
+                        #     print(f'Batch {b+1}/{args.batch_size} dates:')
+                        #     for t in range(args.context_window + args.eval_window):
+                        #         print(dates_seq[t][b])
                         for i in range(num_evals):
-                            dates = jpld_seq_dates[i]
+                            dates = [dates_seq[t][i] for t in range(args.context_window + args.eval_window)]
                             dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
                             dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.eval_window]]
                             dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.eval_window)]
@@ -486,6 +497,16 @@ def main():
                                 vmin=0, vmax=100,
                                 titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
                             )
+
+                            # also save the same video frame by frame, to pdfs
+                            for j in range(args.eval_window):
+                                forecast_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}-{j+1:02d}.pdf')
+                                save_gim_plot(
+                                    jpld_forecasts_unnormalized.cpu().numpy()[i][j].reshape(180, 360),
+                                    forecast_file,
+                                    vmin=0, vmax=100,
+                                    title=f'JPLD GIM TEC Forecast: {dates_forecast[j]} ({dates_forecast_ahead[j]})'
+                                )
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
