@@ -8,7 +8,8 @@ import xarray as xr
 from functools import lru_cache
 import pandas as pd
 import numpy as np
-import pyarrow.parquet as pq
+import pyarrow.parquet as pq 
+import pyarrow.dataset as ds
 
 JPLDGIM_mean = 14.878721237182617
 JPLDGIM_std = 14.894197463989258
@@ -19,19 +20,27 @@ class JPLDGIMDataset(Dataset):
         self.parquet_file = parquet_file
         self.normalize = normalize
         
-        # Open parquet file with PyArrow
+        # Open parquet file with PyArrow        
         self.parquet_table = pq.ParquetFile(parquet_file)
-        
+
         # Build row group index mapping
         self._build_row_group_index()
         
-        # Read only the date column to get metadata
-        date_table = self.parquet_table.read(columns=['date'])
-        all_dates = date_table['date'].to_pylist()
+        # # Read only the date column to get metadata
+        # date_table = self.parquet_table.read(columns=['date']) 
+        # all_dates = date_table['date'].to_pylist() # This stip seems very slow
         
-        # Convert to datetime objects for filtering
-        all_datetimes = [pd.to_datetime(date).to_pydatetime() for date in all_dates]
-        
+        # # Convert to datetime objects for filtering
+        # all_datetimes = [pd.to_datetime(date).to_pydatetime() for date in all_dates]
+
+        # Faster date read using pyarrow.dataset
+        dataset = ds.dataset(parquet_file, format="parquet")
+        df = dataset.to_table(columns=['date']).to_pandas()
+        df['date'] = pd.to_datetime(df['date'])
+
+        all_dates = df['date'].tolist()
+        all_datetimes = all_dates # NOTE: the type of this <class 'pandas._libs.tslibs.timestamps.Timestamp'>
+  
         # Determine date range
         available_start = min(all_datetimes)
         available_end = max(all_datetimes) + datetime.timedelta(minutes=15)  # Add 15 minutes to include the last sample
@@ -40,7 +49,8 @@ class JPLDGIMDataset(Dataset):
         self.date_start = date_start if date_start is not None else available_start
         self.date_end = date_end if date_end is not None else available_end
         
-        # Validate date range
+        # Validate date range 
+        print(type(self.date_start), type(available_start))
         if self.date_start > self.date_end:
             raise ValueError("Start date cannot be after end date.")
         if self.date_start < available_start or self.date_end > available_end:
@@ -52,7 +62,13 @@ class JPLDGIMDataset(Dataset):
         
         print(f"Dataset date range: {self.date_start.strftime('%Y-%m-%d')} to {self.date_end.strftime('%Y-%m-%d')}")
         print(f"Number of samples: {len(self.dates):,}")
+
+    def get_date_range(self):
+        return self.date_start, self.date_end
     
+    def set_date_range(self, date_start, date_end):
+        self.date_start, self.date_end = date_start, date_end
+
     def _filter_by_date_range(self, all_dates, all_datetimes):
         """Filter dates and create mappings based on the specified date range"""
         # Find indices within the date range

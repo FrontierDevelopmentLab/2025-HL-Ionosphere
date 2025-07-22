@@ -20,10 +20,6 @@ Full dataset information:
         # NaN values fill data timestamp where data is not present
 
 
-    Celestrak
-        DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,
-        AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,F10.7_DATA_TYPE,F10.7_OBS_CENTER81,F10.7_OB
-
 We only use the following columns (for initial research):
 OMNIWeb
     'Year', 'Day', 'Hour', 'Minute',
@@ -44,12 +40,9 @@ OMNIWeb
 
     # Solar particle flux
     'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
-
-
-Celestrak
     
 '''
-
+# TODO: make TimeSeriesDataset / CSVDataset base class
 # TODO: should be made more robust to certain conditions (what if omni_rows empty) Also what if other parameters have major nan issues like the goes rows, this is more of a preprocessing problem
 # TODO: not great to load the csvs each time, 
 # 
@@ -66,7 +59,7 @@ import time
 stats_file = "/mnt/ionosphere-data/omniweb/processed/dataset_stats/omni_stats.csv"
 stats_df = pd.read_csv(stats_file)
 
-# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
+# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process, this is 'dealt' with with forward filling
 # TODO: Compute mean and std, will update data_stats.py
 class OMNIDataset(torch.utils.data.Dataset):
     def __init__(
@@ -101,10 +94,11 @@ class OMNIDataset(torch.utils.data.Dataset):
                 #'P_dyn', 'E_field', 'Beta', 'Mach_Alfven',
 
                 # Geomagnetic
-                'AE', 'AL', 'AU', 'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
+                # 'AE', 'AL', 'AU', #  (Missing in 2019-2020)
+                'SYM_D', 'SYM_H', 'ASY_D', 'ASY_H',
 
                 # # Solar particle flux # Unusable in Omni dataset
-                # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
+                # 'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV' # (missing)
             ]
         else:
             self.omni_columns = omni_columns
@@ -139,7 +133,6 @@ class OMNIDataset(torch.utils.data.Dataset):
         stats = torch.tensor(stats_df[omni_columns].values, dtype=torch.float32)
         omni_means = stats[0]
         omni_stds = stats[1]
-        print(data.shape, omni_means.shape, omni_stds.shape)
         return (data - omni_means) / omni_stds
 
     @staticmethod
@@ -178,15 +171,19 @@ class OMNIDataset(torch.utils.data.Dataset):
 
         df = pd.read_csv(filename)
         data_row = df[df["Datetime"] == datetime_str]
-        print(f"data_row: {data_row[self.omni_columns]}")
-        print(f"data_row: {data_row[self.omni_columns].values}")
-        print(f"datetime str: {datetime_str}")
         data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)
 
         if self.normalize:
             data_tensor = OMNIDataset.normalize(data_tensor,self.omni_columns)
-        print()
+
         return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
+
+
+    def get_date_range(self):
+        return self.date_start, self.date_end
+    
+    def set_date_range(self, date_start, date_end):
+        self.date_start, self.date_end = date_start, date_end
 
     @staticmethod
     def find_date_range(directory):
