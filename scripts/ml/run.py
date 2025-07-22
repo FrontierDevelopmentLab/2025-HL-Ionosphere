@@ -498,15 +498,16 @@ def main():
                                 titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
                             )
 
-                            # also save the same video frame by frame, to pdfs
-                            for j in range(args.eval_window):
-                                forecast_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}-{j+1:02d}.pdf')
-                                save_gim_plot(
-                                    jpld_forecasts_unnormalized.cpu().numpy()[i][j].reshape(180, 360),
-                                    forecast_file,
-                                    vmin=0, vmax=100,
-                                    title=f'JPLD GIM TEC Forecast: {dates_forecast[j]} ({dates_forecast_ahead[j]})'
-                                )
+                            # save videos of the forecasts originals
+                            forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
+                            save_gim_video(
+                                jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
+                                forecast_original_video_file,
+                                vmin=0, vmax=100,
+                                titles=[f'JPLD GIM TEC Forecast Original: {d}' for d in dates_forecast]
+                            )
+
+
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
