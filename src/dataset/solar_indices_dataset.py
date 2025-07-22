@@ -30,6 +30,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
         self.data_file = data_file
         self.normalize = normalize
         self.sampled_cadence = cadence  # in minutes
+        true_cadence = 24*60     # in minutes, this is the cadence of the original data file
 
         # Load the data file
         if not os.path.exists(data_file):
@@ -72,7 +73,7 @@ class SolarIndexDataset(torch.utils.data.Dataset):
 
         # Calculate the number of days and samples in the dataset
         self.num_days = (self.date_end - self.date_start).days + 1
-        self.num_samples = int(self.num_days * (24 * 60 / self.sampled_cadence))
+        self.num_samples = int(self.num_days * (24 * 60 / true_cadence))
 
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
