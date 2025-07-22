@@ -42,7 +42,7 @@ OMNIWeb
     'GOES_flux_10MeV', 'GOES_flux_30MeV', 'GOES_flux_60MeV'
     
 '''
-
+# TODO: make TimeSeriesDataset / CSVDataset base class
 # TODO: should be made more robust to certain conditions (what if omni_rows empty) Also what if other parameters have major nan issues like the goes rows, this is more of a preprocessing problem
 # TODO: not great to load the csvs each time, 
 # 
@@ -59,7 +59,7 @@ import time
 stats_file = "/mnt/ionosphere-data/omniweb/processed/dataset_stats/omni_stats.csv"
 stats_df = pd.read_csv(stats_file)
 
-# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process
+# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process, this is 'dealt' with with forward filling
 # TODO: Compute mean and std, will update data_stats.py
 class OMNIDataset(torch.utils.data.Dataset):
     def __init__(
@@ -133,7 +133,6 @@ class OMNIDataset(torch.utils.data.Dataset):
         stats = torch.tensor(stats_df[omni_columns].values, dtype=torch.float32)
         omni_means = stats[0]
         omni_stds = stats[1]
-        print(data.shape, omni_means.shape, omni_stds.shape)
         return (data - omni_means) / omni_stds
 
     @staticmethod
@@ -172,14 +171,11 @@ class OMNIDataset(torch.utils.data.Dataset):
 
         df = pd.read_csv(filename)
         data_row = df[df["Datetime"] == datetime_str]
-        print(f"data_row: {data_row[self.omni_columns]}")
-        print(f"data_row: {data_row[self.omni_columns].values}")
-        print(f"datetime str: {datetime_str}")
         data_tensor = torch.tensor(data_row[self.omni_columns].values, dtype=torch.float32)
 
         if self.normalize:
             data_tensor = OMNIDataset.normalize(data_tensor,self.omni_columns)
-        print()
+
         return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 
 
