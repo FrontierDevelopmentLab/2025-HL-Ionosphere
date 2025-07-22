@@ -11,9 +11,8 @@ from src.dataset.omniweb_dataset import OMNIDataset
 import datetime
 # Combine all datasets into one
 
-# TODO : Currently if start date isnt set each dataset will ahve a different start date and their integer based indexing will not be synched up 
-# with one another, should have getter/setter methods for start / end date and set start / end date as the intersction between all datasets OR 
-# need a more intelligent integer index to timestamp conversion within each dataset class 
+# TODO: dont allow index based indexing, rather convert to timestamp within the composite dataset class, then pass in the timestamp
+# for indexing within composite dataset, even if some missing data, wont have compounding deletion error
 class CompositeDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
