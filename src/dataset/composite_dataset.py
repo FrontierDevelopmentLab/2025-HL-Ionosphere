@@ -1,18 +1,16 @@
 import torch
 import datetime
+
 from src.dataset.gim_dataset import JPLDGIMDataset
 from src.dataset.solar_indices_dataset import SolarIndexDataset
 from src.dataset.celestrak_dataset import CelestrakDataset
 from src.dataset.omniweb_dataset import OMNIDataset
-# from gim_dataset import JPLDGIMDataset
-# from solar_indices_dataset import SolarIndexDataset
-# from celestrak_dataset import CelestrakDataset
-# from omniweb_dataset import OMNIDataset
-import datetime
-# Combine all datasets into one
 
 # TODO: dont allow index based indexing, rather convert to timestamp within the composite dataset class, then pass in the timestamp
 # for indexing within composite dataset, even if some missing data, wont have compounding deletion error
+# TODO: Incorporate a date_exclusion, similar to JPLDGIMDataset, This should be handled in composite and keep from getting those dates
+# TODO: Handle all of the indexing wrt individual cadences in CompositeDataset, instead of indiducal datasets. This will clean up code of the individuals and 
+# make it readable in CompositeDataset to understand how each indivudal dataset is sampled/organized.
 class CompositeDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
@@ -21,15 +19,17 @@ class CompositeDataset(torch.utils.data.Dataset):
             solar_index_data_file,
             omniweb_dir,
             date_start=None, 
-            date_end=None, 
+            date_end=None,
+            date_exclusions=None, # TODO: implement this
             normalize=True
     ):
-        
-        self.gim_dataset = JPLDGIMDataset(gim_parquet_file, date_start, date_end, normalize)
+        # Initialize the indivudal datasets
+        self.gim_dataset = JPLDGIMDataset(gim_parquet_file, date_start, date_end, date_exclusions, normalize)
         self.celestrak_dataset = CelestrakDataset(celestrak_data_file, date_start, date_end, normalize)
         self.solar_index_dataset = SolarIndexDataset(solar_index_data_file, date_start, date_end, normalize)
         self.omniweb_dataset = OMNIDataset(omniweb_dir, date_start, date_end, normalize)
 
+        # Set the date start and end based on the datasets
         if date_start is None or date_end is None: 
             gim_start, gim_end = self.gim_dataset.get_date_range()
             celestrak_start, celestrak_end = self.celestrak_dataset.get_date_range()
@@ -56,6 +56,7 @@ class CompositeDataset(torch.utils.data.Dataset):
         return self._length
 
     def __getitem__(self, index):
+        # TODO: Handle complex indexing of dates based ont ehir cadences/ints here, rather than in individual dataset files
         if isinstance(index, datetime.datetime) or isinstance(index, int):
             gim_data = self.gim_dataset[index]
             celestrak_data = self.celestrak_dataset[index]
