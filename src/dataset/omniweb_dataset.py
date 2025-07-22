@@ -59,8 +59,6 @@ import time
 stats_file = "/mnt/ionosphere-data/omniweb/processed/dataset_stats/omni_stats.csv"
 stats_df = pd.read_csv(stats_file)
 
-# TODO: NaNs currently not dealt with, this should go into a new script, omniweb_process, this is 'dealt' with with forward filling
-# TODO: Compute mean and std, will update data_stats.py
 class OMNIDataset(torch.utils.data.Dataset):
     def __init__(
         self, 
@@ -68,7 +66,6 @@ class OMNIDataset(torch.utils.data.Dataset):
         date_start=None, 
         date_end=None, 
         normalize=True,
-        transform=None,
         omni_columns = None,
         sampled_cadence = 15,
         ):
