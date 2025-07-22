@@ -5,177 +5,145 @@ import sys
 import pprint
 from tqdm import tqdm
 from glob import glob
-import h5py
 import gzip
 import xarray as xr
-import time
-import pandas as pd
 import numpy as np
-
-# File Naming Convention	YYYY/SSSSDDD#.YYi.nc.gz
-# where:
-# YYYY	4-digit year
-# SSSS	IGS monument name
-# DDD	3-digit day of year
-# #	file number for the day, typically 0
-# YY	2-digit year
-# .gz	gzip compressed file
-#
-# Sample URL:
-# https://sideshow.jpl.nasa.gov/pub/iono_daily/gim_for_research/jpld/2017/jpld0010.17i.nc.gz
-
-def jpld_date_to_filename(date):
-    file_name = f"jpld{date:%j}0.{date:%y}i.nc.gz"
-    return file_name
+import webdataset as wds
 
 def jpld_filename_to_date(file_name):
-    # Example: jpld0010.17i.nc.gz
-    # Extract the day of year and year from the filename
+    """Extracts the date from a JPLD GIM filename."""
     file_name = os.path.basename(file_name)
     if not file_name.startswith('jpld') or not file_name.endswith('.nc.gz'):
         raise ValueError(f"Invalid JPLD filename format: {file_name}")
     parts = file_name.split('.')
     if len(parts) < 3:
         raise ValueError(f"Invalid JPLD filename format: {file_name}")
-    
-    day_of_year = int(parts[0][4:7])  # Extract DDD from jpldDDD
-    year = int(parts[1][:2]) + 2000  # Extract YY and convert to full year
-    
+    day_of_year = int(parts[0][4:7])
+    year = int(parts[1][:2]) + 2000
     date = datetime.datetime(year, 1, 1) + datetime.timedelta(days=day_of_year - 1)
     return date
 
+def write_tar_shard(records, target_dir, shard_number):
+    """
+    Takes a list of records and writes them to a numbered .tar shard.
+    """
+    if not records:
+        return
+
+    # Define the output tarball filename, e.g., 'jpld-gim-001.tar'
+    # Using 3-digit padding for the shard number.
+    tar_filename = os.path.join(target_dir, f"jpld-{shard_number:03d}.tar")
+    
+    # Use webdataset's TarWriter to create the archive
+    with wds.TarWriter(tar_filename) as sink:
+        for record in records:
+            timestamp = record['timestamp']
+            tecmap_array = record['tecmap']
+            
+            # Define the internal path and key for the sample
+            # The key will be YYYY/MM/DD/HHMM.tecmap
+            key = timestamp.strftime("%Y/%m/%d/%H%M.tecmap")
+            
+            # Create the sample dictionary. Webdataset will automatically
+            # create a .npy file from the 'npy' key.
+            sample = {
+                "__key__": key,
+                "npy": tecmap_array.astype(np.float32)
+            }
+            
+            # Write the sample to the tar file
+            sink.write(sample)
 
 def main():
-    description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, JPLD GIM data converter raw to HDF5'
+    description = 'NASA Heliolab 2025 - JPLD GIM data converter from raw to numbered WebDataset shards'
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('--input_dir', type=str, help='Input directory with raw files', required=True)
-    parser.add_argument('--target_dir', type=str, help='Target directory for HDF5 files', required=True)
-    parser.add_argument('--num_max_files', type=int, default=None, help='Maximum number of files to process')
+    parser.add_argument('--input_dir', type=str, help='Input directory with raw .nc.gz files', required=True)
+    parser.add_argument('--target_dir', type=str, help='Target directory for output .tar files', required=True)
     
     args = parser.parse_args()
-
-    print(description)    
-    
+    print(description)
     start_time = datetime.datetime.now()
-    print('Start time: {}'.format(start_time))
-    print('Arguments:\n{}'.format(' '.join(sys.argv[1:])))
-    print('Config:')
-    pprint.pprint(vars(args), depth=2, width=50)
-
+    
     os.makedirs(args.target_dir, exist_ok=True)
-
+    
     file_names = glob(os.path.join(args.input_dir, '**', '*.nc.gz'), recursive=True)
 
     file_names_prefixed_by_extension = [''.join(f.split(".")[::-1]) for f in file_names]
     # sort files by file_names_prefixed_by_extension
     file_names = [x for _, x in sorted(zip(file_names_prefixed_by_extension, file_names))]
 
-    if len(file_names) == 0:
+    if not file_names:
         print('No files found in the input directory.')
         return
-    
-    print('Found {:,} files in the input directory.'.format(len(file_names)))
+        
+    print(f'Found {len(file_names):,} files. Starting batch processing to create numbered tar shards...')
 
-    if args.num_max_files is not None:
-        file_names = file_names[:args.num_max_files]
-        print('Processing only the first {:,} files.'.format(args.num_max_files))
-
-    # Create output filename with placeholder dates (will update later)
-    target_file = os.path.join(args.target_dir, 'jpld_gim_temp.h5')
-    
-    # Initialize counters
-    skipped_files = []
+    # --- Batch Processing Logic for WebDataset ---
+    monthly_records = []
+    current_year, current_month = None, None
     total_records = 0
+    shard_number = 1 # Start shard numbering at 1
     first_timestamp = None
     last_timestamp = None
-    
-    # Create HDF5 file
-    h5_file = h5py.File(target_file, 'w')
-    
-    try:
-        # Create datasets with initial size and enable resizing
-        # Use LZF compression for better training performance
-        timestamps_dataset = h5_file.create_dataset(
-            'timestamps', 
-            (0,), 
-            maxshape=(None,), 
-            dtype=h5py.special_dtype(vlen=str),
-            compression='lzf',  # LZF compression - much faster than gzip
-            chunks=(512,)  # Larger chunks = fewer I/O operations
-        )
-        
-        tecmaps_dataset = h5_file.create_dataset(
-            'tecmaps', 
-            (0, 180, 360), 
-            maxshape=(None, 180, 360), 
-            dtype=np.float32,
-            compression='lzf',  # LZF compression - ~3x faster decompression than gzip
-            chunks=(64, 180, 360)  # Larger chunks for better throughput
-        )
-        
-        for file_name in tqdm(file_names, desc='Processing files'):
-            with gzip.open(file_name, 'rb') as f:
-                try:
-                    ds = xr.open_dataset(f, engine='h5netcdf')            
-                    data = ds['tecmap'].values  # Shape: (N, 180, 360)
-                    times = ds['time'].values   # Shape: (N,)
-                except Exception as e:
-                    continue
 
-                # Process entire file at once
-                j2000_epoch = datetime.datetime(2000, 1, 1, 12, 0, 0)
-                file_timestamps = []
-                
-                for time_index in range(len(times)):
-                    timestamp_seconds = int(times[time_index].astype('datetime64[s]').astype(int))
-                    tecmap_date = j2000_epoch + datetime.timedelta(seconds=timestamp_seconds)
-                    file_timestamps.append(tecmap_date.isoformat())
-                
-                    # Track first and last timestamps
-                    if first_timestamp is None:
-                        first_timestamp = tecmap_date
-                    last_timestamp = tecmap_date
-
-                # Write entire file's data at once
-                current_size = timestamps_dataset.shape[0]
-                new_size = current_size + len(file_timestamps)
-                
-                timestamps_dataset.resize((new_size,))
-                tecmaps_dataset.resize((new_size, 180, 360))
-                
-                timestamps_dataset[current_size:new_size] = file_timestamps
-                tecmaps_dataset[current_size:new_size] = data
-                
-                total_records += len(file_timestamps)
+    for file_name in tqdm(file_names, desc='Processing files'):
+        try:
+            file_date = jpld_filename_to_date(file_name)
             
-    finally:
-        # Close the HDF5 file
-        h5_file.close()
-    
-    # Rename file with proper date range
-    if first_timestamp and last_timestamp:
-        date_start = first_timestamp.strftime('%Y%m%d%H%M')
-        date_end = last_timestamp.strftime('%Y%m%d%H%M')
-        final_target_file = os.path.join(args.target_dir, f'jpld_gim_{date_start}_{date_end}.h5')
-        os.rename(target_file, final_target_file)
-        target_file = final_target_file
+            if current_year is None:
+                current_year, current_month = file_date.year, file_date.month
 
-    print(f'Processed {total_records:,} records from {len(file_names):,} files.')
-    if skipped_files:
-        print(f'Skipped {len(skipped_files):,} files due to errors or unexpected shapes:')
-        for skipped_file in skipped_files:
-            print(f' - {skipped_file}')
+            # If the file's month is different from the current batch, write the completed batch
+            if file_date.year != current_year or file_date.month != current_month:
+                tqdm.write(f"Writing {len(monthly_records)} records for {current_year}-{current_month:02d} to shard jpld-{shard_number:03d}.tar...")
+                write_tar_shard(monthly_records, args.target_dir, shard_number)
+                shard_number += 1
+                total_records += len(monthly_records)
+                
+                # Reset for the new month
+                monthly_records = []
+                current_year, current_month = file_date.year, file_date.month
 
-    print('HDF5 dataset created successfully.')
-    print('Total records   : {:,}'.format(total_records))
-    print('Start date      : {}'.format(first_timestamp))
-    print('End date        : {}'.format(last_timestamp))
-    print('Size on disk    : {:.2f} GiB'.format(os.path.getsize(target_file) / (1024 ** 3)))
+            # Read data from the source file
+            with gzip.open(file_name, 'rb') as f:
+                ds = xr.open_dataset(f, engine='h5netcdf')
+                tecmaps = ds['tecmap'].values
+                times = ds['time'].values
 
-    print('End time: {}'.format(datetime.datetime.now()))
+            j2000_epoch = datetime.datetime(2000, 1, 1, 12, 0, 0)
+            for i in range(len(times)):
+                timestamp_seconds = int(times[i].astype('datetime64[s]').astype(int))
+                tecmap_date = j2000_epoch + datetime.timedelta(seconds=timestamp_seconds)
+                
+                # Append the record (timestamp and numpy array) to the current monthly batch
+                record = {
+                    'timestamp': tecmap_date,
+                    'tecmap': tecmaps[i]
+                }
+                monthly_records.append(record)
+
+                if first_timestamp is None:
+                    first_timestamp = tecmap_date
+                last_timestamp = tecmap_date
+                
+        except Exception as e:
+            tqdm.write(f"Skipping file {os.path.basename(file_name)} due to error: {e}")
+            continue
+
+    # Write the final batch of records after the loop finishes
+    if monthly_records:
+        tqdm.write(f"Writing final batch of {len(monthly_records)} records to shard jpld-{shard_number:03d}.tar...")
+        write_tar_shard(monthly_records, args.target_dir, shard_number)
+        total_records += len(monthly_records)
+
+    print('\nWebDataset shards created successfully.')
+    print(f'Total records processed: {total_records:,}')
+    print(f'Total shards created: {shard_number}')
+    print(f'First timestamp: {first_timestamp}')
+    print(f'Last timestamp: {last_timestamp}')
+    total_size = sum(os.path.getsize(f) for f in glob(os.path.join(args.target_dir, '*.tar'))) / (1024 ** 3)
+    print(f'Total size on disk: {total_size:.2f} GiB')
     print('Duration: {}'.format(datetime.datetime.now() - start_time))
-
-
 
 if __name__ == '__main__':
     main()

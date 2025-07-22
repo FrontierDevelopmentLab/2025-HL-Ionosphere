@@ -19,7 +19,7 @@ import glob
 from util import Tee
 from util import set_random_seed
 from models import VAE1
-from datasets import JPLDGIMDataset
+from datasets import JPLD
 
 
 matplotlib.use('Agg')
@@ -153,21 +153,21 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
-    parser.add_argument('--jpld_filename', type=str, default='jpld_gim/hdf5/jpld_gim_201005130000_201008202345.h5', help='JPLD GIM dataset directory')
+    parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2010-08-20T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     # parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-07-03T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--model_type', type=str, choices=['VAE1'], default='VAE1', help='Type of model to use')
     parser.add_argument('--valid_proportion', type=float, default=0.15, help='Proportion of data to use for validation')
-    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for data loading')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
 
@@ -199,8 +199,8 @@ def main():
             date_start = datetime.datetime.fromisoformat(args.date_start)
             date_end = datetime.datetime.fromisoformat(args.date_end)
 
-            dataset_jpld_filename = os.path.join(args.data_dir, args.jpld_filename)
-            dataset_jpld = JPLDGIMDataset(dataset_jpld_filename, date_start=date_start, date_end=date_end, normalize=True)
+            dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+            dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
 
             valid_size = int(args.valid_proportion * len(dataset_jpld))
             train_size = len(dataset_jpld) - valid_size
@@ -213,10 +213,10 @@ def main():
                 dataset_train, 
                 batch_size=args.batch_size, 
                 shuffle=True,
-                num_workers=8,
+                num_workers=args.num_workers,
                 pin_memory=True,
                 persistent_workers=True,
-                prefetch_factor=8,  # Increase prefetching
+                prefetch_factor=4,
             )
             valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
@@ -262,6 +262,7 @@ def main():
                 # Training
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
+                        # a = 1/0
 
                         jpld, _ = batch
                         jpld = jpld.to(device)
@@ -326,12 +327,12 @@ def main():
 
                     jpld_orig = jpld_orig.to(device)
                     jpld_recon, _, _ = model.forward(jpld_orig)
-                    jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
-                    jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
+                    jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
+                    jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
 
                     # Sample a batch from the model
                     jpld_sample = model.sample(n=num_evals)
-                    jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                    jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
                     jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                     torch.set_rng_state(rng_state)
                     # Resume with the original random state

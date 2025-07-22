@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 
 from util import Tee
 from util import set_random_seed
-from datasets import JPLDGIMDataset
-from src.omniweb_dataset import OMNIDataset
+from datasets import JPLD
+# from src.omniweb_dataset import OMNIDataset
 
 
 matplotlib.use('Agg')
@@ -23,11 +23,11 @@ def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, data statistics'
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
+    parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
-    parser.add_argument('--jpld_gim_dir', type=str, default='jpld_gim_20100513-20240731', help='JPLD GIM dataset directory')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--num_samples', type=int, default=1000, help='Number of samples to use')
-    parser.add_argument('--instruments', nargs='+', default=['jpld_gim', 'omniweb'], help='List of instruments to process')
+    parser.add_argument('--instruments', nargs='+', default=['jpld', 'omniweb'], help='List of instruments to process')
 
     args = parser.parse_args()
 
@@ -46,18 +46,18 @@ def main():
         start_time = datetime.datetime.now()
         print('Start time: {}'.format(start_time))
 
-        data_dir_jpld_gim = os.path.join(args.data_dir, args.jpld_gim_dir)
+        data_dir_jpld = os.path.join(args.data_dir, args.jpld_dir)
 
         for instrument in args.instruments:
-            if instrument == 'jpld_gim':
+            if instrument == 'jpld':
                 runs = [
-                    ('normalized', JPLDGIMDataset(data_dir_jpld_gim, normalize=True), 'JPLD GIM (normalized)'),
-                    ('unnormalized', JPLDGIMDataset(data_dir_jpld_gim, normalize=False), 'JPLD GIM'),
+                    ('normalized', JPLD(data_dir_jpld, normalize=True), 'JPLD (normalized)'),
+                    ('unnormalized', JPLD(data_dir_jpld, normalize=False), 'JPLD (unnormalized)'),
                 ]
             elif instrument == 'omniweb':
                 runs = [
-                    ('normalized', OMNIDataset(data_dir_jpld_gim, normalize=True), 'OMNIWEB (normalized)'),
-                    ('unnormalized', OMNIDataset(data_dir_jpld_gim, normalize=False), 'OMNIWEB'),
+                    ('normalized', OMNIDataset(data_dir_jpld, normalize=True), 'OMNIWEB (normalized)'),
+                    ('unnormalized', OMNIDataset(data_dir_jpld, normalize=False), 'OMNIWEB (unnormalized)'),
                 ]
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
@@ -72,7 +72,8 @@ def main():
 
                 data = []
                 for i in tqdm(indices, desc='Processing samples', unit='sample'):
-                    data.append(dataset[int(i)])
+                    d, date = dataset[int(i)]
+                    data.append(d)
 
                 data = torch.stack(data).flatten()
                 print('Data shape: {}'.format(data.shape))
