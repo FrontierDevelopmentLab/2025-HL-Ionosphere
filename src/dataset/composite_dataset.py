@@ -1,6 +1,6 @@
 import torch
 import datetime
-from src import JPLD
+from src import JPLDGIMDataset
 from src import SolarIndexDataset
 from src import CelestrakDataset
 from src import OMNIDataset
@@ -27,7 +27,7 @@ class CompositeDataset(torch.utils.data.Dataset):
             normalize=True
     ):
         self.cadence = 15
-        self.gim_dataset = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=normalize, date_exclusions=None)
+        self.gim_dataset = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=normalize, date_exclusions=None)
         self.celestrak_dataset = CelestrakDataset(celestrak_data_file, date_start, date_end, normalize, self.cadence)
         self.solar_index_dataset = SolarIndexDataset(solar_index_data_file, date_start, date_end, normalize, self.cadence)
         self.omniweb_dataset = OMNIDataset(omniweb_dir, date_start, date_end, normalize, sampled_cadence=self.cadence)
