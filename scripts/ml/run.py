@@ -95,19 +95,84 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
     gs = fig.add_gridspec(1, 2, width_ratios=[20, 1], wspace=0.05, left=0.05, right=0.92, top=0.9, bottom=0.1)
     ax = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
     cbar_ax = fig.add_subplot(gs[0, 1])
-    cbar = None
+    
+    # Initialize with first frame
+    im = plot_global_ionosphere_map(ax, gim_sequence[0], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                   title=titles[0] if titles else None)
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    cbar.set_label("TEC (TECU)")
 
     def update(frame):
-        nonlocal cbar
-        ax.clear()
-        im = plot_global_ionosphere_map(ax, gim_sequence[frame], cmap=cmap, vmin=vmin, vmax=vmax, title=titles[frame] if titles else None)
-        if cbar is None:
-            cbar = fig.colorbar(im, cax=cbar_ax)
-            cbar.set_label("TEC (TECU)")
-        return im,
+        # Update the image data instead of clearing
+        new_im = plot_global_ionosphere_map(ax, gim_sequence[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                           title=titles[frame] if titles else None)
+        return [new_im]
 
-    ani = animation.FuncAnimation(fig, update, frames=len(gim_sequence), blit=True, interval=1000/fps)
-    ani.save(file_name, dpi=150, writer='ffmpeg')
+    ani = animation.FuncAnimation(fig, update, frames=len(gim_sequence), blit=False, 
+                                 interval=1000/fps, repeat=False)
+    ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
+    plt.close()
+
+
+def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
+                             titles_top=None, titles_bottom=None, fps=2):
+    """
+    Save two GIM sequences as a comparison video with 2x1 grid (top and bottom).
+    
+    Parameters:
+        gim_sequence_top: numpy array of shape (num_frames, 180, 360) for the top video
+        gim_sequence_bottom: numpy array of shape (num_frames, 180, 360) for the bottom video
+        file_name: output video file name
+        cmap: colormap to use
+        vmin, vmax: color scale limits
+        titles_top: list of titles for top video frames
+        titles_bottom: list of titles for bottom video frames
+        fps: frames per second
+    """
+    # Ensure both sequences have the same length
+    if len(gim_sequence_top) != len(gim_sequence_bottom):
+        raise ValueError(f"Sequences must have same length: {len(gim_sequence_top)} vs {len(gim_sequence_bottom)}")
+    
+    print(f'Saving GIM video to {file_name}')
+
+    # Create figure with 2 rows, 2 columns (maps + colorbars)
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
+                         wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
+    
+    # Top subplot (original/real data)
+    ax_top = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+    cbar_ax_top = fig.add_subplot(gs[0, 1])
+    
+    # Bottom subplot (forecast/predicted data)
+    ax_bottom = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
+    cbar_ax_bottom = fig.add_subplot(gs[1, 1])
+    
+    # Initialize with first frame
+    im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[0], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                       title=titles_top[0] if titles_top else None)
+    cbar_top = fig.colorbar(im_top, cax=cbar_ax_top)
+    cbar_top.set_label("TEC (TECU)")
+    
+    im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[0], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                          title=titles_bottom[0] if titles_bottom else None)
+    cbar_bottom = fig.colorbar(im_bottom, cax=cbar_ax_bottom)
+    cbar_bottom.set_label("TEC (TECU)")
+
+    def update(frame):
+        # Update top plot
+        new_im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                               title=titles_top[frame] if titles_top else None)
+        
+        # Update bottom plot
+        new_im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
+                                                  title=titles_bottom[frame] if titles_bottom else None)
+        
+        return [new_im_top, new_im_bottom]
+
+    ani = animation.FuncAnimation(fig, update, frames=len(gim_sequence_top), blit=False, 
+                                 interval=1000/fps, repeat=False)
+    ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
     plt.close()
 
 
@@ -172,7 +237,8 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-07-01T00:00:00', help='End date')
+    # parser.add_argument('--date_end', type=str, default='2025-07-01T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -487,7 +553,6 @@ def main():
                             dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
                             dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.eval_window]]
                             dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.eval_window)]
-                            
                             # save videos of the forecasts
                             forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
                             save_gim_video(
@@ -495,6 +560,17 @@ def main():
                                 forecast_video_file,
                                 vmin=0, vmax=100,
                                 titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                            )
+
+                            # save comparison video (original vs forecast)
+                            comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
+                            save_gim_video_comparison(
+                                jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),  # top (original)
+                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),  # bottom (forecast)
+                                comparison_video_file,
+                                vmin=0, vmax=100,
+                                titles_top=[f'Original: {d}' for d in dates_forecast],
+                                titles_bottom=[f'Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
                             )
 
                             if epoch == 0:
