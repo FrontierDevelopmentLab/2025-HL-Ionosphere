@@ -237,8 +237,7 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    # parser.add_argument('--date_end', type=str, default='2025-07-01T00:00:00', help='End date')
-    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2025-07-01T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -569,8 +568,8 @@ def main():
                                 jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),  # bottom (forecast)
                                 comparison_video_file,
                                 vmin=0, vmax=100,
-                                titles_top=[f'Original: {d}' for d in dates_forecast],
-                                titles_bottom=[f'Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                                titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
+                                titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
                             )
 
                             if epoch == 0:
@@ -580,7 +579,7 @@ def main():
                                     jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
                                     forecast_original_video_file,
                                     vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC Forecast Original: {d}' for d in dates_forecast]
+                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
                                 )
 
                                 # save videos of the contexts
@@ -589,7 +588,7 @@ def main():
                                     jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
                                     context_video_file,
                                     vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC Context: {d}' for d in dates_context]
+                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
                                 )
 
         elif args.mode == 'test':
