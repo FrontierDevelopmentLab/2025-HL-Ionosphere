@@ -239,49 +239,46 @@ class ConvLSTM(nn.Module):
 
 class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-one prediction."""
-    def __init__(self, input_channels=1, output_channels=1):
+    def __init__(self, input_channels=1, output_channels=1, hidden_dim=256, num_layers=3):
         super().__init__()
-        # A single ConvLSTM layer with 2 stacked cells
+        # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
-                                  hidden_dim=64, 
+                                  hidden_dim=hidden_dim, 
                                   kernel_size=(3, 3), 
-                                  num_layers=2, # Number of stacked layers
+                                  num_layers=num_layers, # Number of stacked layers
                                   batch_first=True)
         
         # Final 1x1 convolution to get the desired number of output channels
-        self.final_conv = nn.Conv2d(in_channels=64, 
+        self.final_conv = nn.Conv2d(in_channels=hidden_dim, 
                                     out_channels=output_channels, 
                                     kernel_size=(1, 1))
 
-    def forward(self, x):
+    def forward(self, x, hidden_state=None):
         # x shape: (B, T, C, H, W)
         
         # Pass through ConvLSTM
         # We only need the last hidden state to make the prediction
-        _, last_states = self.conv_lstm(x)
+        _, hidden_state = self.conv_lstm(x, hidden_state=hidden_state)
         
         # Get the last hidden state of the last layer
-        last_hidden_state = last_states[-1][0] # h_n of the last layer
+        last_hidden_state = hidden_state[-1][0] # h_n of the last layer
         
         # Pass through the final convolution
         output = self.final_conv(last_hidden_state)
         
-        return output
-    
-    def init(self, batch_size, image_size=(180, 360)):
-        """ Initializes the hidden state for the ConvLSTM. """
-        height, width = image_size
-        return self.conv_lstm._init_hidden(batch_size, (height, width))
+        return output, hidden_state
     
     def predict(self, data_context, eval_window=4):
         """ Forecasts the next time step given the context window. """
         # data_context shape: (batch_size, time_steps, channels=1, height, width)
         # time steps = context_window
-        x = self(data_context).unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
+        x, hidden_state = self(data_context) # inits hidden state
+        x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
         prediction = [x]
         for _ in range(eval_window - 1):
             # Prepare the next input by appending the last prediction
-            x = self(x).unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
+            x, hidden_state = self(x, hidden_state=hidden_state)
+            x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
             prediction.append(x)
         prediction = torch.cat(prediction, dim=1)  # shape (batch_size, eval_window, channels=1, height, width)
         return prediction
@@ -295,7 +292,7 @@ class IonCastConvLSTM(nn.Module):
         data_target = data[:, context_window, :, :, :] # shape (batch_size, channels=1, height, width)
 
         # Forward pass
-        data_predict = self(data_context) # shape (batch_size, channels=1, height, width)
+        data_predict, _ = self(data_context) # shape (batch_size, channels=1, height, width)
         recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')
         
         # For simplicity, we can return just the reconstruction loss

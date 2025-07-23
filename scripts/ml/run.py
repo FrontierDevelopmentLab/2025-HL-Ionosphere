@@ -171,8 +171,8 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-07-10T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-07-01T00:00:00', help='End date')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -460,7 +460,6 @@ def main():
                         jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
 
                         # Forecasts
-                        model.init(batch_size=num_evals)
                         jpld_forecasts = model.predict(jpld_contexts, eval_window=args.eval_window)
 
                         jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
@@ -498,16 +497,24 @@ def main():
                                 titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
                             )
 
-                            # save videos of the forecasts originals
-                            forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
-                            save_gim_video(
-                                jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
-                                forecast_original_video_file,
-                                vmin=0, vmax=100,
-                                titles=[f'JPLD GIM TEC Forecast Original: {d}' for d in dates_forecast]
-                            )
+                            if epoch == 0:
+                                # save videos of the forecasts originals
+                                forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
+                                save_gim_video(
+                                    jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
+                                    forecast_original_video_file,
+                                    vmin=0, vmax=100,
+                                    titles=[f'JPLD GIM TEC Forecast Original: {d}' for d in dates_forecast]
+                                )
 
-
+                                # save videos of the contexts
+                                context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
+                                save_gim_video(
+                                    jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
+                                    context_video_file,
+                                    vmin=0, vmax=100,
+                                    titles=[f'JPLD GIM TEC Context: {d}' for d in dates_context]
+                                )
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
@@ -522,4 +529,4 @@ if __name__ == '__main__':
 
 
 # Example
-# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4
+# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --eval_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
