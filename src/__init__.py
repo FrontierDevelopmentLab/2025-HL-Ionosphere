@@ -4,4 +4,6 @@ from .dataset.gim_dataset import *
 from .dataset.omniweb_dataset import *
 from .dataset.celestrak_dataset import *
 from .dataset.solar_indices_dataset import *
+from .dataset.solar_position_dataset import *
+from .dataset.lunar_position_dataset import *
 from .dataset.composite_dataset import *
