@@ -20,19 +20,13 @@ class PandasDataset(Dataset):
         self.rewind_minutes = rewind_minutes
         print('Rewind minutes       : {:,}'.format(self.rewind_minutes))
         print(f"column:{column}")
-        print(self.data)
-        self.data[column] = self.data[column].astype(np.float32)
 
+        self.data[column] = self.data[column].astype(np.float32)
         self.data.replace([np.inf, -np.inf], np.nan, inplace=True)
-        print(self.data)
-        self.data = self.data.dropna() # careful to remove cols that are always nan before hand if they exist since nans are being dropped in pd dataset
-        print(self.data)
+        self.data = self.data.dropna() 
         
         # Get dates available
-        # self.dates = [date.to_pydatetime() for date in self.data['Datetime']] #  NOTE This line seems to be from an old version of pandas potentially also assumes date is a datetime obj? wheraas its a string fix below:
-        # New fix to above line of code is given in the below 2 lines
-        datetime_series = pd.to_datetime(self.data['Datetime'])  
-        self.dates = datetime_series.dt.to_pydatetime().tolist()
+        self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
 
         self.dates_set = set(self.dates)
         self.date_start = self.dates[0]
