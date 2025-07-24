@@ -63,7 +63,7 @@ class OMNIDataset(PandasDataset):
         print('\nOMNIWeb dataset')
         print('File                 : {}'.format(file_name))
         # delta_minutes = 1
-        delta_minutes =  # unclear what this is immediately, i think its supposed to match cadence but something to check out tmo
+        delta_minutes = 15 # unclear what this is immediately, i think its supposed to match cadence but something to check out tmo
 
         file_name = os.path.join(file_dir, "omni_5min_full_cleaned.csv")
         stats_dir = os.path.join(file_dir, "omni_stats.csv")
