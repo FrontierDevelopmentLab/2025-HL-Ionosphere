@@ -390,11 +390,6 @@ def main():
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, _ = batch
-                            # # dates_seq is a nested list of dates with shape (context_window + prediction_window, batch_size)
-                            # for b in range(args.batch_size):
-                            #     print(f'Batch {b+1}/{args.batch_size} dates:')
-                            #     for t in range(args.context_window + args.prediction_window):
-                            #         print(dates_seq[t][b])
                             jpld_seq = jpld_seq.to(device)
                             
                             loss = model.loss(jpld_seq, context_window=args.context_window)
