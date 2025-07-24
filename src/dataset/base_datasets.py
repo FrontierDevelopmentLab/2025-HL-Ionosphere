@@ -6,12 +6,6 @@ import os
 import datetime
 from tqdm import tqdm
 import pandas as pd
-from io import BytesIO
-import tarfile
-import pickle
-from functools import lru_cache
-import duckdb
-import math
 
 class PandasDataset(Dataset):
     def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None):
@@ -25,14 +19,21 @@ class PandasDataset(Dataset):
         print('Normalize            : {}'.format(self.normalize))
         self.rewind_minutes = rewind_minutes
         print('Rewind minutes       : {:,}'.format(self.rewind_minutes))
-
+        print(f"column:{column}")
+        print(self.data)
         self.data[column] = self.data[column].astype(np.float32)
 
         self.data.replace([np.inf, -np.inf], np.nan, inplace=True)
-        self.data = self.data.dropna()
-
+        print(self.data)
+        self.data = self.data.dropna() # careful to remove cols that are always nan before hand if they exist since nans are being dropped in pd dataset
+        print(self.data)
+        
         # Get dates available
-        self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
+        # self.dates = [date.to_pydatetime() for date in self.data['Datetime']] #  NOTE This line seems to be from an old version of pandas potentially also assumes date is a datetime obj? wheraas its a string fix below:
+        # New fix to above line of code is given in the below 2 lines
+        datetime_series = pd.to_datetime(self.data['Datetime'])  
+        self.dates = datetime_series.dt.to_pydatetime().tolist()
+
         self.dates_set = set(self.dates)
         self.date_start = self.dates[0]
         self.date_end = self.dates[-1]
@@ -169,8 +170,59 @@ class PandasDataset(Dataset):
         values = torch.stack(values).flatten()
         return dates, values
 
+import torch
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import datetime
+
+
+class CompositeDataset(Dataset): 
+    '''Note: dont use composite dataset, rather use sequences'''
+    def __init__(self, datasets):
+        self._datasets = datasets
+        # print("Number of datasets stored in the composite is: {}".format(len(datasets)))
+        self._date_start = self._datasets[0].date_start
+        self._date_end = self._datasets[0].date_end
+        self._delta_minutes = self._datasets[0].delta_minutes
+        self._length = len(self._datasets[0])
+        for dataset in self._datasets:
+            if dataset.date_start != self._date_start:
+                raise ValueError(
+                    "Expecting all datasets to have the same starting date"
+                )
+            if dataset.date_end != self._date_end:
+                raise ValueError("Expecting all datasets to have the same ending date")
+            if dataset.delta_minutes != self._delta_minutes:
+                raise ValueError(
+                    "Expecting all datasets to have the same delta seconds"
+                )
+            # if len(dataset) != self._length: # NOTE: this is removed temporarily but lengths can not be the same?
+            #     raise ValueError(
+            #         "Expecting all datasets to have the same length - synchronize dates or delta_seconds"
+            #     )
+
+        print("\nComposite - Length             : {}".format(self._length))
+        print("Composite - Start date         : {}".format(self._date_start))
+        print("Composite - End date           : {}".format(self._date_end))
+        print("Composite - Time delta         : {} minutes".format(self._delta_minutes))
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, index):
+        data = []
+        for i, dataset in enumerate(self._datasets):
+            # time_start = datetime.datetime.now()
+            data.append(dataset[index])
+            # time_spent = (datetime.datetime.now() - time_start).total_seconds()
+            # print('dataset {} took {} seconds'.format(i, time_spent))
+        return tuple(data)
+
+    def get_datasets(self):
+        return self._datasets
 
 class UnionDataset(Dataset):
+    """ fills gaps by merging all passed in datasets, if a dataset without a gap at indexed time is found, returns its (and only its) value """
     def __init__(self, datasets):
         self.datasets = datasets
 
@@ -208,3 +260,80 @@ class UnionDataset(Dataset):
             if value is not None:
                 return value, date
         return None, None
+
+class Sequences(Dataset):
+    def __init__(self, datasets, delta_minutes=1, sequence_length=10):
+        super().__init__()
+        self.datasets = datasets
+        self.delta_minutes = delta_minutes
+        self.sequence_length = sequence_length
+
+        self.date_start = max([dataset.date_start for dataset in self.datasets])
+        self.date_end = min([dataset.date_end for dataset in self.datasets])
+        if self.date_start > self.date_end:
+            raise ValueError('No overlapping date range between datasets')
+
+        print('\nSequences')
+        print('Start date              : {}'.format(self.date_start))
+        print('End date                : {}'.format(self.date_end))
+        print('Delta                   : {} minutes'.format(self.delta_minutes))
+        print('Sequence length         : {}'.format(self.sequence_length))
+        print('Sequence duration       : {} minutes'.format(self.delta_minutes*self.sequence_length))
+
+        self.sequences = self.find_sequences()
+        if len(self.sequences) == 0:
+            print('**** No sequences found ****')
+        print('Number of sequences     : {:,}'.format(len(self.sequences)))
+        if len(self.sequences) > 0:
+            print('First sequence          : {}'.format([date.isoformat() for date in self.sequences[0]]))
+            print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))
+
+    def __len__(self):
+        return len(self.sequences)
+    
+    def __getitem__(self, index):
+        # print('constructing sequence')
+        sequence = self.sequences[index]
+        sequence_data = []
+        for dataset in self.datasets:
+            data = []
+            for i, date in enumerate(sequence):
+                if i == 0:
+                    # All data is available at the first step in sequence (by construction of sequences by find_sequence)
+                    d, _ = dataset[date]
+                    data.append(d)
+                else:
+                    if date in dataset.dates_set:
+                        d, _ = dataset[date]
+                        data.append(d)
+                    else:
+                        data.append(data[i-1])
+            data = torch.stack(data)
+            sequence_data.append(data)
+        sequence_data.append([date.isoformat() for date in sequence])
+        # print('done constructing sequence')
+        return tuple(sequence_data)
+
+
+    def find_sequences(self):
+        sequences = []
+        sequence_start = self.date_start
+        while sequence_start <= self.date_end - datetime.timedelta(minutes=(self.sequence_length-1)*self.delta_minutes):
+            # New sequence
+            sequence = []
+            sequence_available = True
+            for i in range(self.sequence_length):
+                date = sequence_start + datetime.timedelta(minutes=i*self.delta_minutes)
+                if i == 0:
+                    for dataset in self.datasets:
+                        if date not in dataset.dates_set:
+                            sequence_available = False
+                            break
+                if not sequence_available:
+                    break
+                sequence.append(date)
+            if sequence_available:
+                sequences.append(sequence)
+            # Move to next sequence
+            sequence_start += datetime.timedelta(minutes=self.delta_minutes)
+        return sequences

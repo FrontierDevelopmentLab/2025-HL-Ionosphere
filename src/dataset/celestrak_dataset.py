@@ -22,14 +22,12 @@ import os
 import numpy as np
 import datetime
 import pandas as pd
-from base_datasets import PandasDataset
+from .base_datasets import PandasDataset
 
 class CelestrakDataset(PandasDataset):
-    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
+    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
         print('\nCelestrak dataset')
         print('File                 : {}'.format(file_name))
-        # delta_minutes = 1
-        delta_minutes = 180 # unclear what this is immediately, i think its supposed to match cadence but something to check out tmo
 
         data = pd.read_csv(file_name)
         data['Datetime'] = pd.to_datetime(data['Datetime'])
@@ -38,28 +36,33 @@ class CelestrakDataset(PandasDataset):
 
         self.column = ["Kp", "Ap"]
 
-        self.df_mean = data[self.column].mean()
-        self.df_std = data[self.column].mean()
-
+        df_mean = data[self.column].mean()
+        df_std = data[self.column].mean()
+        self.col_means = torch.tensor(np.array(df_mean))
+        self.col_std = torch.tensor(np.array(df_std))
 
         # Remove outliers based on quantiles, # NOTE: is this something we care about in this dataset? 
-        q_low = data[self.column].quantile(0.001)
-        q_hi  = data[self.column].quantile(0.999)
-        data = data[(data[self.column] < q_hi) & (data[self.column] > q_low)]
+        # q_low = data[self.column].quantile(0.001)
+        # q_hi  = data[self.column].quantile(0.999)
+        # data = data[(data[self.column] < q_hi) & (data[self.column] > q_low)] # quantile stuff breaking code, we can reintroduce later
 
 
         super().__init__('Celestrak dataset', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
     # NOTE: what is the reason these methods were kept as instance methods but also passing the data in as an argument in the RSTNRadio dataset (or the other dattasets as well)?
-    def normalize_data(self, data, columns): 
-        for col in columns:
-            data[col] = (data[col] - self.df_mean[col]) / self.df_std[col]
-        return data
+    def normalize_data(self, data): 
+        # print(data.shape, self.df_mean.shape, self.df_std.shape)
+        # print(data, self.df_mean, self.df_std, self.column)
+        return (data - self.col_means) / self.col_std
+        # for col in self.column:
+        #     data[col] = (data[col] - self.df_mean[col]) / self.df_std[col]
+        # return data
     
-    def unnormalize_data(self, data, columns):
-        for col in columns:
-            data[col] = data[col] * self.df_std[col] + self.df_mean[col]
-        return data
+    def unnormalize_data(self, data):
+        # for col in self.column:
+        #     data[col] = data[col] * self.df_std[col] + self.df_mean[col]
+        return data * self.col_std + self.col_means
+        # return data
     
 
 # class CelestrakDataset(torch.utils.data.Dataset):
