@@ -54,7 +54,7 @@ import pandas as pd
 
 
 
-
+# file_dir = "/mnt/ionosphere-data/omniweb/cleaned/"
 class OMNIDataset(PandasDataset):
     def __init__(self, file_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=None, delta_minutes=15): # 50 minutes rewind defualt
         file_name = os.path.join(file_dir, "omni_5min_full_cleaned.csv")

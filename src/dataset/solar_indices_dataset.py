@@ -22,6 +22,7 @@ import glob as glob
 import pandas as pd
 from .base_datasets import PandasDataset
 
+# solar_index_file = "/mnt/ionosphere-data/solar_env_tech_indices/Indices_F10_processed.csv"
 class SolarIndexDataset(PandasDataset):
     def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes = 24 * 60, date_exclusions=None, column=None, delta_minutes=15): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
         print('\nSolar Index dataset')

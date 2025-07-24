@@ -24,6 +24,7 @@ import datetime
 import pandas as pd
 from .base_datasets import PandasDataset
 
+# celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
 class CelestrakDataset(PandasDataset):
     def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
         print('\nCelestrak dataset')
