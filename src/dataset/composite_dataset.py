@@ -8,7 +8,6 @@ from src import OMNIDataset
 import datetime
 # Combine all datasets into one
 
-# TODO: 
 # TODO: dont allow index based indexing, rather convert to timestamp within the __getitem__ of the composite dataset class, then pass in the timestamp
 # for indexing within composite dataset, even if some missing data, wont have compounding deletion error
 # TODO: Incorporate a date_exclusion, similar to JPLDGIMDataset, This should be handled in composite and keep from getting those dates
@@ -62,7 +61,8 @@ class CompositeDataset(torch.utils.data.Dataset):
         if isinstance(index, datetime.datetime):
             date = index
         elif isinstance(index, int):
-            date = self.composite_start + index * self.cadence
+            minutes = index * self.cadence
+            date = self.composite_start + datetime.timedelta(minutes=minutes)
 
         else:
             raise TypeError("Index must be either a datetime or an integer.")
