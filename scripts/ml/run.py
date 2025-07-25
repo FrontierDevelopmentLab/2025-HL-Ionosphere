@@ -175,6 +175,20 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
     plt.close()
 
+def run_forecast(model, date_start, date_end, title, file_name, args):
+    # dates = [d.isoformat() for d in range(date_start, date_end, datetime.timedelta(minutes=args.delta_minutes))]
+
+    # comparison_video_file = os.path.join(args.target_dir, file_name)
+    # save_gim_video_comparison(
+    #     original.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     forecast.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     comparison_video_file,
+    #     vmin=0, vmax=100,
+    #     titles_top=[f'{title} Original: {d}' for d in dates],
+    #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
+    # )
+    # WORK IN PROGRESS
+    pass
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
@@ -235,7 +249,8 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
+    parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -309,8 +324,8 @@ def main():
                 dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=15, sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=15, sequence_length=training_sequence_length)
+                dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -474,71 +489,85 @@ def main():
 
 
                     elif args.model_type == 'IonCastConvLSTM':
-                        jpld_seq, dates_seq = next(iter(valid_loader))
-                        jpld_seq = jpld_seq[:num_evals]
-                        dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.prediction_window)]
-                        jpld_seq = jpld_seq.to(device)
+                        # jpld_seq, dates_seq = next(iter(valid_loader))
+                        # jpld_seq = jpld_seq[:num_evals]
+                        # dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.prediction_window)]
+                        # jpld_seq = jpld_seq.to(device)
 
-                        jpld_contexts = jpld_seq[:, :args.context_window, :, :]
-                        jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
+                        # jpld_contexts = jpld_seq[:, :args.context_window, :, :]
+                        # jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
 
-                        # Forecasts
-                        jpld_forecasts = model.predict(jpld_contexts, prediction_window=args.prediction_window)
+                        # # Forecasts
+                        # jpld_forecasts = model.predict(jpld_contexts, prediction_window=args.prediction_window)
 
-                        jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
-                        jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
-                        jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
+                        # jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
+                        # jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
+                        # jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
 
-                        # save forecasts
+                        # # save forecasts
 
-                        # # jpld_seq_dates is a nested list of dates with shape (context_window + prediction_window, batch_size)
-                        # for b in range(args.batch_size):
-                        #     print(f'Batch {b+1}/{args.batch_size} dates:')
-                        #     for t in range(args.context_window + args.prediction_window):
-                        #         print(dates_seq[t][b])
-                        for i in range(num_evals):
-                            dates = [dates_seq[t][i] for t in range(args.context_window + args.prediction_window)]
-                            dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
-                            dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.prediction_window]]
-                            dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.prediction_window)]
-                            # save videos of the forecasts
-                            forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
-                            save_gim_video(
-                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
-                                forecast_video_file,
-                                vmin=0, vmax=100,
-                                titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                            )
+                        # # # jpld_seq_dates is a nested list of dates with shape (context_window + prediction_window, batch_size)
+                        # # for b in range(args.batch_size):
+                        # #     print(f'Batch {b+1}/{args.batch_size} dates:')
+                        # #     for t in range(args.context_window + args.prediction_window):
+                        # #         print(dates_seq[t][b])
+                        # for i in range(num_evals):
+                        #     dates = [dates_seq[t][i] for t in range(args.context_window + args.prediction_window)]
+                        #     dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
+                        #     dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.prediction_window]]
+                        #     dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.prediction_window)]
+                        #     # save videos of the forecasts
+                        #     forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
+                        #     save_gim_video(
+                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
+                        #         forecast_video_file,
+                        #         vmin=0, vmax=100,
+                        #         titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                        #     )
 
-                            # save comparison video (original vs forecast)
-                            comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
-                            save_gim_video_comparison(
-                                jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # top (original)
-                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # bottom (forecast)
-                                comparison_video_file,
-                                vmin=0, vmax=100,
-                                titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
-                                titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                            )
+                        #     # save comparison video (original vs forecast)
+                        #     comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
+                        #     save_gim_video_comparison(
+                        #         jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # top (original)
+                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # bottom (forecast)
+                        #         comparison_video_file,
+                        #         vmin=0, vmax=100,
+                        #         titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
+                        #         titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                        #     )
 
-                            if epoch == 0:
-                                # save videos of the forecasts originals
-                                forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
-                                save_gim_video(
-                                    jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
-                                    forecast_original_video_file,
-                                    vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
-                                )
+                        #     if epoch == 0:
+                        #         # save videos of the forecasts originals
+                        #         forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
+                        #         save_gim_video(
+                        #             jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
+                        #             forecast_original_video_file,
+                        #             vmin=0, vmax=100,
+                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
+                        #         )
 
-                                # save videos of the contexts
-                                context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
-                                save_gim_video(
-                                    jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
-                                    context_video_file,
-                                    vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
-                                )
+                        #         # save videos of the contexts
+                        #         context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
+                        #         save_gim_video(
+                        #             jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
+                        #             context_video_file,
+                        #             vmin=0, vmax=100,
+                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
+                        #         )
+
+                        if args.test_event_id:
+                            for event_id in args.test_event_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp = event
+                                print('Testing event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, date_start, date_end, title, file_name, args)
+
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
