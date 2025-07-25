@@ -237,7 +237,7 @@ def main():
     parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
     parser.add_argument('--solar_indices_dir', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
     parser.add_argument('--datasets')
-    parser.add_argument('-d','--aux_datasets', nargs='+', help='<Required> Set flag', required=True, choices=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', required=True, choices=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -261,8 +261,7 @@ def main():
 
     os.makedirs(args.target_dir, exist_ok=True)
     log_file = os.path.join(args.target_dir, 'log.txt')
-    print(args.aux_datasets)
-    raise
+
     set_random_seed(args.seed)
     device = torch.device(args.device)
 
