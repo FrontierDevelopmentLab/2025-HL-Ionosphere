@@ -348,8 +348,6 @@ class JPLD(Dataset):
     @staticmethod
     def unnormalize(data):
         return jpld_unnormalize(data)
-    
-
 
 
 class Sequences(Dataset):
@@ -405,7 +403,6 @@ class Sequences(Dataset):
         # print('done constructing sequence')
         return tuple(sequence_data)
 
-
     def find_sequences(self):
         sequences = []
         sequence_start = self.date_start
@@ -430,13 +427,13 @@ class Sequences(Dataset):
         return sequences
 
 
-# Intended use case is to concatenate multiple dataset instance of the same type
+# The intended use case is to produce a union of multiple dataset instances of the same type
 # e.g. multiple JPLD datasets with different date ranges
 class UnionDataset(Dataset):
     def __init__(self, datasets):
         self.datasets = datasets
 
-        print('\nConcatenated datasets')
+        print('\nUnion of datasets')
         for dataset in self.datasets:
             print('Dataset : {}'.format(dataset))
 
@@ -466,7 +463,7 @@ class UnionDataset(Dataset):
         else:
             raise ValueError('Expecting index to be datetime.datetime or str (in the format of 2022-11-01T00:01:00)')
         for dataset in self.datasets:
-            value, date = dataset[index]
-            if value is not None:
+            if date in dataset.dates_set:
+                value, date = dataset[date]
                 return value, date
         return None, None
