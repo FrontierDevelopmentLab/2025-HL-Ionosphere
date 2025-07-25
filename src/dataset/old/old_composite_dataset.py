@@ -4,6 +4,8 @@ from src import JPLDGIMDataset
 from src import SolarIndexDataset
 from src import CelestrakDataset
 from src import OMNIDataset
+from src.dataset.solar_position_dataset import SolarPositionDataset
+from src.dataset.lunar_position_dataset import LunarPositionDataset
 
 import datetime
 # Combine all datasets into one
@@ -30,6 +32,8 @@ class CompositeDataset(torch.utils.data.Dataset):
         self.celestrak_dataset = CelestrakDataset(celestrak_data_file, date_start, date_end, normalize, self.cadence)
         self.solar_index_dataset = SolarIndexDataset(solar_index_data_file, date_start, date_end, normalize, self.cadence)
         self.omniweb_dataset = OMNIDataset(omniweb_dir, date_start, date_end, normalize, sampled_cadence=self.cadence)
+        self.solar_position_dataset = SolarPositionDataset(date_start, date_end, normalize, self.cadence)
+        self.lunar_position_dataset = LunarPositionDataset(date_start, date_end, normalize, self.cadence)
 
         # Set the date start and end based on the datasets
         if date_start is None or date_end is None: 
@@ -37,8 +41,10 @@ class CompositeDataset(torch.utils.data.Dataset):
             celestrak_start, celestrak_end = self.celestrak_dataset.get_date_range()
             solar_index_start, solar_index_end = self.solar_index_dataset.get_date_range()
             omniweb_start, omniweb_end = self.omniweb_dataset.get_date_range()
-            self.composite_start = max(gim_start, celestrak_start, solar_index_start, omniweb_start)
-            self.composite_end = min(gim_end, celestrak_end, solar_index_end, omniweb_end)
+            solar_position_start, solar_position_end = self.solar_position_dataset.get_date_range()
+            lunar_position_start, lunar_position_end = self.lunar_position_dataset.get_date_range()
+            self.composite_start = max(gim_start, celestrak_start, solar_index_start, omniweb_start, solar_position_start, lunar_position_start)
+            self.composite_end = min(gim_end, celestrak_end, solar_index_end, omniweb_end, solar_position_end, lunar_position_end)
             
             if self.composite_start > self.composite_end:
                 raise ValueError("No overlap found between all datasets.")
@@ -47,12 +53,16 @@ class CompositeDataset(torch.utils.data.Dataset):
             self.celestrak_dataset.set_date_range(self.composite_start, self.composite_end)
             self.solar_index_dataset.set_date_range(self.composite_start, self.composite_end)
             self.omniweb_dataset.set_date_range(self.composite_start, self.composite_end)
+            self.solar_position_dataset.set_date_range(self.composite_start, self.composite_end)
+            self.lunar_position_dataset.set_date_range(self.composite_start, self.composite_end)
 
         print(f"Composite Dataset created with the following datasets start and end dates:")
         print(f"  - JPLD GIM Dataset: date range: {self.gim_dataset.date_start} to {self.gim_dataset.date_end}")
         print(f"  - Celestrak Dataset: date range: {self.celestrak_dataset.date_start} to {self.celestrak_dataset.date_end}")
         print(f"  - Solar Index Dataset: date range: {self.solar_index_dataset.date_start} to {self.solar_index_dataset.date_end}")
         print(f"  - OMNIWEB Dataset: date range: {self.omniweb_dataset.date_start} to {self.omniweb_dataset.date_end}")
+        print(f"  - Solar Position Dataset: date range: {self.solar_position_dataset.date_start} to {self.solar_position_dataset.date_end}")
+        print(f"  - Lunar Position Dataset: date range: {self.lunar_position_dataset.date_start} to {self.lunar_position_dataset.date_end}")
 
     def __len__(self):
         return self._length
@@ -71,11 +81,15 @@ class CompositeDataset(torch.utils.data.Dataset):
         celestrak_data = self.celestrak_dataset[date]
         solar_index_data = self.solar_index_dataset[date]
         omniweb_data = self.omniweb_dataset[date]
+        solar_position_data = self.solar_position_dataset[date]
+        lunar_position_data = self.lunar_position_dataset[date]
 
         # TODO: decide return format
         return {
             'gim': gim_data,
             'celestrak': celestrak_data,
             'solar_index': solar_index_data,
-            'omniweb': omniweb_data
+            'omniweb': omniweb_data,
+            'solar_position': solar_position_data,
+            'lunar_position': lunar_position_data
         }

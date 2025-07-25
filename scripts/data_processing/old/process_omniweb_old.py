@@ -8,7 +8,7 @@ import pprint
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
-
+# NOTE: this wont be used in the final processed data 
 # NOTE: May be better to fill withmean value, as certain parameters have long gaps of missing data which forward filling will likely cause a significant bias
 def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, process omniweb data'
