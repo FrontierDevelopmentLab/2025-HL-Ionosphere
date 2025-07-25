@@ -23,6 +23,8 @@ Reference:
 
 It assumes data across time and level is stacked, and operates only operates in
 a 2D mesh over latitudes and longitudes.
+
+This is Linnea's version of GraphCast, adjusted to work with TEC data. This model will predict the vTEC over the Earth's surface, on a grid of latitude and longitude.
 """
 
 from typing import Any, Callable, Mapping, Optional
@@ -45,92 +47,18 @@ Kwargs = Mapping[str, Any]
 
 GNN = Callable[[jraph.GraphsTuple], jraph.GraphsTuple]
 
-
-# https://www.ecmwf.int/en/forecasts/dataset/ecmwf-reanalysis-v5
-PRESSURE_LEVELS_ERA5_37 = (
-    1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300,
-    350, 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900,
-    925, 950, 975, 1000)
-
-# https://www.ecmwf.int/en/forecasts/datasets/set-i
-PRESSURE_LEVELS_HRES_25 = (
-    1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400, 500, 600,
-    700, 800, 850, 900, 925, 950, 1000)
-
-# https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2020MS002203
-PRESSURE_LEVELS_WEATHERBENCH_13 = (
-    50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000)
-
-PRESSURE_LEVELS = {
-    13: PRESSURE_LEVELS_WEATHERBENCH_13,
-    25: PRESSURE_LEVELS_HRES_25,
-    37: PRESSURE_LEVELS_ERA5_37,
-}
-
-# The list of all possible atmospheric variables. Taken from:
-# https://confluence.ecmwf.int/display/CKB/ERA5%3A+data+documentation#ERA5:datadocumentation-Table9
-ALL_ATMOSPHERIC_VARS = (
-    "potential_vorticity",
-    "specific_rain_water_content",
-    "specific_snow_water_content",
-    "geopotential",
-    "temperature",
-    "u_component_of_wind",
-    "v_component_of_wind",
-    "specific_humidity",
-    "vertical_velocity",
-    "vorticity",
-    "divergence",
-    "relative_humidity",
-    "ozone_mass_mixing_ratio",
-    "specific_cloud_liquid_water_content",
-    "specific_cloud_ice_water_content",
-    "fraction_of_cloud_cover",
+INPUT_VARS = (
+    "vTEC",
 )
 
-TARGET_SURFACE_VARS = (
-    "2m_temperature",
-    "mean_sea_level_pressure",
-    "10m_v_component_of_wind",
-    "10m_u_component_of_wind",
-    "total_precipitation_6hr",
-)
-TARGET_SURFACE_NO_PRECIP_VARS = (
-    "2m_temperature",
-    "mean_sea_level_pressure",
-    "10m_v_component_of_wind",
-    "10m_u_component_of_wind",
-)
-TARGET_ATMOSPHERIC_VARS = (
-    "temperature",
-    "geopotential",
-    "u_component_of_wind",
-    "v_component_of_wind",
-    "vertical_velocity",
-    "specific_humidity",
-)
-TARGET_ATMOSPHERIC_NO_W_VARS = (
-    "temperature",
-    "geopotential",
-    "u_component_of_wind",
-    "v_component_of_wind",
-    "specific_humidity",
-)
-EXTERNAL_FORCING_VARS = (
-    "toa_incident_solar_radiation",
-)
-GENERATED_FORCING_VARS = (
-    "year_progress_sin",
-    "year_progress_cos",
-    "day_progress_sin",
-    "day_progress_cos",
-)
-FORCING_VARS = EXTERNAL_FORCING_VARS + GENERATED_FORCING_VARS
-STATIC_VARS = (
-    "geopotential_at_surface",
-    "land_sea_mask",
+TARGET_VARS = (
+    "vTEC",
 )
 
+# TODO: Add other forcing variables (solar, geomagnetic, lat/lon/day, sun location, etc)
+# FORCING_VARS = (
+#     "F10.7",
+# )
 
 @chex.dataclass(frozen=True, eq=True)
 class TaskConfig:
@@ -138,36 +66,14 @@ class TaskConfig:
   input_variables: tuple[str, ...]
   # Target variables which the model is expected to predict.
   target_variables: tuple[str, ...]
-  forcing_variables: tuple[str, ...]
-  pressure_levels: tuple[int, ...]
+#   forcing_variables: tuple[str, ...] # TODO: Add forcing variables
   input_duration: str
 
 TASK = TaskConfig(
-    input_variables=(
-        TARGET_SURFACE_VARS + TARGET_ATMOSPHERIC_VARS + FORCING_VARS +
-        STATIC_VARS),
-    target_variables=TARGET_SURFACE_VARS + TARGET_ATMOSPHERIC_VARS,
-    forcing_variables=FORCING_VARS,
-    pressure_levels=PRESSURE_LEVELS_ERA5_37,
-    input_duration="12h",
-)
-TASK_13 = TaskConfig(
-    input_variables=(
-        TARGET_SURFACE_VARS + TARGET_ATMOSPHERIC_VARS + FORCING_VARS +
-        STATIC_VARS),
-    target_variables=TARGET_SURFACE_VARS + TARGET_ATMOSPHERIC_VARS,
-    forcing_variables=FORCING_VARS,
-    pressure_levels=PRESSURE_LEVELS_WEATHERBENCH_13,
-    input_duration="12h",
-)
-TASK_13_PRECIP_OUT = TaskConfig(
-    input_variables=(
-        TARGET_SURFACE_NO_PRECIP_VARS + TARGET_ATMOSPHERIC_VARS + FORCING_VARS +
-        STATIC_VARS),
-    target_variables=TARGET_SURFACE_VARS + TARGET_ATMOSPHERIC_VARS,
-    forcing_variables=FORCING_VARS,
-    pressure_levels=PRESSURE_LEVELS_WEATHERBENCH_13,
-    input_duration="12h",
+    input_variables=INPUT_VARS,
+    target_variables=TARGET_VARS,
+    # forcing_variables=FORCING_VARS,
+    input_duration="0.25h", # TODO: see how to correctly put in our 15 min cadence
 )
 
 
@@ -210,8 +116,8 @@ class CheckPoint:
   license: str
 
 
-class GraphCast(predictor_base.Predictor):
-  """GraphCast Predictor.
+class IonCast(predictor_base.Predictor):
+  """IonCast Predictor, a GraphCast model for ionospheric TEC data.
 
   The model works on graphs that take into account:
   * Mesh nodes: nodes for the vertices of the mesh.
@@ -292,19 +198,14 @@ class GraphCast(predictor_base.Predictor):
         name="mesh_gnn",
     )
 
-    num_surface_vars = len(
-        set(task_config.target_variables) - set(ALL_ATMOSPHERIC_VARS))
-    num_atmospheric_vars = len(
-        set(task_config.target_variables) & set(ALL_ATMOSPHERIC_VARS))
-    num_outputs = (num_surface_vars +
-                   len(task_config.pressure_levels) * num_atmospheric_vars)
+    num_outputs = len(set(task_config.target_variables)) # TODO: Change if we add more variables
 
     # Decoder, which moves data from the mesh back into the grid with a single
     # message passing step.
     self._mesh2grid_gnn = deep_typed_graph_net.DeepTypedGraphNet(
         # Require a specific node dimensionaly for the grid node outputs.
         node_output_size=dict(grid_nodes=num_outputs),
-        embed_nodes=False,  # Node features already embdded by previous layers.
+        embed_nodes=False,  # Node features already embedded by previous layers.
         embed_edges=True,  # Embed raw features of the mesh2grid edges.
         edge_latent_size=dict(mesh2grid=model_config.latent_size),
         node_latent_size=dict(
@@ -354,6 +255,7 @@ class GraphCast(predictor_base.Predictor):
   def _finest_mesh(self):
     return self._meshes[-1]
 
+  # TODO: In future, consider whether to keep xarray format or PyTorch dataset format.
   def __call__(self,
                inputs: xarray.Dataset,
                targets_template: xarray.Dataset,
@@ -401,17 +303,6 @@ class GraphCast(predictor_base.Predictor):
         predictions, targets,
         per_variable_weights={
             # Any variables not specified here are weighted as 1.0.
-            # A single-level variable, but an important headline variable
-            # and also one which we have struggled to get good performance
-            # on at short lead times, so leaving it weighted at 1.0, equal
-            # to the multi-level variables:
-            "2m_temperature": 1.0,
-            # New single-level variables, which we don't weight too highly
-            # to avoid hurting performance on other variables.
-            "10m_u_component_of_wind": 0.1,
-            "10m_v_component_of_wind": 0.1,
-            "mean_sea_level_pressure": 0.1,
-            "total_precipitation_6hr": 0.1,
         })
     return loss, predictions  # pytype: disable=bad-return-type  # jax-ndarray
 
@@ -423,6 +314,8 @@ class GraphCast(predictor_base.Predictor):
       ) -> predictor_base.LossAndDiagnostics:
     loss, _ = self.loss_and_predictions(inputs, targets, forcings)
     return loss  # pytype: disable=bad-return-type  # jax-ndarray
+
+########################################## Initialize graphs ##########################################
 
   def _maybe_init(self, sample_inputs: xarray.Dataset):
     """Inits everything that has a dependency on the input coordinates."""
