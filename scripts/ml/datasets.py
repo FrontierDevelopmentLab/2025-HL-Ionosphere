@@ -430,6 +430,8 @@ class Sequences(Dataset):
         return sequences
 
 
+# Intended use case is to concatenate multiple dataset instance of the same type
+# e.g. multiple JPLD datasets with different date ranges
 class UnionDataset(Dataset):
     def __init__(self, datasets):
         self.datasets = datasets
