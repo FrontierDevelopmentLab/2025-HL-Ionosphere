@@ -175,8 +175,51 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
     plt.close()
 
-def run_forecast(model, date_start, date_end, title, file_name, args):
-    # dates = [d.isoformat() for d in range(date_start, date_end, datetime.timedelta(minutes=args.delta_minutes))]
+def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+    if not isinstance(model, (IonCastConvLSTM)):
+        raise ValueError('Model must be an instance of IonCastConvLSTM')
+    if date_start > date_end:
+        raise ValueError('date_start must be before date_end')
+    if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
+        raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
+    if date_forecast_start >= date_end:
+        raise ValueError('date_forecast_start must be before date_end')
+    # date_forecast_start must be an integer multiple of args.delta_minutes from date_start
+    if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
+        raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
+
+    print('Evaluation from {} to {}'.format(date_start, date_end))
+    print('Forecast start date: {}'.format(date_forecast_start))
+    sequence_start = date_start
+    sequence_end = date_end
+    sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
+    print('Sequence length: {}'.format(sequence_length))
+    sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
+    # find the index of the date_forecast_start in the list sequence
+    if date_forecast_start not in sequence:
+        raise ValueError('date_forecast_start must be in the sequence')
+    sequence_forecast_start_index = sequence.index(date_forecast_start)
+    sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
+
+    sequence_data = dataset.get_sequence_data(sequence)
+    jpld_original = sequence_data[0]  # Original data
+    device = next(model.parameters()).device
+    jpld_original = jpld_original.to(device)
+    jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
+    jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+
+    print(jpld_original.shape)
+    print(jpld_forecast_context.shape)
+    print(jpld_forecast.shape)
+
+    jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+
+    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
+    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
+    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
+
+
+
 
     # comparison_video_file = os.path.join(args.target_dir, file_name)
     # save_gim_video_comparison(
@@ -187,8 +230,28 @@ def run_forecast(model, date_start, date_end, title, file_name, args):
     #     titles_top=[f'{title} Original: {d}' for d in dates],
     #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
     # )
-    # WORK IN PROGRESS
-    pass
+
+    forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
+    titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
+    titles_forecast = []
+    for i in range(sequence_length):
+        if i < sequence_forecast_start_index:
+            titles_forecast.append(f'{title} JPLD GIM TEC Original (Context): {sequence[i]}')
+        else:
+            titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
+
+    # print(jpld_original_unnormalized.shape)
+    # print(jpld_forecast_with_context_unnormalized.shape)
+    # print(len(titles_original))
+    # print(len(titles_forecast))
+    save_gim_video_comparison(
+        gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        file_name=file_name,
+        vmin=0, vmax=100,
+        titles_top=titles_original,
+        titles_bottom=titles_forecast
+    )
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
@@ -212,6 +275,8 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'model_context_window': model.context_window,
+            'model_prediction_window': model.prediction_window,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -224,7 +289,9 @@ def load_model(file_name, device):
         model_z_dim = checkpoint['model_z_dim']
         model = VAE1(z_dim=model_z_dim)
     elif checkpoint['model'] == 'IonCastConvLSTM':
-        model = IonCastConvLSTM()
+        model_context_window = checkpoint['model_context_window']
+        model_prediction_window = checkpoint['model_prediction_window']
+        model = IonCastConvLSTM(context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -263,8 +330,8 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-2023-11-05T09:00:00', 'G2H9-2024-05-10T15:00:00', 'G2H9-2024-06-28T09:00:00'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-2021-11-03T21:00:00', 'G2H9-2023-03-23T09:00:00', 'G2H9-2023-04-23T12:00:00'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100', 'G2H9-202303230900', 'G2H9-202304231200'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -359,7 +426,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=1, output_channels=1)
+                    model = IonCastConvLSTM(input_channels=1, output_channels=1, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -564,9 +631,10 @@ def main():
                                 print('Testing event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
                                 file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
                                 title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, date_start, date_end, title, file_name, args)
+                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
 
         elif args.mode == 'test':
