@@ -383,12 +383,21 @@ class Sequences(Dataset):
     def __getitem__(self, index):
         # print('constructing sequence')
         sequence = self.sequences[index]
+        sequence_data = self.get_sequence_data(sequence)
+        return sequence_data
+
+    def get_sequence_data(self, sequence): # sequence is a list of datetime objects
+        if sequence[0] < self.date_start or sequence[-1] > self.date_end:
+            raise ValueError('Sequence dates must be within the dataset date range ({}) - ({})'.format(self.date_start, self.date_end))
+
         sequence_data = []
         for dataset in self.datasets:
             data = []
             for i, date in enumerate(sequence):
                 if i == 0:
-                    # All data is available at the first step in sequence (by construction of sequences by find_sequence)
+                    # Data from all datasets must be available at the first step in sequence
+                    if date not in dataset.dates_set:
+                        raise ValueError('First date of the sequence {} not found in dataset {}'.format(date, dataset.name))
                     d, _ = dataset[date]
                     data.append(d)
                 else:
@@ -400,7 +409,6 @@ class Sequences(Dataset):
             data = torch.stack(data)
             sequence_data.append(data)
         sequence_data.append([date.isoformat() for date in sequence])
-        # print('done constructing sequence')
         return tuple(sequence_data)
 
     def find_sequences(self):
@@ -447,8 +455,8 @@ class UnionDataset(Dataset):
                     self.date_start = date
                 if date > self.date_end:
                     self.date_end = date
-                # if date in self.dates_set:
-                #     raise ValueError('Overlap in dates_set between datasets')
+                if date in self.dates_set:
+                    print('Warning: Overlap in dates_set between datasets in the union')
                 self.dates_set.add(date)
 
     def __len__(self):
