@@ -19,8 +19,9 @@ import glob
 from util import Tee
 from util import set_random_seed
 from models_conditioned import VAE1, IonCastConvLSTM
-from datasets import JPLD, Sequences
-import src
+from datasets import JPLD, Sequences, UnionDataset
+from src import OMNIDataset, CelestrakDataset, SolarIndexDataset, UnionDataset, Sequences
+from events import EventCatalog
 
 matplotlib.use('Agg')
 
@@ -175,8 +176,22 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
     plt.close()
 
+def run_forecast(model, date_start, date_end, title, file_name, args):
+    # dates = [d.isoformat() for d in range(date_start, date_end, datetime.timedelta(minutes=args.delta_minutes))]
 
-def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data, file_name):
+    # comparison_video_file = os.path.join(args.target_dir, file_name)
+    # save_gim_video_comparison(
+    #     original.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     forecast.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     comparison_video_file,
+    #     vmin=0, vmax=100,
+    #     titles_top=[f'{title} Original: {d}' for d in dates],
+    #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
+    # )
+    # WORK IN PROGRESS
+    pass
+
+def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -188,7 +203,6 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, e
             'train_losses': train_losses,
             'valid_losses': valid_losses,
             'model_z_dim': model.z_dim,
-            'eval_data': eval_data
         }
     elif isinstance(model, IonCastConvLSTM):
         checkpoint = {
@@ -199,7 +213,6 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, e
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
-            'eval_data': eval_data
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -224,8 +237,8 @@ def load_model(file_name, device):
     iteration = checkpoint['iteration']
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
-    eval_data = checkpoint['eval_data']
-    return model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data
+    return model, optimizer, epoch, iteration, train_losses, valid_losses
+
 
 
 def main():
@@ -242,7 +255,8 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2025-07-01T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
+    parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -250,12 +264,13 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
-    parser.add_argument('--valid_proportion', type=float, default=0.1, help='Proportion of data to use for validation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
-    parser.add_argument('--eval_window', type=int, default=4, help='Evaluation window size for the model')
+    parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-2023-11-05T09:00:00', 'G2H9-2024-05-10T15:00:00', 'G2H9-2024-06-28T09:00:00'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-2021-11-03T21:00:00', 'G2H9-2023-03-23T09:00:00', 'G2H9-2023-04-23T12:00:00'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -285,24 +300,40 @@ def main():
             date_start = datetime.datetime.fromisoformat(args.date_start)
             date_end = datetime.datetime.fromisoformat(args.date_end)
 
+            training_sequence_length = args.context_window + args.prediction_window
+
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
 
+            print('Processing excluded dates')
+
+            datasets_jpld_valid = []
+
+            date_exclusions = []
+            if args.test_event_id:
+                for event_id in args.test_event_id:
+                    print('Excluding event ID: {}'.format(event_id))
+                    if event_id not in EventCatalog:
+                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                    _, _, exclusion_start, exclusion_end, _, _ = EventCatalog[event_id]
+                    exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
+                    exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
+                    date_exclusions.append((exclusion_start, exclusion_end))
+
+                    datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+
+            dataset_jpld_valid = UnionDataset(datasets=datasets_jpld_valid)
+
+
             if args.model_type == 'VAE1':
-                dataset = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_train = dataset_jpld_train
+                dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
-                dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, normalize=True)
-                dataset = Sequences(
-                    datasets=[dataset_jpld],
-                    delta_minutes=15,  # 15 minutes for JPLD
-                    sequence_length=args.context_window + args.eval_window
-                )
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
-
-
-            valid_size = int(args.valid_proportion * len(dataset))
-            train_size = len(dataset) - valid_size
-            dataset_train, dataset_valid = random_split(dataset, [train_size, valid_size])
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
@@ -324,7 +355,7 @@ def main():
                 model_files.sort()
                 model_file = model_files[-1]
                 print('Resuming training from model file: {}'.format(model_file))
-                model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data = load_model(model_file, device)
+                model, optimizer, epoch, iteration, train_losses, valid_losses = load_model(model_file, device)
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 print('Next epoch    : {:,}'.format(epoch_start+1))
@@ -333,20 +364,8 @@ def main():
                 print('Creating new model')
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
-                    eval_data = {
-                    'eval_reconstructions': None, # numpy array of shape (num_evals, num_epochs, 180, 360)
-                    'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 180, 360)
-                    'eval_reconstructions_dates': None, # list of dates of length num_evals
-                    'eval_samples': None # numpy array of shape (num_evals, num_epochs, 180, 360)
-                    }
                 elif args.model_type == 'IonCastConvLSTM':
                     model = IonCastConvLSTM(input_channels=1, output_channels=1)
-                    eval_data = {
-                        'eval_forecasts': None, # numpy array of shape (num_epochs, num_evals, eval_window, 180, 360)
-                        'eval_forecasts_originals': None, # numpy array of shape (num_evals, eval_window, 180, 360)
-                        'eval_forecasts_dates': None, # a list of length num_evals, where each element is the start date of the forecast
-                        'eval_contexts': None, # numpy array of shape (num_epochs, num_evals, context_window, 180, 360)
-                    }
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -378,11 +397,6 @@ def main():
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, _ = batch
-                            # # dates_seq is a nested list of dates with shape (context_window + eval_window, batch_size)
-                            # for b in range(args.batch_size):
-                            #     print(f'Batch {b+1}/{args.batch_size} dates:')
-                            #     for t in range(args.context_window + args.eval_window):
-                            #         print(dates_seq[t][b])
                             jpld_seq = jpld_seq.to(device)
                             
                             loss = model.loss(jpld_seq, context_window=args.context_window)
@@ -422,7 +436,7 @@ def main():
 
                 # Save model
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data, model_file)
+                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
 
                 # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
@@ -465,24 +479,6 @@ def main():
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
 
-                        if eval_data['eval_reconstructions_originals'] is None:
-                            eval_data['eval_reconstructions_originals'] = jpld_orig_unnormalized.cpu().numpy()
-                            eval_data['eval_reconstructions_dates'] = jpld_orig_dates
-
-                        # eval_data = {
-                        #     'eval_reconstructions': None, # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
-                        #     'eval_reconstructions_originals': None, # numpy array of shape (num_evals, 1, 180, 360)
-                        #     'eval_reconstructions_dates': None, # list of dates of length num_evals
-                        #     'eval_samples': None # numpy array of shape (num_epochs, num_evals, 1, 180, 360)
-                        # }
-
-                        if eval_data['eval_reconstructions'] is None:
-                            eval_data['eval_reconstructions'] = jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
-                            eval_data['eval_samples'] = jpld_sample_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360) # first dimension is the epoch
-                        else:
-                            eval_data['eval_reconstructions'] = np.concatenate((eval_data['eval_reconstructions'], jpld_recon_unnormalized.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
-                            eval_data['eval_samples'] = np.concatenate((eval_data['eval_samples'], jpld_sample.cpu().numpy().reshape(1, num_evals, 1, 180, 360)), axis=0)
-
                         # Save plots
                         for i in range(num_evals):
                             date = jpld_orig_dates[i]
@@ -497,104 +493,87 @@ def main():
                             sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
-                            # Save a video of the reconstructions for this evaluation
-                            recon_video_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.mp4')
-                            save_gim_video(
-                                eval_data['eval_reconstructions'][:, i, 0, :, :],
-                                recon_video_file,
-                                vmin=0, vmax=100,
-                                titles=[f'JPLD GIM TEC, {date_str} (Reconstruction), Epoch {e+1}' for e in range(eval_data['eval_reconstructions'].shape[0])])
-                            
-                            # Save a video of the samples for this evaluation
-                            sample_video_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.mp4')
-                            save_gim_video(
-                                eval_data['eval_samples'][:, i, 0, :, :],
-                                sample_video_file,
-                                vmin=0, vmax=100,
-                                titles=[f'JPLD GIM TEC (Sampled from model), Epoch {e+1}' for e in range(eval_data['eval_samples'].shape[0])])
 
                     elif args.model_type == 'IonCastConvLSTM':
-                        # eval_data = {
-                        #     'eval_forecasts': None, # numpy array of shape (num_epochs, num_evals, eval_window, 180, 360)
-                        #     'eval_forecasts_originals': None, # numpy array of shape (num_evals, eval_window, 180, 360)
-                        #     'eval_forecasts_dates': None, # a list of length context_window + eval_window, where each element is a list of dates of length num_evals
-                        #     'eval_contexts': None, # numpy array of shape (num_epochs, num_evals, context_window, 180, 360)
-                        # }
+                        # jpld_seq, dates_seq = next(iter(valid_loader))
+                        # jpld_seq = jpld_seq[:num_evals]
+                        # dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.prediction_window)]
+                        # jpld_seq = jpld_seq.to(device)
 
-                        jpld_seq, dates_seq = next(iter(valid_loader))
-                        jpld_seq = jpld_seq[:num_evals]
-                        dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.eval_window)]
-                        jpld_seq = jpld_seq.to(device)
+                        # jpld_contexts = jpld_seq[:, :args.context_window, :, :]
+                        # jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
 
-                        jpld_contexts = jpld_seq[:, :args.context_window, :, :]
-                        jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
+                        # # Forecasts
+                        # jpld_forecasts = model.predict(jpld_contexts, prediction_window=args.prediction_window)
 
-                        # Forecasts
-                        jpld_forecasts = model.predict(jpld_contexts, eval_window=args.eval_window)
+                        # jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
+                        # jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
+                        # jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
 
-                        jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
-                        jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
-                        jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
+                        # # save forecasts
 
-                        if eval_data['eval_forecasts'] is None:
-                            eval_data['eval_forecasts'] = jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)
-                            eval_data['eval_contexts'] = jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)
-                            eval_data['eval_forecasts_originals'] = jpld_forecasts_originals_unnormalized.cpu().numpy()
-                            eval_data['eval_forecasts_dates'] = dates_seq
-                        else:
-                            eval_data['eval_forecasts'] = np.concatenate((eval_data['eval_forecasts'], jpld_forecasts_unnormalized.cpu().numpy().reshape(1, num_evals, args.eval_window, 180, 360)), axis=0)
-                            eval_data['eval_contexts'] = np.concatenate((eval_data['eval_contexts'], jpld_contexts_unnormalized.cpu().numpy().reshape(1, num_evals, args.context_window, 180, 360)), axis=0)
+                        # # # jpld_seq_dates is a nested list of dates with shape (context_window + prediction_window, batch_size)
+                        # # for b in range(args.batch_size):
+                        # #     print(f'Batch {b+1}/{args.batch_size} dates:')
+                        # #     for t in range(args.context_window + args.prediction_window):
+                        # #         print(dates_seq[t][b])
+                        # for i in range(num_evals):
+                        #     dates = [dates_seq[t][i] for t in range(args.context_window + args.prediction_window)]
+                        #     dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
+                        #     dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.prediction_window]]
+                        #     dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.prediction_window)]
+                        #     # save videos of the forecasts
+                        #     forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
+                        #     save_gim_video(
+                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
+                        #         forecast_video_file,
+                        #         vmin=0, vmax=100,
+                        #         titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                        #     )
 
-                        # save forecasts
+                        #     # save comparison video (original vs forecast)
+                        #     comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
+                        #     save_gim_video_comparison(
+                        #         jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # top (original)
+                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # bottom (forecast)
+                        #         comparison_video_file,
+                        #         vmin=0, vmax=100,
+                        #         titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
+                        #         titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
+                        #     )
 
-                        # # jpld_seq_dates is a nested list of dates with shape (context_window + eval_window, batch_size)
-                        # for b in range(args.batch_size):
-                        #     print(f'Batch {b+1}/{args.batch_size} dates:')
-                        #     for t in range(args.context_window + args.eval_window):
-                        #         print(dates_seq[t][b])
-                        for i in range(num_evals):
-                            dates = [dates_seq[t][i] for t in range(args.context_window + args.eval_window)]
-                            dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
-                            dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.eval_window]]
-                            dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.eval_window)]
-                            # save videos of the forecasts
-                            forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
-                            save_gim_video(
-                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
-                                forecast_video_file,
-                                vmin=0, vmax=100,
-                                titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                            )
+                        #     if epoch == 0:
+                        #         # save videos of the forecasts originals
+                        #         forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
+                        #         save_gim_video(
+                        #             jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
+                        #             forecast_original_video_file,
+                        #             vmin=0, vmax=100,
+                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
+                        #         )
 
-                            # save comparison video (original vs forecast)
-                            comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
-                            save_gim_video_comparison(
-                                jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),  # top (original)
-                                jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),  # bottom (forecast)
-                                comparison_video_file,
-                                vmin=0, vmax=100,
-                                titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
-                                titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                            )
+                        #         # save videos of the contexts
+                        #         context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
+                        #         save_gim_video(
+                        #             jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
+                        #             context_video_file,
+                        #             vmin=0, vmax=100,
+                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
+                        #         )
 
-                            if epoch == 0:
-                                # save videos of the forecasts originals
-                                forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
-                                save_gim_video(
-                                    jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.eval_window, 180, 360),
-                                    forecast_original_video_file,
-                                    vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
-                                )
+                        if args.test_event_id:
+                            for event_id in args.test_event_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp = event
+                                print('Testing event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, date_start, date_end, title, file_name, args)
 
-                                # save videos of the contexts
-                                context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
-                                save_gim_video(
-                                    jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
-                                    context_video_file,
-                                    vmin=0, vmax=100,
-                                    titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
-                                )
 
         elif args.mode == 'test':
             raise NotImplementedError("Testing mode is not implemented yet.")
@@ -609,4 +588,4 @@ if __name__ == '__main__':
 
 
 # Example
-# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --eval_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
+# python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
