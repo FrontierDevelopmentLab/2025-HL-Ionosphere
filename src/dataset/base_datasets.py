@@ -6,7 +6,7 @@ import os
 import datetime
 from tqdm import tqdm
 import pandas as pd
-
+from warnings import warn
 class PandasDataset(Dataset):
     def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None):
         self.name = name
@@ -106,8 +106,9 @@ class PandasDataset(Dataset):
             date = index
         elif isinstance(index, str):
             date = datetime.datetime.fromisoformat(index)
-        elif isinstance(index, int):
-            date = self.data.iloc[index]['Datetime']
+        elif isinstance(index, int): # THIS WILL CAUSE ERRORS WHEN DEALING WITH MULTPLIE DATASETS, 
+            date = self.data.iloc[index]['Datetime'] 
+            warn("Should not index dataset by int if aligning multiple datasets, this is error prone if datasets have holes.")
         else:
             raise ValueError('Expecting index to be int, datetime.datetime, or str (in the format of 2022-11-01T00:01:00)')
         data = self.get_data(date)
@@ -175,21 +176,25 @@ class CompositeDataset(Dataset):
     def __init__(self, datasets):
         self._datasets = datasets
         # print("Number of datasets stored in the composite is: {}".format(len(datasets)))
-        self._date_start = self._datasets[0].date_start
-        self._date_end = self._datasets[0].date_end
+        self._date_start =  max(ds.date_start for ds in self._datasets)
+        self._date_end = min(ds.date_end for ds in self._datasets)
+
         self._delta_minutes = self._datasets[0].delta_minutes
         self._length = len(self._datasets[0])
-        for dataset in self._datasets:
-            if dataset.date_start != self._date_start:
-                raise ValueError(
-                    "Expecting all datasets to have the same starting date"
-                )
-            if dataset.date_end != self._date_end:
-                raise ValueError("Expecting all datasets to have the same ending date")
-            if dataset.delta_minutes != self._delta_minutes:
-                raise ValueError(
-                    "Expecting all datasets to have the same delta seconds"
-                )
+        # for dataset in self._datasets:
+            # NOTE: the datasets wont/dont have the same start end date even though the same exlusion date ranges are provided
+            # should not be a problem generally as long as indexing based off of timestamp AND disallowing timestamp indeces 
+            # beyond the start and end range AND using the largest start date and smallest end date
+            # if dataset.date_start != self._date_start:
+            #     raise ValueError(
+            #         "Expecting all datasets to have the same starting date"
+            #     )
+            # if dataset.date_end != self._date_end:
+            #     raise ValueError("Expecting all datasets to have the same ending date")
+            # if dataset.delta_minutes != self._delta_minutes:
+            #     raise ValueError(
+            #         "Expecting all datasets to have the same delta seconds"
+            #     )
             # if len(dataset) != self._length: # NOTE: this is removed temporarily but lengths can not be the same?
             #     raise ValueError(
             #         "Expecting all datasets to have the same length - synchronize dates or delta_seconds"
@@ -198,13 +203,20 @@ class CompositeDataset(Dataset):
         print("\nComposite - Length             : {}".format(self._length))
         print("Composite - Start date         : {}".format(self._date_start))
         print("Composite - End date           : {}".format(self._date_end))
-        print("Composite - Time delta         : {} minutes".format(self._delta_minutes))
+        # print("Composite - Time delta         : {} minutes".format(self._delta_minutes))
 
     def __len__(self):
         return self._length
 
     def __getitem__(self, index):
         data = []
+
+        # assert not isinstance(index, int), "int based indexing not supported due to potential for timestamp mismatch errors"
+        if isinstance(index, datetime.datetime):
+            assert index >= self._date_start and index <= self._date_end, f"index {index} out of range ({self._date_start} - {self._date_end})"
+        if isinstance(index, int):
+            raise ValueError("Expected Datetime index, not int")
+            index = self._date_start + datetime.timedelta(minutes = index * self._delta_minutes) # this while it should work since dates are exlcuded wihtin the underlying datasets, but this means many indeces will map to nan data
         for i, dataset in enumerate(self._datasets):
             # time_start = datetime.datetime.now()
             data.append(dataset[index])
@@ -321,7 +333,8 @@ class Sequences(Dataset):
                 if i == 0: # this if block is causing issues for our datasets, but its also justifiable
                     for dataset in self.datasets:
                         if date not in dataset.dates_set:
-                            sequence_available = False
+                            if not dataset[date]:
+                               sequence_available = False
                             break
                 if not sequence_available:
                     break

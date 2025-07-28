@@ -19,7 +19,7 @@ import glob
 from util import Tee
 from util import set_random_seed
 from models_conditioned import VAE1, IonCastConvLSTM
-from datasets import JPLD, Sequences #, UnionDataset
+from datasets import JPLD # Sequences #, UnionDataset
 from src import OMNIDataset, CelestrakDataset, SolarIndexDataset, UnionDataset, Sequences, CompositeDataset
 from events import EventCatalog
 
@@ -420,12 +420,12 @@ def main():
 
             print(date_exclusions)
             print(len(dataset_jpld_valid))
-            print([(n, len(ds_valid)) for n, ds_valid in aux_datasets_valid_dict.items()])
+            print([(n, len(ds_valid), ds_valid) for n, ds_valid in aux_datasets_valid_dict.items()])
             aux_datasets_valid = []
             for name, dataset_list in aux_datasets_valid_dict.items():
-                aux_datasets_valid.append(UnionDataset(datasets=dataset_list))
-
-
+                aux_datasets_valid.append(UnionDataset(datasets=dataset_list)) # NOTE: the union datasets no longer have the same start dates.
+                print("\nStart and end dates: ", aux_datasets_valid[-1].date_start, aux_datasets_valid[-1].date_end)
+            raise
             if args.model_type == 'VAE1':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
