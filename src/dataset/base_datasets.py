@@ -280,7 +280,7 @@ class Sequences(Dataset):
         print('Number of sequences     : {:,}'.format(len(self.sequences)))
         if len(self.sequences) > 0:
             print('First sequence          : {}'.format([date.isoformat() for date in self.sequences[0]]))
-            print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))    
+            print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))
 
     def __len__(self):
         return len(self.sequences)
@@ -318,7 +318,7 @@ class Sequences(Dataset):
             sequence_available = True
             for i in range(self.sequence_length):
                 date = sequence_start + datetime.timedelta(minutes=i*self.delta_minutes)
-                if i == 0:
+                if i == 0: # this if block is causing issues for our datasets, but its also justifiable
                     for dataset in self.datasets:
                         if date not in dataset.dates_set:
                             sequence_available = False

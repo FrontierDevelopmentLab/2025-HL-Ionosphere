@@ -19,13 +19,9 @@ import glob
 from util import Tee
 from util import set_random_seed
 from models_conditioned import VAE1, IonCastConvLSTM
-from datasets import JPLD, Sequences
-import src
-
-C_DIM = 26 # TODO: This shoudnt be hard coded update later
-           # TODO: when extracting from batch, first k dsets should be image based, last K-k datasets timeseries / vecs
-           # then rather than unpacking each, first k will stack to lat long img with k channels and the rest of the 
-           # vecs will be concattenated to ~(K-k)*n_feats vector.
+from datasets import JPLD, Sequences, UnionDataset
+from src import OMNIDataset, CelestrakDataset, SolarIndexDataset, UnionDataset, Sequences
+from events import EventCatalog
 
 matplotlib.use('Agg')
 
@@ -181,7 +177,85 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     plt.close()
 
 
-def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data, file_name):
+def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+    if not isinstance(model, (IonCastConvLSTM)):
+        raise ValueError('Model must be an instance of IonCastConvLSTM')
+    if date_start > date_end:
+        raise ValueError('date_start must be before date_end')
+    if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
+        raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
+    if date_forecast_start >= date_end:
+        raise ValueError('date_forecast_start must be before date_end')
+    # date_forecast_start must be an integer multiple of args.delta_minutes from date_start
+    if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
+        raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
+
+    print('Evaluation from {} to {}'.format(date_start, date_end))
+    print('Forecast start date: {}'.format(date_forecast_start))
+    sequence_start = date_start
+    sequence_end = date_end
+    sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
+    print('Sequence length: {}'.format(sequence_length))
+    sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
+    # find the index of the date_forecast_start in the list sequence
+    if date_forecast_start not in sequence:
+        raise ValueError('date_forecast_start must be in the sequence')
+    sequence_forecast_start_index = sequence.index(date_forecast_start)
+    sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
+
+    sequence_data = dataset.get_sequence_data(sequence)
+    jpld_original = sequence_data[0]  # Original data
+    device = next(model.parameters()).device
+    jpld_original = jpld_original.to(device)
+    jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
+    jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+
+    print(jpld_original.shape)
+    print(jpld_forecast_context.shape)
+    print(jpld_forecast.shape)
+
+    jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+
+    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
+    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
+    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
+
+
+
+
+    # comparison_video_file = os.path.join(args.target_dir, file_name)
+    # save_gim_video_comparison(
+    #     original.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     forecast.cpu().numpy().reshape(args.prediction_window, 180, 360),
+    #     comparison_video_file,
+    #     vmin=0, vmax=100,
+    #     titles_top=[f'{title} Original: {d}' for d in dates],
+    #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
+    # )
+
+    forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
+    titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
+    titles_forecast = []
+    for i in range(sequence_length):
+        if i < sequence_forecast_start_index:
+            titles_forecast.append(f'{title} JPLD GIM TEC Original (Context): {sequence[i]}')
+        else:
+            titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
+
+    # print(jpld_original_unnormalized.shape)
+    # print(jpld_forecast_with_context_unnormalized.shape)
+    # print(len(titles_original))
+    # print(len(titles_forecast))
+    save_gim_video_comparison(
+        gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        file_name=file_name,
+        vmin=0, vmax=100,
+        titles_top=titles_original,
+        titles_bottom=titles_forecast
+    )
+
+def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -193,7 +267,6 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, e
             'train_losses': train_losses,
             'valid_losses': valid_losses,
             'model_z_dim': model.z_dim,
-            'eval_data': eval_data
         }
     elif isinstance(model, IonCastConvLSTM):
         checkpoint = {
@@ -204,7 +277,8 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, e
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
-            'eval_data': eval_data
+            'model_context_window': model.context_window,
+            'model_prediction_window': model.prediction_window,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -217,7 +291,9 @@ def load_model(file_name, device):
         model_z_dim = checkpoint['model_z_dim']
         model = VAE1(z_dim=model_z_dim, c_dim=C_DIM) # TODO: for now c_dim hard coded, this should be changed
     elif checkpoint['model'] == 'IonCastConvLSTM':
-        model = IonCastConvLSTM()
+        model_context_window = checkpoint['model_context_window']
+        model_prediction_window = checkpoint['model_prediction_window']
+        model = IonCastConvLSTM(context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -229,8 +305,7 @@ def load_model(file_name, device):
     iteration = checkpoint['iteration']
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
-    eval_data = checkpoint['eval_data']
-    return model, optimizer, epoch, iteration, train_losses, valid_losses, eval_data
+    return model, optimizer, epoch, iteration, train_losses, valid_losses
 
 
 def main():
@@ -238,11 +313,18 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
+    parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
+    parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
+    parser.add_argument('--solar_indices_dir', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
+    parser.add_argument('--datasets')
+    parser.add_argument('--aux_datasets', nargs='+', required=True, choices=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2025-07-01T00:00:00', help='End date')
+    parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
@@ -250,12 +332,13 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
-    parser.add_argument('--valid_proportion', type=float, default=0.1, help='Proportion of data to use for validation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
-    parser.add_argument('--eval_window', type=int, default=4, help='Evaluation window size for the model')
+    parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100', 'G2H9-202303230900', 'G2H9-202304231200'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -285,7 +368,29 @@ def main():
             date_start = datetime.datetime.fromisoformat(args.date_start)
             date_end = datetime.datetime.fromisoformat(args.date_end)
 
+            training_sequence_length = args.context_window + args.prediction_window
+
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+
+            print('Processing excluded dates')
+
+            datasets_jpld_valid = []
+
+            date_exclusions = []
+            if args.test_event_id:
+                for event_id in args.test_event_id:
+                    print('Excluding event ID: {}'.format(event_id))
+                    if event_id not in EventCatalog:
+                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                    _, _, exclusion_start, exclusion_end, _, _ = EventCatalog[event_id]
+                    exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
+                    exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
+                    date_exclusions.append((exclusion_start, exclusion_end))
+
+                    datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+
+            dataset_jpld_valid = UnionDataset(datasets=datasets_jpld_valid)
+
 
             if args.model_type == 'VAE1':
                 # NOTE really shouldnt be hardcoded
@@ -389,7 +494,7 @@ def main():
                             all_indeces = torch.cat((omni, celestrak, solar_idx), dim=-1)
                             # print(jpld.shape, omni.shape, celestrak.shape, solar_idx.shape)
          
-                            jpld = jpld[:, 0, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
+                            jpld = jpld[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             jpld = jpld.to(device)
                             all_indeces = all_indeces.to(device)
@@ -427,7 +532,7 @@ def main():
                             all_indeces = torch.cat((omni, celestrak, solar_idx), dim=-1)
                             # print(jpld.shape, omni.shape, celestrak.shape, solar_idx.shape)
          
-                            jpld = jpld[:, 0, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
+                            jpld = jpld[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             jpld = jpld.to(device)
                             all_indeces = all_indeces.to(device)

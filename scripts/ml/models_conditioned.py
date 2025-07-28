@@ -62,7 +62,7 @@ class VAE(nn.Module):
     def decode(self, z, c):
         if c is not None:
             c = c.view(c.size(0), -1)
-            print(c.shape, z.shape)
+            # print(c.shape, z.shape[])
             z = torch.cat([z, c], dim=1)
         x = self.fc3(z)
         x = self.decoder(x)

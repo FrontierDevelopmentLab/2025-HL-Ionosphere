@@ -19,8 +19,8 @@ import glob
 from util import Tee
 from util import set_random_seed
 from models_conditioned import VAE1, IonCastConvLSTM
-from datasets import JPLD, Sequences, UnionDataset
-from src import OMNIDataset, CelestrakDataset, SolarIndexDataset, UnionDataset, Sequences
+from datasets import JPLD, Sequences #, UnionDataset
+from src import OMNIDataset, CelestrakDataset, SolarIndexDataset, UnionDataset, Sequences, CompositeDataset
 from events import EventCatalog
 
 matplotlib.use('Agg')
@@ -176,8 +176,52 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
     plt.close()
 
-def run_forecast(model, date_start, date_end, title, file_name, args):
-    # dates = [d.isoformat() for d in range(date_start, date_end, datetime.timedelta(minutes=args.delta_minutes))]
+
+def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+    if not isinstance(model, (IonCastConvLSTM)):
+        raise ValueError('Model must be an instance of IonCastConvLSTM')
+    if date_start > date_end:
+        raise ValueError('date_start must be before date_end')
+    if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
+        raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
+    if date_forecast_start >= date_end:
+        raise ValueError('date_forecast_start must be before date_end')
+    # date_forecast_start must be an integer multiple of args.delta_minutes from date_start
+    if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
+        raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
+
+    print('Evaluation from {} to {}'.format(date_start, date_end))
+    print('Forecast start date: {}'.format(date_forecast_start))
+    sequence_start = date_start
+    sequence_end = date_end
+    sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
+    print('Sequence length: {}'.format(sequence_length))
+    sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
+    # find the index of the date_forecast_start in the list sequence
+    if date_forecast_start not in sequence:
+        raise ValueError('date_forecast_start must be in the sequence')
+    sequence_forecast_start_index = sequence.index(date_forecast_start)
+    sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
+
+    sequence_data = dataset.get_sequence_data(sequence)
+    jpld_original = sequence_data[0]  # Original data
+    device = next(model.parameters()).device
+    jpld_original = jpld_original.to(device)
+    jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
+    jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+
+    print(jpld_original.shape)
+    print(jpld_forecast_context.shape)
+    print(jpld_forecast.shape)
+
+    jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+
+    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
+    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
+    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
+
+
+
 
     # comparison_video_file = os.path.join(args.target_dir, file_name)
     # save_gim_video_comparison(
@@ -188,8 +232,28 @@ def run_forecast(model, date_start, date_end, title, file_name, args):
     #     titles_top=[f'{title} Original: {d}' for d in dates],
     #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
     # )
-    # WORK IN PROGRESS
-    pass
+
+    forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
+    titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
+    titles_forecast = []
+    for i in range(sequence_length):
+        if i < sequence_forecast_start_index:
+            titles_forecast.append(f'{title} JPLD GIM TEC Original (Context): {sequence[i]}')
+        else:
+            titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
+
+    # print(jpld_original_unnormalized.shape)
+    # print(jpld_forecast_with_context_unnormalized.shape)
+    # print(len(titles_original))
+    # print(len(titles_forecast))
+    save_gim_video_comparison(
+        gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        file_name=file_name,
+        vmin=0, vmax=100,
+        titles_top=titles_original,
+        titles_bottom=titles_forecast
+    )
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
@@ -203,6 +267,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'train_losses': train_losses,
             'valid_losses': valid_losses,
             'model_z_dim': model.z_dim,
+            'model_c_dim': model.c_dim,
         }
     elif isinstance(model, IonCastConvLSTM):
         checkpoint = {
@@ -213,6 +278,8 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'model_context_window': model.context_window,
+            'model_prediction_window': model.prediction_window,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -223,9 +290,12 @@ def load_model(file_name, device):
     checkpoint = torch.load(file_name, weights_only=False)
     if checkpoint['model'] == 'VAE1':
         model_z_dim = checkpoint['model_z_dim']
-        model = VAE1(z_dim=model_z_dim)
+        model_c_dim = checkpoint['model_c_dim']
+        model = VAE1(z_dim=model_z_dim, c_dim=model_c_dim) # c_dim is the dimenion of the 
     elif checkpoint['model'] == 'IonCastConvLSTM':
-        model = IonCastConvLSTM()
+        model_context_window = checkpoint['model_context_window']
+        model_prediction_window = checkpoint['model_prediction_window']
+        model = IonCastConvLSTM(context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -240,7 +310,6 @@ def load_model(file_name, device):
     return model, optimizer, epoch, iteration, train_losses, valid_losses
 
 
-
 def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
     parser = argparse.ArgumentParser(description=description)
@@ -248,9 +317,9 @@ def main():
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
     parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
-    parser.add_argument('--solar_indices_dir', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
-    parser.add_argument('--datasets')
-    parser.add_argument('--aux_datasets', nargs='+', required=True, choices=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
+    parser.add_argument('--aux_datasets', nargs='+', choices=["omni", "celestrak", "solar_inds"], default=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -269,8 +338,10 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-2023-11-05T09:00:00', 'G2H9-2024-05-10T15:00:00', 'G2H9-2024-06-28T09:00:00'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-2021-11-03T21:00:00', 'G2H9-2023-03-23T09:00:00', 'G2H9-2023-04-23T12:00:00'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100', 'G2H9-202303230900', 'G2H9-202304231200'], help='Test event IDs that the model has seen during training')
+    # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
+    # parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -305,10 +376,23 @@ def main():
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
 
             print('Processing excluded dates')
+            gim_webdataset = os.path.join(args.data_dir, args.jpld_dir)
+            omni_dir = os.path.join(args.data_dir, args.omni_dir)
+            celestrak_file = os.path.join(args.data_dir, args.celestrak_file)
+            solar_index_file = os.path.join(args.data_dir, args.solar_index_file)
+            # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
+            dataset_constructors = {
+                'omni': lambda date_start_, date_end_, date_exclusions_: OMNIDataset(file_dir=omni_dir, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_)
+            }
 
+                        
             datasets_jpld_valid = []
 
             date_exclusions = []
+            aux_datasets_valid_dict = {}
+
             if args.test_event_id:
                 for event_id in args.test_event_id:
                     print('Excluding event ID: {}'.format(event_id))
@@ -320,20 +404,51 @@ def main():
                     date_exclusions.append((exclusion_start, exclusion_end))
 
                     datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    for name in args.aux_datasets:
+                        if aux_datasets_valid_dict.get(name) is None:
+                            aux_datasets_valid_dict[name] = []
+                        aux_datasets_valid_dict[name].append(dataset_constructors[name](date_start_=exclusion_start, date_end_=exclusion_end, date_exclusions_ = None))
 
             dataset_jpld_valid = UnionDataset(datasets=datasets_jpld_valid)
+            sum_ = 0
+            for (st_, end_) in date_exclusions:
+                dt_ = end_ - st_
+                n_samples_ = (dt_.days * 24 * 60 // 15 + dt_.seconds // (60 * 15))
+                sum_ += n_samples_
+                print("expected n_samples: ", n_samples_)
+            print(sum_)
+
+            print(date_exclusions)
+            print(len(dataset_jpld_valid))
+            print([(n, len(ds_valid)) for n, ds_valid in aux_datasets_valid_dict.items()])
+            aux_datasets_valid = []
+            for name, dataset_list in aux_datasets_valid_dict.items():
+                aux_datasets_valid.append(UnionDataset(datasets=dataset_list))
 
 
             if args.model_type == 'VAE1':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_train = dataset_jpld_train
-                dataset_valid = dataset_jpld_valid
+                aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
+
+                dataset_train = CompositeDataset([dataset_jpld_train] + aux_datasets_train)
+                dataset_valid = CompositeDataset([dataset_jpld_valid] + aux_datasets_valid)
+                # dataset_train = Sequences([dataset_jpld_train] + aux_datasets_train, delta_minutes=args.delta_minutes, sequence_length=1)
+                # dataset_valid = Sequences([dataset_jpld_valid] + aux_datasets_valid, delta_minutes=args.delta_minutes, sequence_length=1)
+                print(len(dataset_train), len(dataset_valid))
+                raise
+                # dataset_train = dataset_jpld_train
+                # dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
+                dataset_train = Sequences([dataset_jpld_train] + aux_datasets_train, delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                dataset_valid = Sequences([dataset_jpld_valid] + aux_datasets_valid, delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
+
+            print(aux_datasets_train)
+            c_dim = sum([ds[0][0].shape[-1] for ds in aux_datasets_train])
+            print(f'forcings dimension: {c_dim}')
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
@@ -346,9 +461,11 @@ def main():
                 pin_memory=True,
                 persistent_workers=True,
                 prefetch_factor=4,
-            )
-            valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+            ) # sample dims for imgs    : [batch_size, seq_len, ch, h, w]
+              # sample dims for tabular : [batch_size, seq_len, n_feats]
 
+            valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+            print(len(valid_loader), len(dataset_valid))
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
             if len(model_files) > 0:
@@ -363,9 +480,9 @@ def main():
             else:
                 print('Creating new model')
                 if args.model_type == 'VAE1':
-                    model = VAE1(z_dim=512, sigma_vae=False)
+                    model = VAE1(z_dim=512, c_dim=c_dim, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=1, output_channels=1)
+                    model = IonCastConvLSTM(input_channels=1, output_channels=1, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -391,10 +508,18 @@ def main():
                         optimizer.zero_grad()
 
                         if args.model_type == 'VAE1':
-                            jpld, _ = batch
+                            # jpld_dataset, omni_dataset, celestrak_dataset, solar_index_dataset
+                            jpld, omni, celestrak, solar_idx, ts = batch
+                            all_indeces = torch.cat((omni, celestrak, solar_idx), dim=-1)
+         
+                            # [batch_size, seq_len, n_ch, h, w]
+                            jpld = jpld[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
+                            # [batch_size, seq_len, n_feats]
+                            all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             jpld = jpld.to(device)
+                            all_indeces = all_indeces.to(device)
 
-                            loss = model.loss(jpld)
+                            loss = model.loss(x=jpld, c=all_indeces)
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
@@ -418,9 +543,15 @@ def main():
                 with torch.no_grad():
                     for batch in valid_loader:
                         if args.model_type == 'VAE1':
-                            jpld, _ = batch
+                            jpld, omni, celestrak, solar_idx, ts = batch
+                            all_indeces = torch.cat((omni, celestrak, solar_idx), dim=-1)
+                            # print(jpld.shape, omni.shape, celestrak.shape, solar_idx.shape)
+         
+                            jpld = jpld[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
+                            all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                             jpld = jpld.to(device)
-                            loss = model.loss(jpld)
+                            all_indeces = all_indeces.to(device)
+                            loss = model.loss(jpld, c=all_indeces)
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
@@ -463,17 +594,38 @@ def main():
                         torch.manual_seed(args.seed)
 
                         # Reconstruct a batch from the validation set
-                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                        # jpld_orig, omni, celestrak, solar_idx, jpld_orig_dates  = next(iter(valid_loader)) 
+                        print(len(dataset_valid))
+                        print(len(valid_loader))
+                        for b in valid_loader:
+                            print(b)
+                            for t in b: 
+                                try:
+                                    print(t.shape)
+                                except:
+                                    print(t)
+                            pass
+                        batch = next(iter(valid_loader))
+                        jpld_orig, tabular_datasets_orig, jpld_orig_dates = batch[0], batch[1:-1], batch[-1]
+                        print(f"jpld orig dates: {jpld_orig_dates}")
+
+                        all_indeces = torch.cat(tabular_datasets_orig, dim=-1)
+                        print(jpld_orig.shape, all_indeces.shape, jpld_orig_dates)
                         jpld_orig = jpld_orig[:num_evals]
                         jpld_orig_dates = jpld_orig_dates[:num_evals]
-
+                        print(jpld_orig.shape, all_indeces.shape)
+                        jpld_orig = jpld_orig[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
+                        all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                         jpld_orig = jpld_orig.to(device)
-                        jpld_recon, _, _ = model.forward(jpld_orig)
+                        all_indeces = all_indeces.to(device)
+                        jpld_recon, _, _ = model.forward(jpld_orig, all_indeces)
                         jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
                         jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
+                        print(f"jpld_recon_unnormalized shape: {jpld_recon_unnormalized.shape}")
 
                         # Sample a batch from the model
-                        jpld_sample = model.sample(n=num_evals)
+                        jpld_sample = model.sample(n=num_evals, c=all_indeces.repeat(num_evals, 1))
+                        print(f"jpld_samp shape: {jpld_sample.shape}")
                         jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
@@ -570,9 +722,10 @@ def main():
                                 print('Testing event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
                                 file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
                                 title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, date_start, date_end, title, file_name, args)
+                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
 
         elif args.mode == 'test':
