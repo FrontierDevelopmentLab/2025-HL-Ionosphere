@@ -139,7 +139,7 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     frames = []
     for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
         # Create temporary figure for this frame
-        fig_temp = plt.figure(figsize=(10, 10))
+        fig_temp = plt.figure(figsize=(10.88, 10.88))
         gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
                                   wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
         
@@ -163,8 +163,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
         plt.close(fig_temp)
     
     with imageio.get_writer(file_name, format='mp4', fps=fps, codec='libx264', 
-                            output_params=['-pix_fmt', 'yuv420p']) as writer:
-        for frame in tqdm(frames, desc="Writing video"):
+                       output_params=['-pix_fmt', 'yuv420p', '-loglevel', 'error']) as writer:
+        for frame in tqdm(frames, desc="Writing video   "):
             writer.append_data(frame)
 
 
@@ -610,6 +610,20 @@ def main():
                                 date_end = datetime.datetime.fromisoformat(date_end)
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+
+                        if args.test_event_seen_id:
+                            for event_id in args.test_event_seen_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp = event
+                                print('Testing seen event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 

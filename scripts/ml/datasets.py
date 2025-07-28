@@ -388,7 +388,7 @@ class Sequences(Dataset):
 
     def get_sequence_data(self, sequence): # sequence is a list of datetime objects
         if sequence[0] < self.date_start or sequence[-1] > self.date_end:
-            raise ValueError('Sequence dates must be within the dataset date range ({}) - ({})'.format(self.date_start, self.date_end))
+            raise ValueError('Sequence dates must be within the dataset date range ({}) - ({}), but got a request ({}) - ({})'.format(self.date_start, self.date_end, sequence[0], sequence[-1]))
 
         sequence_data = []
         for dataset in self.datasets:
