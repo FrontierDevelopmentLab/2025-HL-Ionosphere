@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import cartopy.crs as ccrs
 import glob
-
+import imageio
 
 from util import Tee
 from util import set_random_seed
@@ -115,65 +115,58 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
 
 
 def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
-                             titles_top=None, titles_bottom=None, fps=2):
+                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None):
     """
-    Save two GIM sequences as a comparison video with 2x1 grid (top and bottom).
-    
-    Parameters:
-        gim_sequence_top: numpy array of shape (num_frames, 180, 360) for the top video
-        gim_sequence_bottom: numpy array of shape (num_frames, 180, 360) for the bottom video
-        file_name: output video file name
-        cmap: colormap to use
-        vmin, vmax: color scale limits
-        titles_top: list of titles for top video frames
-        titles_bottom: list of titles for bottom video frames
-        fps: frames per second
+    Pre-render all frames to avoid memory accumulation during animation.
     """
     # Ensure both sequences have the same length
     if len(gim_sequence_top) != len(gim_sequence_bottom):
         raise ValueError(f"Sequences must have same length: {len(gim_sequence_top)} vs {len(gim_sequence_bottom)}")
     
+    if max_frames is not None:
+        if max_frames <= 0 or max_frames > len(gim_sequence_top):
+            raise ValueError(f"max_frames must be between 1 and {len(gim_sequence_top)}")
+        gim_sequence_top = gim_sequence_top[:max_frames]
+        gim_sequence_bottom = gim_sequence_bottom[:max_frames]
+        if titles_top:
+            titles_top = titles_top[:max_frames]
+        if titles_bottom:
+            titles_bottom = titles_bottom[:max_frames]
+
     print(f'Saving GIM video to {file_name}')
-
-    # Create figure with 2 rows, 2 columns (maps + colorbars)
-    fig = plt.figure(figsize=(10, 10))
-    gs = fig.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
-                         wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
     
-    # Top subplot (original/real data)
-    ax_top = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    cbar_ax_top = fig.add_subplot(gs[0, 1])
-    
-    # Bottom subplot (forecast/predicted data)
-    ax_bottom = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
-    cbar_ax_bottom = fig.add_subplot(gs[1, 1])
-    
-    # Initialize with first frame
-    im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[0], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                       title=titles_top[0] if titles_top else None)
-    cbar_top = fig.colorbar(im_top, cax=cbar_ax_top)
-    cbar_top.set_label("TEC (TECU)")
-    
-    im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[0], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                          title=titles_bottom[0] if titles_bottom else None)
-    cbar_bottom = fig.colorbar(im_bottom, cax=cbar_ax_bottom)
-    cbar_bottom.set_label("TEC (TECU)")
-
-    def update(frame):
-        # Update top plot
-        new_im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                               title=titles_top[frame] if titles_top else None)
+    # Pre-render all frames as numpy arrays
+    frames = []
+    for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
+        # Create temporary figure for this frame
+        fig_temp = plt.figure(figsize=(10, 10))
+        gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
+                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
         
-        # Update bottom plot
-        new_im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                                  title=titles_bottom[frame] if titles_bottom else None)
+        # Plot frame
+        ax_top = fig_temp.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+        ax_bottom = fig_temp.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
         
-        return [new_im_top, new_im_bottom]
+        plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                  title=titles_top[i] if titles_top else None)
+        plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                   title=titles_bottom[i] if titles_bottom else None)
+        
+        # Convert to array - fix deprecation warning
+        fig_temp.canvas.draw()
+        frame_array = np.frombuffer(fig_temp.canvas.buffer_rgba(), dtype=np.uint8)
+        frame_array = frame_array.reshape(fig_temp.canvas.get_width_height()[::-1] + (4,))
+        # Convert RGBA to RGB
+        frame_array = frame_array[:, :, :3]
+        frames.append(frame_array)
+        
+        plt.close(fig_temp)
+    
+    with imageio.get_writer(file_name, format='mp4', fps=fps, codec='libx264', 
+                            output_params=['-pix_fmt', 'yuv420p']) as writer:
+        for frame in tqdm(frames, desc="Writing video"):
+            writer.append_data(frame)
 
-    ani = animation.FuncAnimation(fig, update, frames=len(gim_sequence_top), blit=False, 
-                                 interval=1000/fps, repeat=False)
-    ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
-    plt.close()
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
     if not isinstance(model, (IonCastConvLSTM)):
@@ -208,28 +201,15 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
     jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-    print(jpld_original.shape)
-    print(jpld_forecast_context.shape)
-    print(jpld_forecast.shape)
+    # print(jpld_original.shape)
+    # print(jpld_forecast_context.shape)
+    # print(jpld_forecast.shape)
 
     jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
     jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
-
-
-
-
-    # comparison_video_file = os.path.join(args.target_dir, file_name)
-    # save_gim_video_comparison(
-    #     original.cpu().numpy().reshape(args.prediction_window, 180, 360),
-    #     forecast.cpu().numpy().reshape(args.prediction_window, 180, 360),
-    #     comparison_video_file,
-    #     vmin=0, vmax=100,
-    #     titles_top=[f'{title} Original: {d}' for d in dates],
-    #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
-    # )
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
@@ -240,10 +220,6 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         else:
             titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
 
-    # print(jpld_original_unnormalized.shape)
-    # print(jpld_forecast_with_context_unnormalized.shape)
-    # print(len(titles_original))
-    # print(len(titles_forecast))
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
@@ -252,6 +228,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         titles_top=titles_original,
         titles_bottom=titles_forecast
     )
+
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
@@ -632,7 +609,7 @@ def main():
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                                file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 

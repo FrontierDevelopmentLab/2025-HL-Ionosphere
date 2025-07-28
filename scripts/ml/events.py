@@ -84,8 +84,8 @@ for prefix in events['prefix'].unique():
         max_kp = event['max_kp']
         EventCatalog[event_id] = date_start, date_end, date_start_adjusted, date_end_adjusted, duration, max_kp
 
-for event, val in EventCatalog.items():
-    print(event, val[0], val[1], val[2], val[3], val[4], val[5])
+# for event, val in EventCatalog.items():
+#     print(event, val[0], val[1], val[2], val[3], val[4], val[5])
 
 # event_id          date_start          date_end            date_start_adjusted date_end_adjusted   duration        max_kp
 # G2H9-201108051800 2011-08-05T18:00:00 2011-08-06T03:00:00 2011-08-05T13:30:00 2011-08-06T12:00:00 0 days 09:00:00 7.7
