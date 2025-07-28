@@ -388,7 +388,7 @@ class Sequences(Dataset):
 
     def get_sequence_data(self, sequence): # sequence is a list of datetime objects
         if sequence[0] < self.date_start or sequence[-1] > self.date_end:
-            raise ValueError('Sequence dates must be within the dataset date range ({}) - ({})'.format(self.date_start, self.date_end))
+            raise ValueError('Sequence dates must be within the dataset date range ({}) - ({}), but got a request ({}) - ({})'.format(self.date_start, self.date_end, sequence[0], sequence[-1]))
 
         sequence_data = []
         for dataset in self.datasets:
@@ -458,18 +458,22 @@ class UnionDataset(Dataset):
                 if date in self.dates_set:
                     print('Warning: Overlap in dates_set between datasets in the union')
                 self.dates_set.add(date)
+        self.dates = sorted(self.dates_set)
 
     def __len__(self):
-        # return sum([len(dataset) for dataset in self.datasets])
-        return len(self.dates_set)
+        return len(self.dates)
 
     def __getitem__(self, index):
         if isinstance(index, datetime.datetime):
             date = index
         elif isinstance(index, str):
             date = datetime.datetime.fromisoformat(index)
+        elif isinstance(index, int):
+            if index < 0 or index >= len(self.dates):
+                raise IndexError("Index out of range for the dataset.")
+            date = self.dates[index]
         else:
-            raise ValueError('Expecting index to be datetime.datetime or str (in the format of 2022-11-01T00:01:00)')
+            raise ValueError('Expecting index to be datetime.datetime or str (in the format of 2022-11-01T00:01:00), but got {}'.format(type(index)))
         for dataset in self.datasets:
             if date in dataset.dates_set:
                 value, date = dataset[date]
