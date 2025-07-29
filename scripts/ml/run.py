@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import cartopy.crs as ccrs
 import glob
-
+import imageio
 
 from util import Tee
 from util import set_random_seed
@@ -35,6 +35,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
         cmap (str): Colormap to use for imshow.
         vmin (float): Minimum value for colormap normalization.
         vmax (float): Maximum value for colormap normalization.
+        title (str): Title for the plot.
     """
     if image.shape != (180, 360):
         raise ValueError("Input image must have shape (180, 360), but got shape {}.".format(image.shape))
@@ -51,7 +52,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     
     ax.coastlines()
     if title is not None:
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=12, loc='left')
 
     return im
 
@@ -115,65 +116,71 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
 
 
 def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
-                             titles_top=None, titles_bottom=None, fps=2):
+                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None):
     """
-    Save two GIM sequences as a comparison video with 2x1 grid (top and bottom).
-    
-    Parameters:
-        gim_sequence_top: numpy array of shape (num_frames, 180, 360) for the top video
-        gim_sequence_bottom: numpy array of shape (num_frames, 180, 360) for the bottom video
-        file_name: output video file name
-        cmap: colormap to use
-        vmin, vmax: color scale limits
-        titles_top: list of titles for top video frames
-        titles_bottom: list of titles for bottom video frames
-        fps: frames per second
+    Pre-render all frames to avoid memory accumulation during animation.
+    Now includes colorbars in each frame.
     """
     # Ensure both sequences have the same length
     if len(gim_sequence_top) != len(gim_sequence_bottom):
         raise ValueError(f"Sequences must have same length: {len(gim_sequence_top)} vs {len(gim_sequence_bottom)}")
     
+    if max_frames is not None:
+        if max_frames <= 0 or max_frames > len(gim_sequence_top):
+            raise ValueError(f"max_frames must be between 1 and {len(gim_sequence_top)}")
+        gim_sequence_top = gim_sequence_top[:max_frames]
+        gim_sequence_bottom = gim_sequence_bottom[:max_frames]
+        if titles_top:
+            titles_top = titles_top[:max_frames]
+        if titles_bottom:
+            titles_bottom = titles_bottom[:max_frames]
+
     print(f'Saving GIM video to {file_name}')
-
-    # Create figure with 2 rows, 2 columns (maps + colorbars)
-    fig = plt.figure(figsize=(10, 10))
-    gs = fig.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
-                         wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
     
-    # Top subplot (original/real data)
-    ax_top = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    cbar_ax_top = fig.add_subplot(gs[0, 1])
-    
-    # Bottom subplot (forecast/predicted data)
-    ax_bottom = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
-    cbar_ax_bottom = fig.add_subplot(gs[1, 1])
-    
-    # Initialize with first frame
-    im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[0], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                       title=titles_top[0] if titles_top else None)
-    cbar_top = fig.colorbar(im_top, cax=cbar_ax_top)
-    cbar_top.set_label("TEC (TECU)")
-    
-    im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[0], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                          title=titles_bottom[0] if titles_bottom else None)
-    cbar_bottom = fig.colorbar(im_bottom, cax=cbar_ax_bottom)
-    cbar_bottom.set_label("TEC (TECU)")
-
-    def update(frame):
-        # Update top plot
-        new_im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                               title=titles_top[frame] if titles_top else None)
+    # Pre-render all frames as numpy arrays
+    frames = []
+    for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
+        # Create temporary figure for this frame with colorbars
+        fig_temp = plt.figure(figsize=(10.88, 10.88))
+        gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
+                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
         
-        # Update bottom plot
-        new_im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[frame], cmap=cmap, vmin=vmin, vmax=vmax, 
-                                                  title=titles_bottom[frame] if titles_bottom else None)
+        # Plot frame - maps
+        ax_top = fig_temp.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+        ax_bottom = fig_temp.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
         
-        return [new_im_top, new_im_bottom]
+        # Plot frame - colorbar axes
+        cbar_ax_top = fig_temp.add_subplot(gs[0, 1])
+        cbar_ax_bottom = fig_temp.add_subplot(gs[1, 1])
+        
+        # Create the maps and get the image objects for colorbars
+        im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                           title=titles_top[i] if titles_top else None)
+        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                              title=titles_bottom[i] if titles_bottom else None)
+        
+        # Add colorbars
+        cbar_top = fig_temp.colorbar(im_top, cax=cbar_ax_top)
+        cbar_top.set_label("TEC (TECU)")
+        
+        cbar_bottom = fig_temp.colorbar(im_bottom, cax=cbar_ax_bottom)
+        cbar_bottom.set_label("TEC (TECU)")
+        
+        # Convert to array - fix deprecation warning
+        fig_temp.canvas.draw()
+        frame_array = np.frombuffer(fig_temp.canvas.buffer_rgba(), dtype=np.uint8)
+        frame_array = frame_array.reshape(fig_temp.canvas.get_width_height()[::-1] + (4,))
+        # Convert RGBA to RGB
+        frame_array = frame_array[:, :, :3]
+        frames.append(frame_array)
+        
+        plt.close(fig_temp)
+    
+    with imageio.get_writer(file_name, format='mp4', fps=fps, codec='libx264', 
+                       output_params=['-pix_fmt', 'yuv420p', '-loglevel', 'error']) as writer:
+        for frame in tqdm(frames, desc="Writing video   "):
+            writer.append_data(frame)
 
-    ani = animation.FuncAnimation(fig, update, frames=len(gim_sequence_top), blit=False, 
-                                 interval=1000/fps, repeat=False)
-    ani.save(file_name, dpi=150, writer='ffmpeg', extra_args=['-pix_fmt', 'yuv420p'])
-    plt.close()
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
     if not isinstance(model, (IonCastConvLSTM)):
@@ -208,9 +215,9 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
     jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-    print(jpld_original.shape)
-    print(jpld_forecast_context.shape)
-    print(jpld_forecast.shape)
+    # print(jpld_original.shape)
+    # print(jpld_forecast_context.shape)
+    # print(jpld_forecast.shape)
 
     jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
 
@@ -218,32 +225,15 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
     jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
 
-
-
-
-    # comparison_video_file = os.path.join(args.target_dir, file_name)
-    # save_gim_video_comparison(
-    #     original.cpu().numpy().reshape(args.prediction_window, 180, 360),
-    #     forecast.cpu().numpy().reshape(args.prediction_window, 180, 360),
-    #     comparison_video_file,
-    #     vmin=0, vmax=100,
-    #     titles_top=[f'{title} Original: {d}' for d in dates],
-    #     titles_bottom=[f'{title} Forecast: {d}' for d in dates]
-    # )
-
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
+    titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence]
     titles_forecast = []
     for i in range(sequence_length):
         if i < sequence_forecast_start_index:
-            titles_forecast.append(f'{title} JPLD GIM TEC Original (Context): {sequence[i]}')
+            titles_forecast.append(f'JPLD GIM TEC Context : {sequence[i]} - {title}')
         else:
-            titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
+            titles_forecast.append(f'JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]}) - {title}')
 
-    # print(jpld_original_unnormalized.shape)
-    # print(jpld_forecast_with_context_unnormalized.shape)
-    # print(len(titles_original))
-    # print(len(titles_forecast))
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
@@ -252,6 +242,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         titles_top=titles_original,
         titles_bottom=titles_forecast
     )
+
 
 def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
@@ -315,8 +306,8 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -330,8 +321,9 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100', 'G2H9-202303230900', 'G2H9-202304231200'], help='Test event IDs that the model has seen during training')
+    # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -628,13 +620,27 @@ def main():
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
                                 _, _, date_start, date_end, _, max_kp = event
-                                print('Testing event ID: {}'.format(event_id))
+                                print('* Testing event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                                file_name = f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4'
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+
+                        if args.test_event_seen_id:
+                            for event_id in args.test_event_seen_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp = event
+                                print('* Testing seen event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
 
         elif args.mode == 'test':
