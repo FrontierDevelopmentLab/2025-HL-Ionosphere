@@ -425,17 +425,17 @@ def main():
             for name, dataset_list in aux_datasets_valid_dict.items():
                 aux_datasets_valid.append(UnionDataset(datasets=dataset_list)) # NOTE: the union datasets no longer have the same start dates.
                 print("\nStart and end dates: ", aux_datasets_valid[-1].date_start, aux_datasets_valid[-1].date_end)
-            raise
+            # raise
             if args.model_type == 'VAE1':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
 
-                dataset_train = CompositeDataset([dataset_jpld_train] + aux_datasets_train)
-                dataset_valid = CompositeDataset([dataset_jpld_valid] + aux_datasets_valid)
-                # dataset_train = Sequences([dataset_jpld_train] + aux_datasets_train, delta_minutes=args.delta_minutes, sequence_length=1)
-                # dataset_valid = Sequences([dataset_jpld_valid] + aux_datasets_valid, delta_minutes=args.delta_minutes, sequence_length=1)
+                # dataset_train = CompositeDataset([dataset_jpld_train] + aux_datasets_train)
+                # dataset_valid = CompositeDataset([dataset_jpld_valid] + aux_datasets_valid)
+                dataset_train = Sequences([dataset_jpld_train] + aux_datasets_train, delta_minutes=args.delta_minutes, sequence_length=1)
+                dataset_valid = Sequences([dataset_jpld_valid] + aux_datasets_valid, delta_minutes=args.delta_minutes, sequence_length=1)
                 print(len(dataset_train), len(dataset_valid))
-                raise
+                # raise
                 # dataset_train = dataset_jpld_train
                 # dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
@@ -448,7 +448,7 @@ def main():
 
             print(aux_datasets_train)
             c_dim = sum([ds[0][0].shape[-1] for ds in aux_datasets_train])
-            print(f'forcings dimension: {c_dim}')
+            print(f'conditioning dimension: {c_dim}')
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
@@ -606,13 +606,14 @@ def main():
                                     print(t)
                             pass
                         batch = next(iter(valid_loader))
-                        jpld_orig, tabular_datasets_orig, jpld_orig_dates = batch[0], batch[1:-1], batch[-1]
+                        jpld_orig, tabular_datasets_orig, jpld_orig_dates = batch[0], batch[1:-1], batch[-1][0]
                         print(f"jpld orig dates: {jpld_orig_dates}")
 
                         all_indeces = torch.cat(tabular_datasets_orig, dim=-1)
                         print(jpld_orig.shape, all_indeces.shape, jpld_orig_dates)
                         jpld_orig = jpld_orig[:num_evals]
                         jpld_orig_dates = jpld_orig_dates[:num_evals]
+                        all_indeces = all_indeces[:num_evals]
                         print(jpld_orig.shape, all_indeces.shape)
                         jpld_orig = jpld_orig[:, 0, :, :, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
                         all_indeces = all_indeces[:, 0, :].float() # take the first frame in sequence (sequence should be len one for the VAE model anyways)
@@ -624,7 +625,7 @@ def main():
                         print(f"jpld_recon_unnormalized shape: {jpld_recon_unnormalized.shape}")
 
                         # Sample a batch from the model
-                        jpld_sample = model.sample(n=num_evals, c=all_indeces.repeat(num_evals, 1))
+                        jpld_sample = model.sample(n=num_evals, c=all_indeces)
                         print(f"jpld_samp shape: {jpld_sample.shape}")
                         jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)

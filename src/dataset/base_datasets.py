@@ -26,6 +26,7 @@ class PandasDataset(Dataset):
         print(len(self.data))
         self.data = self.data.dropna() # This drops ~10% of omniweb, a bit wasteful as it drops entire row at a time but not too bad
         # Get dates available
+        self.data['Datetime'] = pd.to_datetime(self.data['Datetime']) # this line wasnt present previously but is necessary if the col contains strings instead of pandas timestamps for the date.to_pydatetime() to run as expected
         self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
 
         self.dates_set = set(self.dates)
@@ -86,54 +87,9 @@ class PandasDataset(Dataset):
         print('End date             : {}'.format(self.date_end))
 
         print('Rows after processing: {:,}'.format(len(self.data)))
+        # self.data.set_index("Datetime", inplace=True) # sets the indexing to be done with datetime
+
         # print('Memory usage         : {:,} bytes'.format(self.data.memory_usage(deep=True).sum()))
-
-    @staticmethod
-    def fill_to_cadence(df, delta_minutes=15, rewind_time = 50):
-        df["Datetime"] = pd.to_datetime(df["Datetime"]) # strs to convert to datetime objs
-
-        df = df.sort_values("Datetime").reset_index(drop=True) # to make sure df is ordered properly
-        filled_rows = []
-        rewind_time = datetime.timedelta(minutes=rewind_time)
-
-        for i in tqdm(range(1, len(df))):
-            prev_row = df.iloc[i - 1]
-            curr_row = df.iloc[i]
-
-            t0 = prev_row["Datetime"]
-            t1 = curr_row["Datetime"]
-
-            if (t1 - t0) > rewind_time:  # no infilling if gap larger than rewind time
-                filled_rows.append(prev_row)
-                continue
-            # Generate target timestamps at delta_minutes cadence
-            # First aligned timestamp after t0
-            remainder = (t0.minute % delta_minutes) 
-            correction = datetime.timedelta(minutes=(delta_minutes - remainder) % delta_minutes)
-            aligned_start = (t0.replace(second=0, microsecond=0) + correction)
-
-            # Create date range between aligned_start and t1
-            timestamps = pd.date_range(
-                start=aligned_start,
-                end=t1,
-                freq=f'{delta_minutes}min'
-            )
-
-            # Add the original row
-            filled_rows.append(prev_row)
-
-            # For each interpolated timestamp, duplicate previous row and set new time
-            for ts in timestamps:
-                if ts == t0: continue # already added row corresponding to t0 (prev_row)
-                if ts < t1:  # Only fill between, not including t1
-                    new_row = prev_row.copy()
-                    new_row["Datetime"] = ts
-                    filled_rows.append(new_row)
-
-        # Append the final row
-        filled_rows.append(df.iloc[-1])
-        # df_filled
-        return pd.DataFrame(filled_rows).reset_index(drop=True)
 
 
 
@@ -148,20 +104,21 @@ class PandasDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
+
+
     def __getitem__(self, index):
         if isinstance(index, datetime.datetime):
             date = index
         elif isinstance(index, str):
             date = datetime.datetime.fromisoformat(index)
-        elif isinstance(index, int): # THIS WILL CAUSE ERRORS WHEN DEALING WITH MULTPLIE DATASETS, 
+        elif isinstance(index, int): # THIS WILL CAUSE ERRORS WHEN DEALING WITH MULTPLIE DATASETS
             date = self.data.iloc[index]['Datetime'] 
             warn("Should not index dataset by int if aligning multiple datasets, this is error prone if datasets have holes.")
         else:
             raise ValueError('Expecting index to be int, datetime.datetime, or str (in the format of 2022-11-01T00:01:00)')
         data = self.get_data(date)
         return data, date.isoformat()            
-
+   
     def get_data(self, date):
         # if date < self.date_start or date > self.date_end:
         #     raise ValueError('Date ({}) out of range for RadLab ({}; {} - {})'.format(date, self.instrument, self.date_start, self.date_end))
@@ -213,6 +170,54 @@ class PandasDataset(Dataset):
         values = torch.stack(values).flatten()
         return dates, values
     
+    @staticmethod
+    def fill_to_cadence(df, delta_minutes=15, rewind_time = 50):
+        df["Datetime"] = pd.to_datetime(df["Datetime"]) # strs to convert to datetime objs
+
+        df = df.sort_values("Datetime").reset_index(drop=True) # to make sure df is ordered properly
+        filled_rows = []
+        rewind_time = datetime.timedelta(minutes=rewind_time)
+
+        for i in tqdm(range(1, len(df))):
+            prev_row = df.iloc[i - 1]
+            curr_row = df.iloc[i]
+
+            t0 = prev_row["Datetime"]
+            t1 = curr_row["Datetime"]
+
+            if (t1 - t0) > rewind_time:  # no infilling if gap larger than rewind time
+                filled_rows.append(prev_row)
+                continue
+            # Generate target timestamps at delta_minutes cadence
+            # First aligned timestamp after t0
+            remainder = (t0.minute % delta_minutes) 
+            correction = datetime.timedelta(minutes=(delta_minutes - remainder) % delta_minutes)
+            aligned_start = (t0.replace(second=0, microsecond=0) + correction)
+
+            # Create date range between aligned_start and t1
+            timestamps = pd.date_range(
+                start=aligned_start,
+                end=t1,
+                freq=f'{delta_minutes}min'
+            )
+
+            # Add the original row
+            filled_rows.append(prev_row)
+
+            # For each interpolated timestamp, duplicate previous row and set new time
+            for ts in timestamps:
+                if ts == t0: continue # already added row corresponding to t0 (prev_row)
+                if ts < t1:  # Only fill between, not including t1
+                    new_row = prev_row.copy()
+                    new_row["Datetime"] = ts
+                    filled_rows.append(new_row)
+
+        # Append the final row
+        filled_rows.append(df.iloc[-1])
+        # df_filled
+        return pd.DataFrame(filled_rows).reset_index(drop=True)
+
+
 # class PandasDataset(Dataset):
 #     def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None):
 #         self.name = name
@@ -539,8 +544,8 @@ class Sequences(Dataset):
                 if i == 0: # this if block is causing issues for our datasets, but its also justifiable
                     for dataset in self.datasets:
                         if date not in dataset.dates_set:
-                            if not dataset[date]:
-                               sequence_available = False
+                            # if not dataset[date]: NOTE: this causes further problems
+                            sequence_available = False
                             break
                 if not sequence_available:
                     break
