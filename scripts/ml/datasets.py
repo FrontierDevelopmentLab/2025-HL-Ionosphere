@@ -459,6 +459,7 @@ class UnionDataset(Dataset):
                     print('Warning: Overlap in dates_set between datasets in the union')
                 self.dates_set.add(date)
         self.dates = sorted(self.dates_set)
+        self.name = 'Union'
 
     def __len__(self):
         return len(self.dates)
