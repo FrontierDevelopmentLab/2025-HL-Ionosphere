@@ -21,6 +21,7 @@ import numpy as np
 import glob as glob
 import pandas as pd
 from .base_datasets import PandasDataset
+from pathlib import Path
 
 # solar_index_file = "/mnt/ionosphere-data/solar_env_tech_indices/Indices_F10_processed.csv"
 class SolarIndexDataset(PandasDataset):
@@ -29,7 +30,7 @@ class SolarIndexDataset(PandasDataset):
         print('File                 : {}'.format(file_name))
 
         data = pd.read_csv(file_name)
-        data['Datetime'] = pd.to_datetime(data['Datetime'])
+        # data['Datetime'] = pd.to_datetime(data['Datetime'])
         # data = data.sort_values(by='Datetime')
         print('Rows                 : {:,}'.format(len(data)))
         if column is None:
@@ -41,6 +42,15 @@ class SolarIndexDataset(PandasDataset):
         df_std = data[self.column].mean()
         self.col_means = torch.tensor(np.array(df_mean))
         self.col_std = torch.tensor(np.array(df_std))
+
+        stem = Path(file_name).stem
+        new_stem = f"{stem}_deltamin_{delta_minutes}_rewind_{rewind_minutes}" 
+        cadence_matched_fname = Path(file_name).with_stem(new_stem)
+        if cadence_matched_fname.exists():
+            data = pd.read_csv(cadence_matched_fname)
+        else:
+            data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_time=rewind_minutes)
+            data.to_csv(cadence_matched_fname) # the fill to cadence can take a while, so cache file
 
 
         # Remove outliers based on quantiles, # NOTE: is this something we care about in this dataset? 

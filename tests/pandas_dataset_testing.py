@@ -2,11 +2,14 @@ import src
 from datetime import datetime
 from pprint import pprint 
 
-omni_dir = "/mnt/ionosphere-data/omniweb/cleaned/"
+# omni_dir = "/mnt/ionosphere-data/omniweb/cleaned/"
+# gim_webdataset = "/mnt/disks/disk-main-data-1/data/jpld/webdataset/"
+# celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
+# solar_index_file = "/mnt/ionosphere-data/solar_env_tech_indices/Indices_F10_processed.csv"
+omni_dir = "/mnt/disks/disk-main-data-1/data/omniweb/cleaned/"
 gim_webdataset = "/mnt/disks/disk-main-data-1/data/jpld/webdataset/"
-celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
-solar_index_file = "/mnt/ionosphere-data/solar_env_tech_indices/Indices_F10_processed.csv"
-
+celestrak_file = "/mnt/disks/disk-main-data-1/data/celestrak/kp_ap_processed_timeseries.csv"
+solar_index_file = "/mnt/disks/disk-main-data-1/data/solar_env_tech_indices/Indices_F10_processed.csv"
 
 date_start = datetime(year = 2010, month = 10, day=1, hour=0, minute=0)
 date_end = datetime(year = 2024, month = 5, day=1, hour=0, minute=0)
