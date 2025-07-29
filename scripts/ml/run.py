@@ -35,6 +35,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
         cmap (str): Colormap to use for imshow.
         vmin (float): Minimum value for colormap normalization.
         vmax (float): Maximum value for colormap normalization.
+        title (str): Title for the plot.
     """
     if image.shape != (180, 360):
         raise ValueError("Input image must have shape (180, 360), but got shape {}.".format(image.shape))
@@ -51,7 +52,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     
     ax.coastlines()
     if title is not None:
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=12, loc='left')
 
     return im
 
@@ -118,6 +119,7 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
                                        titles_top=None, titles_bottom=None, fps=2, max_frames=None):
     """
     Pre-render all frames to avoid memory accumulation during animation.
+    Now includes colorbars in each frame.
     """
     # Ensure both sequences have the same length
     if len(gim_sequence_top) != len(gim_sequence_bottom):
@@ -138,19 +140,31 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     # Pre-render all frames as numpy arrays
     frames = []
     for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
-        # Create temporary figure for this frame
+        # Create temporary figure for this frame with colorbars
         fig_temp = plt.figure(figsize=(10.88, 10.88))
         gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
                                   wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
         
-        # Plot frame
+        # Plot frame - maps
         ax_top = fig_temp.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
         ax_bottom = fig_temp.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
         
-        plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
-                                  title=titles_top[i] if titles_top else None)
-        plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
-                                   title=titles_bottom[i] if titles_bottom else None)
+        # Plot frame - colorbar axes
+        cbar_ax_top = fig_temp.add_subplot(gs[0, 1])
+        cbar_ax_bottom = fig_temp.add_subplot(gs[1, 1])
+        
+        # Create the maps and get the image objects for colorbars
+        im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                           title=titles_top[i] if titles_top else None)
+        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
+                                              title=titles_bottom[i] if titles_bottom else None)
+        
+        # Add colorbars
+        cbar_top = fig_temp.colorbar(im_top, cax=cbar_ax_top)
+        cbar_top.set_label("TEC (TECU)")
+        
+        cbar_bottom = fig_temp.colorbar(im_bottom, cax=cbar_ax_bottom)
+        cbar_bottom.set_label("TEC (TECU)")
         
         # Convert to array - fix deprecation warning
         fig_temp.canvas.draw()
@@ -212,13 +226,13 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'{title} JPLD GIM TEC Original: {d}' for d in sequence]
+    titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence]
     titles_forecast = []
     for i in range(sequence_length):
         if i < sequence_forecast_start_index:
-            titles_forecast.append(f'{title} JPLD GIM TEC Original (Context): {sequence[i]}')
+            titles_forecast.append(f'JPLD GIM TEC Context : {sequence[i]} - {title}')
         else:
-            titles_forecast.append(f'{title} JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]})')
+            titles_forecast.append(f'JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]}) - {title}')
 
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
@@ -292,8 +306,8 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-07-01T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2023-07-03T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -307,8 +321,9 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G2H9-202111032100', 'G2H9-202303230900', 'G2H9-202304231200'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
+    # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900', 'G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='+', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
 
     args = parser.parse_args()
 
@@ -625,7 +640,7 @@ def main():
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
 
         elif args.mode == 'test':
