@@ -11,7 +11,7 @@ from .datasets.lunar_position_dataset import *
 from .datasets.base_datasets import *
 
 # Import utility functions
-from .utils.subsolar_functions import compute_sublunary_point, compute_subsolar_point
+from .utils.subsolar_functions import compute_sublunar_point, compute_subsolar_point
 from .utils.events import *
 from .utils.util import *
 from .utils.plot_functions import *

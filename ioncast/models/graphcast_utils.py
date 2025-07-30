@@ -1,39 +1,8 @@
 import torch
 import numpy as np
-from physicsnemo.utils.graphcast.icosahedral_mesh import get_hierarchy_of_triangular_meshes_for_sphere
-from ioncast import compute_sublunary_point, compute_subsolar_point
+from ioncast import compute_sublunar_point, compute_subsolar_point
 
-# NOTE: delete later if unused
-# Convert mesh vertices (3D sphere coordinates) to lat/lon for interpolation 
-def sphere_to_latlon(vertices):
-    """Convert 3D unit sphere coordinates to lat/lon in degrees"""
-    x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
-    
-    # Convert to lat/lon
-    lat = torch.asin(z) * 180 / np.pi  # Latitude in degrees [-90, 90]
-    lon = torch.atan2(y, x) * 180 / np.pi  # Longitude in degrees [-180, 180]
-    
-    return lat, lon
-
-# # Function that takes in two lat, lon points and calculates the distance between them as arc length on a sphere
-# def haversine_distance(lon1, lat1, lon_grid, lat_grid):
-#     """
-#     Calculate the great circle distance between two points
-#     on the earth (specified in decimal degrees)
-    
-#     All args must be of equal length.    
-#     """
-#     lat, lon, lat_grid, lon_grid = np.deg2rad(lat), np.deg2rad(lon), np.deg2rad(lat_grid), np.deg2rad(lon_grid)
-#     # lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-    
-#     dlon = lon_grid - lon1
-#     dlat = lat_grid - lat1
-    
-#     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat_grid) * np.sin(dlon/2.0)**2
-    
-#     c = 2 * np.arcsin(np.sqrt(a))
-#     return c
-def haversine_distance(lat, lon, lat_grid, lon_grid): # TODO: add parameter to have subsolar point be 0 vs 1 & standardize
+def haversine_distance(lat, lon, lat_grid, lon_grid, standardize=True):
     """
     Compute Haversine distances between N source points and a common lat/lon grid.
     
@@ -42,6 +11,7 @@ def haversine_distance(lat, lon, lat_grid, lon_grid): # TODO: add parameter to h
         lon: np.ndarray of shape [N]
         lat_grid: np.ndarray of shape [H, W]
         lon_grid: np.ndarray of shape [H, W]
+        standardize: bool, whether to standardize the distances to [0, 1] and make the closest point 1 and the furthest point 0.
     
     Returns:
         distances: np.ndarray of shape [N, H, W]
@@ -57,9 +27,27 @@ def haversine_distance(lat, lon, lat_grid, lon_grid): # TODO: add parameter to h
 
     a = np.sin(dlat / 2.0)**2 + np.cos(lat) * np.cos(lat_grid) * np.sin(dlon / 2.0)**2
     c = 2 * np.arcsin(np.sqrt(a))
+
+    if standardize:
+        max_c = np.max(c)
+        min_c = np.min(c)
+        c = (max_c - c) / (max_c - min_c)
     return c  # [N, H, W]
 
-def process_to_grid_nodes(
+# Day-in-month for non-leap year
+DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+def parse_fast(ts_str):
+    year = int(ts_str[0:4])
+    month = int(ts_str[5:7])
+    day = int(ts_str[8:10])
+    hour = int(ts_str[11:13])
+    minute = int(ts_str[14:16])
+    tod = (hour * 60 + minute) / (60 * 24)
+    doy = (sum(DAYS_IN_MONTH[:month - 1]) + day + hour / 24) / 365
+    return tod, doy
+
+def stack_features(
         sequence_batch, 
         n_img_datasets = 1, 
         model_type='GraphCast_forecast', # GraphCast_forecast, IonCastConvLSTM
@@ -67,44 +55,41 @@ def process_to_grid_nodes(
         include_sublunar=True, 
         include_timestamp=True
     ): 
-    # TODO: include flatten parameter such that we can either return with shape BTCHW or BCHW depending on which model will use the outputs, for a bug free implementation of this, we can no longer assume B = 1 so should not have that assert stamtent
-    # and need to ensure concats + any other operations occuring over dimensions happens on the correct dim. 
-    # Sequence batch is a batch returned from a dataloader of a Sequences dataset 
-    # Sequences dataset structure:
-    # [Tensor[DSet1 batch].    | Tensor[DSet2 batch].   | ... | Tensor[DSet k batch]   | List[timestamps]] |
-    # [torch.Size([B, T, F])   | torch.Size([B, T, F])  | ... | torch.Size([B, T, F])  | [T, B]            | 
-    # 
-    #
-    # Example: (Default format of dataset order will be fist n datasets will be images, and rest of k-n datasets will be tabular)
-    # [Tensor[JPLD batch]               | Tensor[OMNIWeb batch]   | Tensor[Celestrak batch] | Tensor[Solar Index batch]  | List[timestamps]] |
-    # [torch.Size([B, T, C, H, W])      | torch.Size([B, T, F])   | torch.Size([B, T, F])   | torch.Size([B, T, F])      | [T, B]            |
-    # [torch.Size([1, 10, 1, 180, 360]) | torch.Size([1, 10, 16]) | torch.Size([1, 10, 2])  | torch.Size([1, 10, 4])     | [10, 1]           | 
-    #
+    """
+    Sequence batch is a batch returned from a dataloader of a Sequences dataset 
+    Sequences dataset structure:
+    [Tensor[DSet 1 batch]    | Tensor[DSet 2 batch]   | ... | Tensor[DSet k batch]   | List[tuples(timestamps)]] |
+    [torch.Size([B, T, F])   | torch.Size([B, T, F])  | ... | torch.Size([B, T, F])  | [T, B]                    |
 
+    Example: (Default format of dataset order will be fist n datasets will be images, and rest of k-n datasets will be tabular)
+    [Tensor[JPLD batch]               | Tensor[OMNIWeb batch]   | Tensor[Celestrak batch] | Tensor[Solar Index batch]  | List[tuples(timestamps)]] |
+    [torch.Size([B, T, C, H, W])      | torch.Size([B, T, F])   | torch.Size([B, T, F])   | torch.Size([B, T, F])      | [T, B]            |
+    [torch.Size([1, 10, 1, 180, 360]) | torch.Size([1, 10, 16]) | torch.Size([1, 10, 2])  | torch.Size([1, 10, 4])     | [10, 1]           | 
+    """
+
+    # Split the dataset into image datasets, global feature datasets, and timestamps
     image_datasets = sequence_batch[:n_img_datasets] # torch.Size(torch.Size([B, T, C_i, H, W])
     global_param_datasets = sequence_batch[n_img_datasets:-1] # torch.Size(torch.Size([B, T, F_i])
-
     timestamps = sequence_batch[-1] # List[Tuple] -> [T, B]
 
+    # Stack the datasets along the channel dimension
     stacked_imgs = torch.cat(image_datasets, dim=2) # torch.Size(torch.Size([B, T, Sum(C_i), H, W])
     stacked_globals = torch.cat(global_param_datasets, dim=2) # torch.Size(torch.Size([B, T, Sum(F_i)])
+    stacked_globals = stacked_globals[:, :, :, None, None].repeat(1, 1, 1, H, W) # reshape to [B, T, C, H, W]
 
+    # Get shapes
     B, T, C, H, W = stacked_imgs.shape
-    B_g, T_g, F = stacked_globals.shape
+    B_g, T_g, F, _, _ = stacked_globals.shape
 
-    # TODO: move to the end, after dynamic features are computed
-    if model_type == 'GraphCast_forecast':
-        assert B == B_g and B == 1, "Graphcast only allows a batch size of 1" # comment this assert statemnt (See TODO: at the start of function)
-        assert T == T_g, "Mismatch in sequence length between image data and globals"
+    assert T == T_g, "Mismatch in sequence length between image data and globals"
+
+    # If graphcast, requires batch size is 1
+    if model_type == "Graphcast_forecast":
+        assert B == B_g and B == 1, "Graphcast only allows a batch size of 1"
         
-        # N, C, H, W
-        # Convert image and global parameters to N, C, H, W format
-        stacked_imgs = stacked_imgs.reshape(B, C*T, H, W) #  TODO: do all C*T / F*T reshaping at the end based on wether a passed in flatten flag is true or not
-        stacked_globals = stacked_globals.reshape(B, F*T) 
-        stacked_globals = stacked_globals[:, :, None, None].repeat(1, 1, H, W)
 
+    # Handle subsolar and sublunar points
     dynamic_features = []
-
     if include_subsolar or include_sublunar:
         # compute lat_grid and lon_grid matching shape H, W
         lat_vals = np.linspace(90, -90, H)         # North to south
@@ -112,62 +97,71 @@ def process_to_grid_nodes(
 
         lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
 
-    sublunar_list = []
-    subsolar_list = []
-    # assuming batch size 1 # NOTE: this will be changed 
-    for seq_idx in range(T): # under default conditions T = 2 (number of frames of history to include)
-        for batch_idx in range(B): # B should be 1.
-            timestamp = timestamps[seq_idx, batch_idx]
-            if include_subsolar:
-                subsolar_lat, subsolar_lon = compute_sublunary_point(timestamp)
-                subsolar_list.append([subsolar_lat, subsolar_lon])
-            if include_sublunar:
-                sublunar_lat, sublunar_lon = compute_sublunary_point(timestamp)
-                sublunar_list.append([sublunar_lat, sublunar_lon]) 
+    # Skip logic if no subsolar or sublunar points are requested
+    if include_subsolar or include_sublunar:
+        sublunar_list = []
+        subsolar_list = []
+        # For each timestamp in each sequence and batch, compute subsolar and sublunar points
+        for seq_idx in range(T): # under default conditions T = 2 (number of frames of history to include)
+            for batch_idx in range(B): # B will usually be 1 (for graphcast only)
+                timestamp = timestamps[seq_idx, batch_idx]
+                if include_subsolar:
+                    subsolar_lat, subsolar_lon = compute_subsolar_point(timestamp)
+                    subsolar_list.append([subsolar_lat, subsolar_lon])
+                if include_sublunar:
+                    sublunar_lat, sublunar_lon = compute_sublunar_point(timestamp)
+                    sublunar_list.append([sublunar_lat, sublunar_lon]) 
 
-    if include_subsolar:
-        subsolar_latlons = np.array(subsolar_list)
-        subsolar_dist_map = haversine_distance(subsolar_latlons[:,0], subsolar_latlons[:,1], lat_grid, lon_grid)
-        subsolar_dist_map = torch.tensor(subsolar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3)
-        dynamic_features.append(subsolar_dist_map)
-    if include_sublunar:
-        sublunar_latlons = np.array(sublunar_list)
-        sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid)
-        sublunar_dist_map = torch.tensor(sublunar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3) # []
-        dynamic_features.append(sublunar_dist_map)
+        # For each lat/lon pair, compute the Haversine distance to the grid
+        if include_subsolar:
+            subsolar_latlons = np.array(subsolar_list)
+            subsolar_dist_map = haversine_distance(subsolar_latlons[:,0], subsolar_latlons[:,1], lat_grid, lon_grid, standardize=True)
+            subsolar_dist_map = torch.tensor(subsolar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3)
+            dynamic_features.append(subsolar_dist_map)
+            
+        if include_sublunar:
+            sublunar_latlons = np.array(sublunar_list)
+            sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid, standardize=True)
+            sublunar_dist_map = torch.tensor(sublunar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3) # []
+            dynamic_features.append(sublunar_dist_map)
 
-    # TODO: Create a include_timestamp for non-graphcast models
-    if include_timestamp: # NOTE: double check tomorrow type of the timestamps (either datetime obj or pandas datetime)
-        # Convert pandas timestamps to sine/cosine of the local time of day & sine/cosine of the of year progress (normalized to [0, 1))
-        # Graphcast expects a sin(minute of the day) and cos(minute of the day) as well as sin(day of the year) and cos(day of the year)
+    if include_timestamp: 
+        # Transpose to shape (B, T)
+        timestamps_TB = list(zip(*timestamps))  # Now shape (B, T)
 
-        minute_of_day = lambda timestamp: timestamp.hour * 60 + timestamp.minute
-        day_of_year = lambda timestamp: timestamp.day + timestamp.hour / 24 + timestamp.minute / (24 * 60) # Do we want to include the hours + mins?
-        
-        ts_time_of_day = list(map(minute_of_day, timestamps)) # this doenst quite work, it applies the function on the tuple
-        ts_day_of_year = list(map(day_of_year, timestamps)) 
+        # Apply parse_fast and flatten to shape (B, T, C=4)
+        features = []
+        for ts_list in timestamps_TB:  # For each batch of sequences (B sequenc)
+            sample_features = []
+            for ts in ts_list: # For each timestamp in the batch
+                # Parse timestamp
+                tod, doy = parse_fast(ts)
 
-        # 
-        
-        
+                # Compute sine and cosine features of time of day and day of year (normalized to [0, 1])
+                sin_tod = np.sin(2 * np.pi * tod)
+                cos_tod = np.cos(2 * np.pi * tod)
+                sin_doy = np.sin(2 * np.pi * doy)
+                cos_doy = np.cos(2 * np.pi * doy)
 
-        # current shape
-        sin_local_time_of_day = torch.sin(2 * np.pi * ts_time_of_day) 
-        cos_local_time_of_day = torch.cos(2 * np.pi * ts_time_of_day) 
-        sin_year_progress = torch.sin(2 * np.pi * ts_day_of_year)   
-        cos_year_progress = torch.cos(2 * np.pi * ts_day_of_year)  
+                sample_features.append([sin_tod, cos_tod, sin_doy, cos_doy])
+            features.append(sample_features)  # sample_features is shape (T, 4), features is shape (B, T, 4)
 
-        # Create a tensor of shape B, 4*T, H, W (copy over H and W dimensions)
-        time_tensor = torch.zeros(B, 4*T, H, W)
-        time_tensor[:, 0, :, :] = sin_local_time_of_day # these tensors have shape [T,] currently I think so indexing will break here i think TOOD: go over tmo
-        time_tensor[:, 1, :, :] = cos_local_time_of_day
-        time_tensor[:, 2, :, :] = sin_year_progress
-        time_tensor[:, 3, :, :] = cos_year_progress
+        # Step 3: Convert to array: (B, 4*T)
+        time_tensor = torch.tensor(np.array(features)).repeat(1, 1, 1, H, W) # shape (B, T, C=4, H, W)
         dynamic_features.append(time_tensor)
 
+    # If there are dynamic features, stack them along the channel dimension
     if dynamic_features:
-        dynamic_tensor = torch.cat(dynamic_features) # [B, C_dyn, H, W]
-        stacked_features = torch.cat([stacked_imgs, stacked_globals, dynamic_tensor], dim=1)  # [B, C_stacked = sum(C_i + F_i) * T + C_dyn , H, W]
+        dynamic_tensor = torch.cat(dynamic_features, dim=2) # [B, T, C_dyn, H, W]
+        stacked_features = torch.cat([stacked_imgs, stacked_globals, dynamic_tensor], dim=2)  # [B, T, C_stacked = sum(C_i + F_i) + C_dyn , H, W]
     else:
-        stacked_features = torch.cat([stacked_imgs, stacked_globals], dim=1)  # [B, C_stacked = sum(C_i + F_i) * T, H, W]
+        stacked_features = torch.cat([stacked_imgs, stacked_globals], dim=2)  # [B, T, C_stacked = sum(C_i + F_i), H, W]
+
+    # If the model type is GraphCast_forecast, reshape to N, C, H, W format (flatten T and C together)
+    if model_type == 'GraphCast_forecast':
+        C_stacked = stacked_features.shape[2]
+
+        # Convert image and global parameters to N, C, H, W format
+        stacked_features = stacked_features.reshape(B, T * C_stacked, H, W)
+
     return stacked_features  # [B, C_total, H, W]

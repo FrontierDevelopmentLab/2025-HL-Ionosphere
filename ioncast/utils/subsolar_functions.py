@@ -126,8 +126,8 @@ def greenwich_mean_sidereal_time(utc_datetime):
     GMST = 280.46061837 + 360.98564736629 * days
     return GMST % 360
 
-def compute_sublunary_point(utc_datetime):
-    """Compute sublunary point (latitude, longitude) for given UTC datetime"""
+def compute_sublunar_point(utc_datetime):
+    """Compute sublunar point (latitude, longitude) for given UTC datetime"""
     # Ensure datetime has UTC timezone
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
