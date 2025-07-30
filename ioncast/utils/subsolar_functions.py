@@ -24,6 +24,15 @@ def greenwich_mean_sidereal_time(utc_datetime):
 
 def compute_subsolar_point(utc_datetime):
     """Compute subsolar point (latitude, longitude) for given UTC datetime"""
+    if type(utc_datetime) is not datetime.datetime:
+        try:
+            utc_datetime = datetime.datetime.strptime(utc_datetime, "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            try:
+                utc_datetime = datetime.datetime.strptime(utc_datetime, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                raise ValueError(f"Input {utc_datetime} must be a datetime object or a string in 'YYYY-MM-DD HH:MM:SS' format.")
+
     # Ensure datetime has UTC timezone
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
@@ -128,6 +137,15 @@ def greenwich_mean_sidereal_time(utc_datetime):
 
 def compute_sublunar_point(utc_datetime):
     """Compute sublunar point (latitude, longitude) for given UTC datetime"""
+    if type(utc_datetime) is not datetime.datetime:
+        try:
+            utc_datetime = datetime.datetime.strptime(utc_datetime, "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            try:
+                utc_datetime = datetime.datetime.strptime(utc_datetime, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                raise ValueError(f"Input {utc_datetime} must be a datetime object or a string in 'YYYY-MM-DD HH:MM:SS' format.")
+        
     # Ensure datetime has UTC timezone
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)

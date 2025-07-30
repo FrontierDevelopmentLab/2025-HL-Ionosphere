@@ -17,5 +17,5 @@ from .utils.util import *
 from .utils.plot_functions import *
 
 # Import models
-from .models.graphcast_utils import *
+from .models.graphcast_utils import stack_features
 from .models.models import *
