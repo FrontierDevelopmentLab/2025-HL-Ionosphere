@@ -50,6 +50,7 @@ OMNIWeb
 from .base_datasets import PandasDataset
 import torch
 import os
+from pathlib import Path
 import pandas as pd
 
 
@@ -70,10 +71,20 @@ class OMNIDataset(PandasDataset):
 
         data = pd.read_csv(file_name)
         # print("1", data.head())
-        data['Datetime'] = pd.to_datetime(data['Datetime'])
+        # data['Datetime'] = pd.to_datetime(data['Datetime'])
         # print("2", data.head())
         # data = data.sort_values(by='Datetime')
         print('Rows                 : {:,}'.format(len(data)))
+
+        stem = Path(file_name).stem
+        new_stem = f"{stem}_deltamin_{delta_minutes}_rewind_{rewind_minutes}" 
+        cadence_matched_fname = Path(file_name).with_stem(new_stem)
+        if cadence_matched_fname.exists():
+            data = pd.read_csv(cadence_matched_fname)
+        else:
+            data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_time=rewind_minutes)
+            data.to_csv(cadence_matched_fname) # the fill to cadence can take a while, so cache file
+
 
         if column is None:
             self.column = [
@@ -85,7 +96,7 @@ class OMNIDataset(PandasDataset):
                 'Density', 'Temp', 
 
                 # Solar derivations (tbd on including) # NOTE: what was the consensus on  including these by default?
-                'P_dyn', 'E_field', 'Beta', 'Mach_Alfven', 
+                # 'P_dyn', 'E_field', 'Beta', 'Mach_Alfven', # NOTE: Mach Alfven has the 999... values, double check that these computed values have the 999..s filtered out
 
                 # Geomagnetic
                 # 'AE', 'AL', 'AU', #  (Missing in 2019-2020)
