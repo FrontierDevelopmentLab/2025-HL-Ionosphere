@@ -43,7 +43,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     im = ax.imshow(
         image,
         extent=[-180, 180, -90, 90],
-        origin='lower',
+        origin='upper',
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
@@ -307,7 +307,7 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2023-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -322,8 +322,9 @@ def main():
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
 
     args = parser.parse_args()
 
@@ -344,7 +345,7 @@ def main():
         print('Start time: {}'.format(start_time))
 
         if args.mode == 'train':
-            print('Training mode selected.')
+            print('\n*** Training mode\n')
 
             if args.batch_size < args.num_evals:
                 print(f'Warning: Batch size {args.batch_size} is less than num_evals {args.num_evals}. Using the batch size for num_evals.')
@@ -644,7 +645,55 @@ def main():
 
 
         elif args.mode == 'test':
-            raise NotImplementedError("Testing mode is not implemented yet.")
+
+            print('*** Testing mode\n')
+
+            model, _, _, _, _, _ = load_model(args.model_file, device)
+            model.eval()
+            model = model.to(device)
+
+            with torch.no_grad():
+                tests_to_run = []
+                if args.test_event_id:
+                    for event_id in args.test_event_id:
+                        if event_id not in EventCatalog:
+                            raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                        event = EventCatalog[event_id]
+                        _, _, date_start, date_end, _, max_kp = event
+                        print('* Testing event ID: {}'.format(event_id))
+                        date_start = datetime.datetime.fromisoformat(date_start)
+                        date_end = datetime.datetime.fromisoformat(date_end)
+                        date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                        file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                        title = f'Event: {event_id}, Kp={max_kp}'
+                        tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+                else:
+                    print('No test events specified, will use date_start and date_end arguments')
+                    date_start = datetime.datetime.fromisoformat(args.date_start)
+                    date_end = datetime.datetime.fromisoformat(args.date_end)
+                    date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    file_name = os.path.join(args.target_dir, f'test-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                    title = f'Test from {date_start.strftime("%Y-%m-%d %H:%M:%S")} to {date_end.strftime("%Y-%m-%d %H:%M:%S")}'
+                    tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+
+                dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+                
+                print('Running tests:')
+                for date_start, date_end, date_forecast_start, title, file_name in tests_to_run:
+                    # Create dataset for each test individually with date filtering
+                    # Add some buffer time for context window
+                    dataset_start = date_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=dataset_start, date_end=date_end)
+                    dataset = Sequences(datasets=[dataset_jpld], delta_minutes=args.delta_minutes, 
+                                    sequence_length=model.context_window + model.prediction_window)
+                    
+                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    
+                    # Force cleanup
+                    del dataset_jpld, dataset
+                    torch.cuda.empty_cache()
+        else:
+            raise ValueError('Unknown mode: {}'.format(args.mode))
 
         end_time = datetime.datetime.now()
         print('End time: {}'.format(end_time))
