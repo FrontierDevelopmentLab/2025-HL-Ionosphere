@@ -15,26 +15,53 @@ def sphere_to_latlon(vertices):
     
     return lat, lon
 
-# Function that takes in two lat, lon points and calculates the distance between them as arc length on a sphere
-def haversine_distance(lon1, lat1, lon_grid, lat_grid):
+# # Function that takes in two lat, lon points and calculates the distance between them as arc length on a sphere
+# def haversine_distance(lon1, lat1, lon_grid, lat_grid):
+#     """
+#     Calculate the great circle distance between two points
+#     on the earth (specified in decimal degrees)
+    
+#     All args must be of equal length.    
+#     """
+#     lat, lon, lat_grid, lon_grid = np.deg2rad(lat), np.deg2rad(lon), np.deg2rad(lat_grid), np.deg2rad(lon_grid)
+#     # lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+    
+#     dlon = lon_grid - lon1
+#     dlat = lat_grid - lat1
+    
+#     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat_grid) * np.sin(dlon/2.0)**2
+    
+#     c = 2 * np.arcsin(np.sqrt(a))
+#     return c
+def haversine_distance(lat, lon, lat_grid, lon_grid):
     """
-    Calculate the great circle distance between two points
-    on the earth (specified in decimal degrees)
+    Compute Haversine distances between N source points and a common lat/lon grid.
     
-    All args must be of equal length.    
+    Args:
+        lat: np.ndarray of shape [N]
+        lon: np.ndarray of shape [N]
+        lat_grid: np.ndarray of shape [H, W]
+        lon_grid: np.ndarray of shape [H, W]
+    
+    Returns:
+        distances: np.ndarray of shape [N, H, W]
     """
-    lat, lon, lat_grid, lon_grid = np.deg2rad(lat), np.deg2rad(lon), np.deg2rad(lat_grid), np.deg2rad(lon_grid)
-    # lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-    
-    dlon = lon_grid - lon1
-    dlat = lat_grid - lat1
-    
-    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat_grid) * np.sin(dlon/2.0)**2
-    
-    c = 2 * np.arcsin(np.sqrt(a))
-    return c
+    # Convert all angles to radians
+    lat = np.deg2rad(lat).reshape(-1, 1, 1)  # [N, 1, 1]
+    lon = np.deg2rad(lon).reshape(-1, 1, 1)  # [N, 1, 1]
+    lat_grid = np.deg2rad(lat_grid)[None, :, :]  # [1, H, W]
+    lon_grid = np.deg2rad(lon_grid)[None, :, :]  # [1, H, W]
 
-def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=True, include_sublunar=True, include_timestamp=True): #
+    dlon = lon_grid - lon
+    dlat = lat_grid - lat
+
+    a = np.sin(dlat / 2.0)**2 + np.cos(lat1) * np.cos(lat_grid) * np.sin(dlon / 2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    return c  # [N, H, W]
+
+def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=True, include_sublunar=True, include_timestamp=True): 
+    # TODO: include flatten parameter such that we can either return with shape BTCHW or BCHW depending on which model will use the outputs, for a bug free implementation of this, we can no longer assume B = 1 so should not have that assert stamtent
+    # and need to ensure concats + any other operations occuring over dimensions happens on the correct dim. 
     # Sequence batch is a batch returned from a dataloader of a Sequences dataset 
     # Sequences dataset structure:
     # [Tensor[DSet1 batch].    | Tensor[DSet2 batch].   | ... | Tensor[DSet k batch]   | List[timestamps]] |
@@ -57,12 +84,21 @@ def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=T
 
     B, T, C, H, W = stacked_imgs.shape
     B_g, T_g, F = stacked_globals.shape
-    assert B == B_g and B == 1, "Graphcast only allows a batch size of 1"
+    assert B == B_g and B == 1, "Graphcast only allows a batch size of 1" # comment this asseert statemnt (See TODO: at the start of function)
     assert T == T_g, "Mismatch in sequence length between image data and globals"
 
-    stacked_imgs = stacked_imgs.reshape(B, C*T, H, W) 
+    stacked_imgs = stacked_imgs.reshape(B, C*T, H, W) #  TODO: do all C*T / F*T reshaping at the end based on wether a passed in flatten flag is true or not
     stacked_globals = stacked_globals.reshape(B, F*T) 
     stacked_globals = stacked_globals[:, :, None, None].repeat(1, 1, H, W)
+
+    dynamic_features = []
+
+    if include_subsolar or include_sublunar:
+        # compute lat_grid and lon_grid matching shape H, W
+        lat_vals = np.linspace(90, -90, H)         # North to south
+        lon_vals = np.linspace(-180, 180, W, endpoint=False)  # West to east
+
+        lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
 
     sublunar_list = []
     subsolar_list = []
@@ -75,24 +111,37 @@ def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=T
                 subsolar_list.append([subsolar_lat, subsolar_lon])
             if include_sublunar:
                 sublunar_lat, subluner_lon = compute_sublunary_point(timestamp)
-                
-                # sublunar_list.append([sublunar_lat, subluner_lon]) 
+                sublunar_list.append([sublunar_lat, subluner_lon]) 
 
     if include_subsolar:
-        subsolar_ = torch.tensor(subsolar_list).reshape(T, B, 2).permute(1, 0, 2)
+        subsolar_latlons = np.array(subsolar_list)
+        subsolar_dist_map = haversine_distance(subsolar_latlons[:,0], subsolar_latlons[:,1], lat_grid, lon_grid)
+        subsolar_dist_map = torch.tensor(subsolar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3)
+        dynamic_features.append(subsolar_dist_map)
     if include_sublunar:
-        sublunar_ = torch.tensor(sublunar_list).reshape(T, B, 2).permute(1, 0, 2)
+        sublunar_latlons = np.array(sublunar_list)
+        sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid)
+        sublunar_dist_map = torch.tensor(sublunar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3) # []
+        dynamic_features.append(sublunar_dist_map)
 
     if include_timestamp: # NOTE: double check tomorrow type of the timestamps (either datetime obj or pandas datetime)
         # Convert pandas timestamps to sine/cosine of the local time of day & sine/cosine of the of year progress (normalized to [0, 1))
-        sin_local_time_of_day = torch.sin(2 * np.pi * timestamps[:, 0] / 24) # TODO: linnea check if indexing is correct
-        cos_local_time_of_day = torch.cos(2 * np.pi * timestamps[:, 0] / 24)
-        sin_year_progress = torch.sin(2 * np.pi * timestamps[:, 0] / 365)
+        sin_local_time_of_day = torch.sin(2 * np.pi * timestamps[:, 0] / 24) # TODO: linnea check if indexing is correct, (Halil: this indexing generates includes all timestamps for batch 0, if we want to make use of batchsize > 1 this will cause a bug )
+        cos_local_time_of_day = torch.cos(2 * np.pi * timestamps[:, 0] / 24) # (Halil: current shape of this should be [T,])
+        sin_year_progress = torch.sin(2 * np.pi * timestamps[:, 0] / 365)    # (Halil: go over tomorrow format graphcast expects for this since currently the values of timestamps will be very large though i imagine it doesnt matter since were mapping it to sin ) 
         cos_year_progress = torch.cos(2 * np.pi * timestamps[:, 0] / 365)
 
         # Create a tensor of shape B, 4, H, W (copy over H and W dimensions)
         time_tensor = torch.zeros(B, 4, H, W)
-        time_tensor[:, 0, :, :] = sin_local_time_of_day
+        time_tensor[:, 0, :, :] = sin_local_time_of_day # these tensors have shape [T,] currently I think so indexing will break here i think TOOD: go over tmo
         time_tensor[:, 1, :, :] = cos_local_time_of_day
         time_tensor[:, 2, :, :] = sin_year_progress
         time_tensor[:, 3, :, :] = cos_year_progress
+        dynamic_features.append(time_tensor)
+
+    if dynamic_features:
+        dynamic_tensor = torch.cat(dynamic_features) # [B, C_dyn, H, W]
+        stacked_features = torch.cat([stacked_imgs, stacked_globals, dynamic_tensor], dim=1)  # [B, C_stacked = sum(C_i + F_i) * T + C_dyn , H, W]
+    else:
+        stacked_features = torch.cat([stacked_imgs, stacked_globals], dim=1)  # [B, C_stacked = sum(C_i + F_i) * T, H, W]
+    return stacked_features  # [B, C_total, H, W]
