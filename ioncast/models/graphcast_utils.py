@@ -33,7 +33,7 @@ def sphere_to_latlon(vertices):
     
 #     c = 2 * np.arcsin(np.sqrt(a))
 #     return c
-def haversine_distance(lat, lon, lat_grid, lon_grid):
+def haversine_distance(lat, lon, lat_grid, lon_grid): # TODO: add parameter to have subsolar point be 0 vs 1 & standardize
     """
     Compute Haversine distances between N source points and a common lat/lon grid.
     
@@ -55,11 +55,18 @@ def haversine_distance(lat, lon, lat_grid, lon_grid):
     dlon = lon_grid - lon
     dlat = lat_grid - lat
 
-    a = np.sin(dlat / 2.0)**2 + np.cos(lat1) * np.cos(lat_grid) * np.sin(dlon / 2.0)**2
+    a = np.sin(dlat / 2.0)**2 + np.cos(lat) * np.cos(lat_grid) * np.sin(dlon / 2.0)**2
     c = 2 * np.arcsin(np.sqrt(a))
     return c  # [N, H, W]
 
-def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=True, include_sublunar=True, include_timestamp=True): 
+def process_to_grid_nodes(
+        sequence_batch, 
+        n_img_datasets = 1, 
+        model_type='GraphCast_forecast', # GraphCast_forecast, IonCastConvLSTM
+        include_subsolar=True, 
+        include_sublunar=True, 
+        include_timestamp=True
+    ): 
     # TODO: include flatten parameter such that we can either return with shape BTCHW or BCHW depending on which model will use the outputs, for a bug free implementation of this, we can no longer assume B = 1 so should not have that assert stamtent
     # and need to ensure concats + any other operations occuring over dimensions happens on the correct dim. 
     # Sequence batch is a batch returned from a dataloader of a Sequences dataset 
@@ -79,17 +86,22 @@ def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=T
 
     timestamps = sequence_batch[-1] # List[Tuple] -> [T, B]
 
-    stacked_imgs = torch.cat(image_datasets, dim=2) # torch.Size(torch.Size([B, T,sum(C_i), H, W])
+    stacked_imgs = torch.cat(image_datasets, dim=2) # torch.Size(torch.Size([B, T, Sum(C_i), H, W])
     stacked_globals = torch.cat(global_param_datasets, dim=2) # torch.Size(torch.Size([B, T, Sum(F_i)])
 
     B, T, C, H, W = stacked_imgs.shape
     B_g, T_g, F = stacked_globals.shape
-    assert B == B_g and B == 1, "Graphcast only allows a batch size of 1" # comment this asseert statemnt (See TODO: at the start of function)
-    assert T == T_g, "Mismatch in sequence length between image data and globals"
 
-    stacked_imgs = stacked_imgs.reshape(B, C*T, H, W) #  TODO: do all C*T / F*T reshaping at the end based on wether a passed in flatten flag is true or not
-    stacked_globals = stacked_globals.reshape(B, F*T) 
-    stacked_globals = stacked_globals[:, :, None, None].repeat(1, 1, H, W)
+    # TODO: move to the end, after dynamic features are computed
+    if model_type == 'GraphCast_forecast':
+        assert B == B_g and B == 1, "Graphcast only allows a batch size of 1" # comment this assert statemnt (See TODO: at the start of function)
+        assert T == T_g, "Mismatch in sequence length between image data and globals"
+        
+        # N, C, H, W
+        # Convert image and global parameters to N, C, H, W format
+        stacked_imgs = stacked_imgs.reshape(B, C*T, H, W) #  TODO: do all C*T / F*T reshaping at the end based on wether a passed in flatten flag is true or not
+        stacked_globals = stacked_globals.reshape(B, F*T) 
+        stacked_globals = stacked_globals[:, :, None, None].repeat(1, 1, H, W)
 
     dynamic_features = []
 
@@ -110,8 +122,8 @@ def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=T
                 subsolar_lat, subsolar_lon = compute_sublunary_point(timestamp)
                 subsolar_list.append([subsolar_lat, subsolar_lon])
             if include_sublunar:
-                sublunar_lat, subluner_lon = compute_sublunary_point(timestamp)
-                sublunar_list.append([sublunar_lat, subluner_lon]) 
+                sublunar_lat, sublunar_lon = compute_sublunary_point(timestamp)
+                sublunar_list.append([sublunar_lat, sublunar_lon]) 
 
     if include_subsolar:
         subsolar_latlons = np.array(subsolar_list)
@@ -124,15 +136,29 @@ def process_to_grid_nodes(sequence_batch, n_img_datasets = 1, include_subsolar=T
         sublunar_dist_map = torch.tensor(sublunar_dist_map).reshape(T, B, H, W).permute(1, 0, 2, 3) # []
         dynamic_features.append(sublunar_dist_map)
 
+    # TODO: Create a include_timestamp for non-graphcast models
     if include_timestamp: # NOTE: double check tomorrow type of the timestamps (either datetime obj or pandas datetime)
         # Convert pandas timestamps to sine/cosine of the local time of day & sine/cosine of the of year progress (normalized to [0, 1))
-        sin_local_time_of_day = torch.sin(2 * np.pi * timestamps[:, 0] / 24) # TODO: linnea check if indexing is correct, (Halil: this indexing generates includes all timestamps for batch 0, if we want to make use of batchsize > 1 this will cause a bug )
-        cos_local_time_of_day = torch.cos(2 * np.pi * timestamps[:, 0] / 24) # (Halil: current shape of this should be [T,])
-        sin_year_progress = torch.sin(2 * np.pi * timestamps[:, 0] / 365)    # (Halil: go over tomorrow format graphcast expects for this since currently the values of timestamps will be very large though i imagine it doesnt matter since were mapping it to sin ) 
-        cos_year_progress = torch.cos(2 * np.pi * timestamps[:, 0] / 365)
+        # Graphcast expects a sin(minute of the day) and cos(minute of the day) as well as sin(day of the year) and cos(day of the year)
 
-        # Create a tensor of shape B, 4, H, W (copy over H and W dimensions)
-        time_tensor = torch.zeros(B, 4, H, W)
+        minute_of_day = lambda timestamp: timestamp.hour * 60 + timestamp.minute
+        day_of_year = lambda timestamp: timestamp.day + timestamp.hour / 24 + timestamp.minute / (24 * 60) # Do we want to include the hours + mins?
+        
+        ts_time_of_day = list(map(minute_of_day, timestamps)) # this doenst quite work, it applies the function on the tuple
+        ts_day_of_year = list(map(day_of_year, timestamps)) 
+
+        # 
+        
+        
+
+        # current shape
+        sin_local_time_of_day = torch.sin(2 * np.pi * ts_time_of_day) 
+        cos_local_time_of_day = torch.cos(2 * np.pi * ts_time_of_day) 
+        sin_year_progress = torch.sin(2 * np.pi * ts_day_of_year)   
+        cos_year_progress = torch.cos(2 * np.pi * ts_day_of_year)  
+
+        # Create a tensor of shape B, 4*T, H, W (copy over H and W dimensions)
+        time_tensor = torch.zeros(B, 4*T, H, W)
         time_tensor[:, 0, :, :] = sin_local_time_of_day # these tensors have shape [T,] currently I think so indexing will break here i think TOOD: go over tmo
         time_tensor[:, 1, :, :] = cos_local_time_of_day
         time_tensor[:, 2, :, :] = sin_year_progress
