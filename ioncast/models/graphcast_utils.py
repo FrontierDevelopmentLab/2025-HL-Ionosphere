@@ -4,7 +4,7 @@ from ioncast import compute_sublunar_point, compute_subsolar_point
 import datetime
 
 import time
-
+# TODO: convert the dynamic features to a dataset class, as it is wasteful to need to loop over the timestamps, make use of Gunes' new dataset class, + add on image generation + new dataset for the timestamp images
 def timer(label):
     start = time.perf_counter()
     def end():
