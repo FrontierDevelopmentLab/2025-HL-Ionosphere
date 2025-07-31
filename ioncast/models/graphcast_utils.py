@@ -45,7 +45,7 @@ def parse_fast(ts_str):
     hour = int(ts_str[11:13])
     minute = int(ts_str[14:16])
     tod = (hour * 60 + minute) / (60 * 24)
-    doy = (sum(DAYS_IN_MONTH[:month - 1]) + day + (hour / 24)) / 365
+    doy = (sum(DAYS_IN_MONTH[:month - 1]) + day + (hour / 24)) / 365 # Doesn't take into account leap years, but for our purposes this is fine
     return tod, doy
 
 def stack_features(
