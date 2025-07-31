@@ -16,13 +16,7 @@ import cartopy.crs as ccrs
 import glob
 import imageio
 
-# from util import Tee
-# from util import set_random_seed
-# from models import VAE1, IonCastConvLSTM
-# from datasets import JPLD, Sequences, UnionDataset
-# from events import EventCatalog
-# from plot_functions import save_gim_video_comparison, save_gim_video, save_gim_plot, plot_global_ionosphere_map
-from ioncast import * # TODO: check this as replacement of import commented above works
+from ioncast import * 
 
 matplotlib.use('Agg')
 
@@ -147,6 +141,10 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
+    parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
+    parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
+    parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
+    parser.add_argument('--aux_datasets', nargs='+', choices=["omni", "celestrak", "solar_inds"], default=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -193,6 +191,9 @@ def main():
             if args.batch_size < args.num_evals:
                 print(f'Warning: Batch size {args.batch_size} is less than num_evals {args.num_evals}. Using the batch size for num_evals.')
                 args.num_evals = args.batch_size
+
+            if (args.model_type == 'GraphCast_forecast') & (args.batch_size != 1):
+                raise ValueError(f'model type {args.model_type} requires batch size {args.batch_size} (GraphCast requires batch size 1)')
 
             date_start = datetime.datetime.fromisoformat(args.date_start)
             date_end = datetime.datetime.fromisoformat(args.date_end)

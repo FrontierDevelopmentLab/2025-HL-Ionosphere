@@ -88,7 +88,7 @@ def stack_features(
     assert n_img_datasets > 0, f"n_img_datasets {n_img_datasets} must be greater than 0"
     assert len(sequence_batch) > 0, f"sequence_batch of length {len(sequence_batch)} must not be empty"
 
-    elapsed_time = timer("process dataset features")
+    # elapsed_time = timer("process dataset features")
 
     # List to hold all features stacked in shape [B, T, C, H, W]
     features_list = []
@@ -119,21 +119,21 @@ def stack_features(
     if model_type == "GraphCast_forecast":
         assert B == 1, "Graphcast only allows a batch size of 1"
 
-    elapsed_time()
+    # elapsed_time()
 
-    elapsed_time = timer("compute lat-lon grid")
+    # elapsed_time = timer("compute lat-lon grid")
 
     # Handle subsolar and sublunar points
     if include_subsolar or include_sublunar:
         # compute lat_grid and lon_grid matching shape H, W
         lon_grid, lat_grid = get_lat_lon_grid(H, W)
 
-    elapsed_time()
+    # elapsed_time()
 
     # Skip logic if no subsolar or sublunar points are requested
     if include_subsolar or include_sublunar:
         
-        elapsed_time = timer("compute subsolar & sublunar lat long points")
+        # elapsed_time = timer("compute subsolar & sublunar lat long points")
 
         sublunar_list = [] 
         subsolar_list = [] 
@@ -151,9 +151,9 @@ def stack_features(
         #  # [T=2, B=4] [T_0B_0, T_0B_1, T_0B_2, T_0B_3, T_1B_0, T_1B_1, ...] (if looping over T then B)
         #  # [T=2, B=4] [T_0B_0, T_1B_0, T_0B_1, T_1B_1, T_0B_0, T_1B_0, T_0B_1, T_1B_1,  ...] (if looping over B then T)
         
-        elapsed_time()
+        # elapsed_time()
 
-        elapsed_time = timer("compute subsolar & sublunar haversine images")
+        # elapsed_time = timer("compute subsolar & sublunar haversine images")
         
 
         # For each lat/lon pair, compute the Haversine distance to the grid
@@ -168,10 +168,10 @@ def stack_features(
             sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid, standardize=True) # [B x T, H, W]
             sublunar_dist_map = torch.from_numpy(sublunar_dist_map).float().reshape(B, T, 1, H, W) # [B, T, C=1, H, W]
             features_list.append(sublunar_dist_map)
-        elapsed_time()
+        # elapsed_time()
 
     if include_timestamp: 
-        elapsed_time = timer("compute timestamp encodings")
+        # elapsed_time = timer("compute timestamp encodings")
         # Transpose to shape (B, T)
         timestamps_TB = list(zip(*timestamps))  # Now shape (B, T)
 
@@ -198,7 +198,7 @@ def stack_features(
         time_tensor = torch.tensor(timestamp_batch_features)[:,:,:,None,None].repeat(1, 1, 1, H, W)
         features_list.append(time_tensor)
         
-        elapsed_time()
+        # elapsed_time()
 
     # Stack all features in features_list along the channel dimension
     stacked_features = torch.cat(features_list, dim=2) # [B, T, C_stacked, H, W]
