@@ -199,8 +199,9 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
         raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
 
-    print('Evaluation from {} to {}'.format(date_start, date_end))
+    print('Context start date : {}'.format(date_start))
     print('Forecast start date: {}'.format(date_forecast_start))
+    print('End date           : {}'.format(date_end))
     sequence_start = date_start
     sequence_end = date_end
     sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
@@ -211,44 +212,36 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         raise ValueError('date_forecast_start must be in the sequence')
     sequence_forecast_start_index = sequence.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
+    sequence_forecast = sequence[sequence_forecast_start_index:]
 
     sequence_data = dataset.get_sequence_data(sequence)
-    jpld_original = sequence_data[0]  # Original data
-    sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
+    jpld_seq = sequence_data[0]  # Original data
+    sunmoon_seq = sequence_data[1]  # Sun and Moon geometry data
     device = next(model.parameters()).device
-    jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
-    sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
+    jpld_seq = jpld_seq.to(device) # sequence_length, channels, 180, 360
+    sunmoon_seq = sunmoon_seq.to(device) # sequence_length, channels, 180, 360
 
-    combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
+    combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=1)  # Combine along the channel dimension
 
-    combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
-    combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    combined_seq_context = combined_seq[:sequence_forecast_start_index]  # Context data for forecast
+    combined_seq_forecast = model.predict(combined_seq_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-    # print(jpld_original.shape)
-    # print(jpld_forecast_context.shape)
-    # print(jpld_forecast.shape)
+    jpld_forecast = combined_seq_forecast[:, 0]  # Extract JPLD channels from the forecast
+    jpld_original = jpld_seq[sequence_forecast_start_index:]
 
-    jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
-    jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
-
-    jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+    print(jpld_original.shape)
+    print(jpld_forecast.shape)
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
-    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
-    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
+    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 100)
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence]
-    titles_forecast = []
-    for i in range(sequence_length):
-        if i < sequence_forecast_start_index:
-            titles_forecast.append(f'JPLD GIM TEC Context : {sequence[i]} - {title}')
-        else:
-            titles_forecast.append(f'JPLD GIM TEC Forecast: {sequence[i]} ({forecast_mins_ahead[i - sequence_forecast_start_index]}) - {title}')
+    titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence_forecast]
+    titles_forecast = [f'JPLD GIM TEC Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast)]
 
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
-        gim_sequence_bottom=jpld_forecast_with_context_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+        gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         file_name=file_name,
         vmin=0, vmax=100,
         titles_top=titles_original,
@@ -328,7 +321,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -341,8 +334,8 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=48, help='Context window size for the model')
-    parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
+    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
+    parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
@@ -584,11 +577,13 @@ def main():
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
                                 event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
+                                event_start = datetime.datetime.fromisoformat(event_start)
+                                event_end = datetime.datetime.fromisoformat(event_end)
 
                                 print('* Testing event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(event_start) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                                 date_forecast_start = event_start
-                                date_end = datetime.datetime.fromisoformat(event_end)
+                                date_end = event_end
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
@@ -599,11 +594,13 @@ def main():
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
                                 event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
+                                event_start = datetime.datetime.fromisoformat(event_start)
+                                event_end = datetime.datetime.fromisoformat(event_end)
 
                                 print('* Testing seen event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(event_start) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                                 date_forecast_start = event_start
-                                date_end = datetime.datetime.fromisoformat(event_end)
+                                date_end = event_end
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
@@ -624,21 +621,26 @@ def main():
                         if event_id not in EventCatalog:
                             raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                         event = EventCatalog[event_id]
-                        _, _, date_start, date_end, _, max_kp, _ = event
+                        date_start, date_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
+                        event_start = datetime.datetime.fromisoformat(date_start)
+                        event_end = datetime.datetime.fromisoformat(date_end)
+
                         print('* Testing event ID: {}'.format(event_id))
-                        date_start = datetime.datetime.fromisoformat(date_start)
-                        date_end = datetime.datetime.fromisoformat(date_end)
-                        date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                        date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                        date_forecast_start = event_start
+                        date_end = event_end
                         file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                         title = f'Event: {event_id}, Kp={max_kp}'
                         tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
                 else:
                     print('No test events specified, will use date_start and date_end arguments')
-                    date_start = datetime.datetime.fromisoformat(args.date_start)
-                    date_end = datetime.datetime.fromisoformat(args.date_end)
-                    date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                    file_name = os.path.join(args.target_dir, f'test-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                    title = f'Test from {date_start.strftime("%Y-%m-%d %H:%M:%S")} to {date_end.strftime("%Y-%m-%d %H:%M:%S")}'
+                    event_start = datetime.datetime.fromisoformat(args.date_start)
+                    event_end = datetime.datetime.fromisoformat(args.date_end)
+                    date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    date_forecast_start = event_start
+                    date_end = event_end
+                    file_name = os.path.join(args.target_dir, f'test-{event_start.strftime("%Y%m%d%H%M")}-{event_end.strftime("%Y%m%d%H%M")}.mp4')
+                    title = f'Test from {event_start.strftime("%Y-%m-%d %H:%M:%S")} to {event_end.strftime("%Y-%m-%d %H:%M:%S")}'
                     tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
 
                 dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
@@ -646,10 +648,9 @@ def main():
                 print('Running tests:')
                 for date_start, date_end, date_forecast_start, title, file_name in tests_to_run:
                     # Create dataset for each test individually with date filtering
-                    # Add some buffer time for context window
-                    dataset_start = date_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=dataset_start, date_end=date_end)
-                    dataset = Sequences(datasets=[dataset_jpld], delta_minutes=args.delta_minutes, 
+                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
+                    dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end)
+                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon], delta_minutes=args.delta_minutes, 
                                     sequence_length=model.context_window + model.prediction_window)
                     
                     run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
