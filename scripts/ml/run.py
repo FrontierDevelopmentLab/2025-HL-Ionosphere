@@ -24,6 +24,7 @@ from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
 from dataset_sunmoongeometry import SunMoonGeometry
+from dataset_omniweb import OMNIWeb
 from events import EventCatalog
 
 matplotlib.use('Agg')
@@ -318,6 +319,7 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
+    parser.add_argument('--omniweb_dir', type=str, default='omniweb/csv', help='OMNIWeb dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')

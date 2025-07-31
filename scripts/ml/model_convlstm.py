@@ -169,11 +169,11 @@ class IonCastConvLSTM(nn.Module):
         # data shape: (batch_size, time_steps, channels=1, height, width)
         # time steps = context_window + prediction_window
 
-        data_context = data[:, :context_window, :, :, :] # shape (batch_size, context_window, channels=1, height, width)
+        data_context = data[:, :context_window, :, :, :] # shape (batch_size, context_window, channels, height, width)
         data_target = data[:, context_window, :, :, :] # shape (batch_size, channels, height, width)
 
         # Forward pass
-        data_predict, _ = self(data_context) # shape (batch_size, channels=1, height, width)
+        data_predict, _ = self(data_context) # shape (batch_size, channels, height, width)
         recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')  # Sum over all pixels and channels
         recon_loss = recon_loss / (data_target.shape[0] * data_target.shape[1]) # Average over batch size and channels
         return recon_loss
