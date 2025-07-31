@@ -45,7 +45,7 @@ def parse_fast(ts_str):
     hour = int(ts_str[11:13])
     minute = int(ts_str[14:16])
     tod = (hour * 60 + minute) / (60 * 24)
-    doy = (sum(DAYS_IN_MONTH[:month - 1]) + day + hour / 24) / 365
+    doy = (sum(DAYS_IN_MONTH[:month - 1]) + day + (hour / 24)) / 365
     return tod, doy
 
 def stack_features(
@@ -97,7 +97,7 @@ def stack_features(
         features_list.append(stacked_globals)
 
     # If graphcast, requires batch size is 1
-    if model_type == "Graphcast_forecast":
+    if model_type == "GraphCast_forecast":
         assert B == 1, "Graphcast only allows a batch size of 1"
 
     # Handle subsolar and sublunar points
@@ -178,3 +178,9 @@ def stack_features(
         stacked_features = stacked_features.reshape(B, T * C_stacked, H, W)
 
     return stacked_features  # [B, C_total, H, W] or [B, T, C_total, H, W] (depends on model_type)
+
+
+
+
+    # JPLD 1, + omni 16 + celstrak 2 = 19 -> 20 subsolar, 21 subsolar , 4x timestamp
+    # [(00, 15, 30), 

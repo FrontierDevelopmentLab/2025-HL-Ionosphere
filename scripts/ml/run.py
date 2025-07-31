@@ -65,8 +65,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
 
-    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
-    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
+    jpld_original_unnormalized = JPLDGIMDataset.unnormalize(jpld_original)
+    jpld_forecast_with_context_unnormalized = JPLDGIMDataset.unnormalize(jpld_forecast_with_context)
     jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
@@ -216,25 +216,25 @@ def main():
                     exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
                     date_exclusions.append((exclusion_start, exclusion_end))
 
-                    datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    datasets_jpld_valid.append(JPLDGIMDataset(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
 
             dataset_jpld_valid = UnionDataset(datasets=datasets_jpld_valid)
 
 
             if args.model_type == 'VAE1':
-                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = dataset_jpld_train
                 dataset_valid = dataset_jpld_valid
             elif args.model_type == 'GraphCast_reconstruct':
-                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = dataset_jpld_train
                 dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
-                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             elif args.model_type == 'GraphCast_forecast':
-                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             else:
@@ -374,12 +374,12 @@ def main():
 
                         jpld_orig = jpld_orig.to(device)
                         jpld_recon, _, _ = model.forward(jpld_orig)
-                        jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
-                        jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
+                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
 
                         # Sample a batch from the model
                         jpld_sample = model.sample(n=num_evals)
-                        jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
