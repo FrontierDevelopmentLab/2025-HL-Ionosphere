@@ -280,7 +280,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'valid_losses': valid_losses,
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
-            'model_hidden_channels': model.hidden_dim,
+            'model_hidden_dim': model.hidden_dim,
             'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
@@ -298,12 +298,12 @@ def load_model(file_name, device):
     elif checkpoint['model'] == 'IonCastConvLSTM':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
-        model_hidden_channels = checkpoint['model_hidden_channels']
+        model_hidden_dim = checkpoint['model_hidden_dim']
         model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
         model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
-                                hidden_channels=model_hidden_channels, num_layers=model_num_layers,
+                                hidden_dim=model_hidden_dim, num_layers=model_num_layers,
                                 context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
@@ -328,7 +328,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -390,7 +390,7 @@ def main():
                     print('Excluding event ID: {}'.format(event_id))
                     if event_id not in EventCatalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    _, _, exclusion_start, exclusion_end, _, _ = EventCatalog[event_id]
+                    _, _, exclusion_start, exclusion_end, _, _, _ = EventCatalog[event_id]
                     exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
                     exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
                     date_exclusions.append((exclusion_start, exclusion_end))
@@ -583,7 +583,7 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp = event
+                                _, _, date_start, date_end, _, max_kp, _ = event
                                 print('* Testing event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
@@ -597,7 +597,7 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp = event
+                                _, _, date_start, date_end, _, max_kp, _ = event
                                 print('* Testing seen event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
@@ -622,7 +622,7 @@ def main():
                         if event_id not in EventCatalog:
                             raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                         event = EventCatalog[event_id]
-                        _, _, date_start, date_end, _, max_kp = event
+                        _, _, date_start, date_end, _, max_kp, _ = event
                         print('* Testing event ID: {}'.format(event_id))
                         date_start = datetime.datetime.fromisoformat(date_start)
                         date_end = datetime.datetime.fromisoformat(date_end)
