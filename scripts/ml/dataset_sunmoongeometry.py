@@ -6,6 +6,32 @@ import skyfield.api
 
 
 class SunMoonGeometry(Dataset):
+    """
+    A PyTorch Dataset that generates celestial geometry data for the Sun and Moon
+    for a given date and time.
+
+    For a specific timestamp, this dataset computes and returns a multi-channel
+    tensor representing various geometric properties. This is useful for machine
+    learning models that need to understand the influence of the Sun and Moon's
+    position relative to the Earth.
+
+    The dataset can be indexed by an integer, a datetime object, or an
+    ISO-formatted date string.
+
+    The output tensor for each item is a stack of the following channels:
+    - Channel 0: Cosine of the Sun's zenith angle map.
+    - Channels 1-3: Sun's subsolar point coordinates (normalized lat, cos(lon), sin(lon)).
+    - Channels 4-6: Sun's antipode point coordinates (normalized lat, cos(lon), sin(lon)).
+    - Channel 7: Earth-Sun distance (in Astronomical Units, AU).
+    - Channel 8: Cosine of the Moon's zenith angle map.
+    - Channels 9-11: Moon's sublunar point coordinates (normalized lat, cos(lon), sin(lon)).
+    - Channels 12-14: Moon's antipode point coordinates (normalized lat, cos(lon), sin(lon)).
+    - Channel 15: Earth-Moon distance (in Lunar Distances, LD).
+    - Channels 16-17: Cyclical features for the day of the year (sin, cos).
+
+    Note: The scalar values (coordinates, distances, day of year) are broadcast
+    to the same spatial dimensions as the zenith angle maps.
+    """
     def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True):
         self.date_start = date_start
         self.date_end = date_end
@@ -82,11 +108,24 @@ class SunMoonGeometry(Dataset):
         moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
         moon_data = torch.tensor(moon_sublunar_coords + moon_antipode_coords + (moon_distance,), dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
 
+        # Add day of year feature
+        day_of_year_sin, day_of_year_cos = self._get_day_of_year_features(date)
+        day_of_year_data = torch.tensor([day_of_year_sin, day_of_year_cos], dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
+
         # Concatenate the maps and data along the channel dimension
-        combined_data = torch.cat((sun_zenith_angle_map.unsqueeze(0), sun_data, 
-                                   moon_zenith_angle_map.unsqueeze(0), moon_data), dim=0)
+        combined_data = torch.cat((sun_zenith_angle_map.unsqueeze(0), sun_data,
+                                   moon_zenith_angle_map.unsqueeze(0), moon_data,
+                                   day_of_year_data), dim=0)
         
         return combined_data, date.isoformat()
+
+    def _get_day_of_year_features(self, date):
+        """Calculates the cyclical day-of-year features."""
+        day_of_year = date.timetuple().tm_yday
+        days_in_year = 366 if (date.year % 4 == 0 and date.year % 100 != 0) or (date.year % 400 == 0) else 365
+        day_of_year_sin = np.sin(2 * np.pi * (day_of_year - 1) / days_in_year)
+        day_of_year_cos = np.cos(2 * np.pi * (day_of_year - 1) / days_in_year)
+        return day_of_year_sin, day_of_year_cos
 
     def _normalize_coords(self, lat, lon):
         """Normalizes geographic coordinates into a 3D vector suitable for ML.
