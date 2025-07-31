@@ -29,7 +29,6 @@ from events import EventCatalog
 
 matplotlib.use('Agg')
 
-
 def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
     """
     Plots a 180x360 global ionosphere image on a given Cartopy axes.

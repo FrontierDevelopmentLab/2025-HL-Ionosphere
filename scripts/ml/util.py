@@ -37,4 +37,13 @@ def set_random_seed(seed=None):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    
+
+# Takes a list of scalars and returns stack of channels with shape (num_scalars, height, width) 
+# where each scalar is expanded to a 2D image of the specified size.
+def channelize(scalars, image_size=(180, 360)):
+    if not torch.is_tensor(scalars):
+        scalars = torch.tensor(scalars)
+    c = scalars.view(-1, 1, 1)
+    c = c.expand((-1,) + image_size)
+    return c
+
