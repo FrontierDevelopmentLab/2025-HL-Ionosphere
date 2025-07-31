@@ -210,14 +210,22 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     sequence_data = dataset.get_sequence_data(sequence)
     jpld_original = sequence_data[0]  # Original data
+    sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
     device = next(model.parameters()).device
-    jpld_original = jpld_original.to(device)
-    jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
-    jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
+    sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
+
+    combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
+
+    combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
+    combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
     # print(jpld_original.shape)
     # print(jpld_forecast_context.shape)
     # print(jpld_forecast.shape)
+
+    jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
+    jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
 
     jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
 
