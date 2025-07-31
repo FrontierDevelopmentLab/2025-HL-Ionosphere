@@ -114,6 +114,13 @@ class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-one prediction."""
     def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=4, context_window=4, prediction_window=4):
         super().__init__()
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.context_window = context_window  # Number of time steps in the input sequence during training
+        self.prediction_window = prediction_window  # Number of time steps to predict during training
+
         # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
                                   hidden_dim=hidden_dim, 
@@ -126,8 +133,6 @@ class IonCastConvLSTM(nn.Module):
                                     out_channels=output_channels, 
                                     kernel_size=(1, 1))
         
-        self.context_window = context_window  # Number of time steps in the input sequence during training
-        self.prediction_window = prediction_window  # Number of time steps to predict during training
 
     def forward(self, x, hidden_state=None):
         # x shape: (B, T, C, H, W)

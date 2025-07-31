@@ -278,6 +278,10 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_hidden_channels': model.hidden_dim,
+            'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
         }
@@ -292,9 +296,15 @@ def load_model(file_name, device):
         model_z_dim = checkpoint['model_z_dim']
         model = VAE1(z_dim=model_z_dim)
     elif checkpoint['model'] == 'IonCastConvLSTM':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_hidden_channels = checkpoint['model_hidden_channels']
+        model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
-        model = IonCastConvLSTM(context_window=model_context_window, prediction_window=model_prediction_window)
+        model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
+                                hidden_channels=model_hidden_channels, num_layers=model_num_layers,
+                                context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -433,7 +443,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=17, output_channels=17, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=19, output_channels=19, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
