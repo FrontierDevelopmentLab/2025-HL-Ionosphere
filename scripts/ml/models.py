@@ -239,7 +239,7 @@ class ConvLSTM(nn.Module):
 
 class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-one prediction."""
-    def __init__(self, input_channels=1, output_channels=1, hidden_dim=64, num_layers=4, context_window=4, prediction_window=4):
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=4, context_window=4, prediction_window=4):
         super().__init__()
         # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
@@ -273,17 +273,17 @@ class IonCastConvLSTM(nn.Module):
     
     def predict(self, data_context, prediction_window=4):
         """ Forecasts the next time step given the context window. """
-        # data_context shape: (batch_size, time_steps, channels=1, height, width)
+        # data_context shape: (batch_size, time_steps, channels, height, width)
         # time steps = context_window
         x, hidden_state = self(data_context) # inits hidden state
-        x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
+        x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
         prediction = [x]
         for _ in range(prediction_window - 1):
             # Prepare the next input by appending the last prediction
             x, hidden_state = self(x, hidden_state=hidden_state)
-            x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels=1, height, width)
+            x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
             prediction.append(x)
-        prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels=1, height, width)
+        prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
         return prediction
 
     def loss(self, data, context_window=4):
@@ -292,11 +292,10 @@ class IonCastConvLSTM(nn.Module):
         # time steps = context_window + prediction_window
 
         data_context = data[:, :context_window, :, :, :] # shape (batch_size, context_window, channels=1, height, width)
-        data_target = data[:, context_window, :, :, :] # shape (batch_size, channels=1, height, width)
+        data_target = data[:, context_window, :, :, :] # shape (batch_size, channels, height, width)
 
         # Forward pass
         data_predict, _ = self(data_context) # shape (batch_size, channels=1, height, width)
-        recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')
-        
-        # For simplicity, we can return just the reconstruction loss
-        return recon_loss / data.size(0)
+        recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')  # Sum over all pixels and channels
+        recon_loss = recon_loss / (data_target.shape[0] * data_target.shape[1]) # Average over batch size and channels
+        return recon_loss
