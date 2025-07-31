@@ -178,3 +178,4 @@ cython_debug/
 /scripts/ml/train-[0-9]*/
 /scripts/ml/train-conditioned-[0-9]*/
 de421.bsp
+log.txt

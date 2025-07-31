@@ -1,8 +1,7 @@
 import os
 import numpy as np
-from glob import glob
+import glob
 from tqdm import tqdm
-from glob import glob
 import tarfile
 import pickle
 from io import BytesIO
@@ -10,7 +9,7 @@ from io import BytesIO
 
 class TarRandomAccess():
     def __init__(self, data_dir):
-        tar_files = sorted(glob(os.path.join(data_dir, '*.tar')))
+        tar_files = sorted(glob.glob(os.path.join(data_dir, '*.tar')))
         if len(tar_files) == 0:
             raise ValueError('No tar files found in data directory: {}'.format(data_dir))
         self.index = {}

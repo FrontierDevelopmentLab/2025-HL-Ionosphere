@@ -68,7 +68,6 @@ def get_lat_lon_grid(H, W):
 def stack_features(
         sequence_batch, 
         n_img_datasets = 1, 
-        model_type='GraphCast_forecast', # GraphCast_forecast, IonCastConvLSTM
         include_subsolar=True, 
         include_sublunar=True, 
         include_timestamp=True
@@ -114,10 +113,6 @@ def stack_features(
         assert T == T_g, "Mismatch in sequence length between image data and globals"
         assert B == B_g, "Mismatch in sequence length between image data and globals"
         features_list.append(stacked_globals)
-
-    # If graphcast, requires batch size is 1
-    if model_type == "GraphCast_forecast":
-        assert B == 1, "Graphcast only allows a batch size of 1"
 
     # elapsed_time()
 
@@ -203,17 +198,6 @@ def stack_features(
     # Stack all features in features_list along the channel dimension
     stacked_features = torch.cat(features_list, dim=2) # [B, T, C_stacked, H, W]
 
-    # If the model type is GraphCast_forecast, reshape to N, C, H, W format (flatten T and C together)
-    if model_type == 'GraphCast_forecast':
-        C_stacked = stacked_features.shape[2]
-
-        # Convert image and global parameters to N, C, H, W format
-        stacked_features = stacked_features.reshape(B, T * C_stacked, H, W)
-
-    return stacked_features  # [B, C_total, H, W] or [B, T, C_total, H, W] (depends on model_type)
+    return stacked_features  # [B, T, C_total, H, W]
 
 
-
-
-    # JPLD 1, + omni 16 + celstrak 2 = 19 -> 20 subsolar, 21 subsolar , 4x timestamp
-    # [(00, 15, 30), 

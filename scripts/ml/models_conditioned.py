@@ -149,8 +149,7 @@ class VAE1(VAE):
             nn.LeakyReLU(),
             )
     
-
-
+    
 class ConvLSTMCell(nn.Module):
     """The core ConvLSTM cell."""
     def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):

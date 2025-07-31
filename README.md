@@ -2,4 +2,4 @@
 
 Ionosphere Team: Linnea Wolniewicz, Halil Kelebek, Simone Mestici, Michael Vergalla
 
-Current structure of the repository includes temp.* files; feel free to delete. These are to make sure the folder structure is pushed to the github.
+Note: To use the jpld data from a mounted disk, make sure to delete all index files in jpld/webdataset/ or you will get path errors.

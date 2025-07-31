@@ -1,3 +1,5 @@
+from ioncast import * 
+
 import argparse
 import datetime
 import pprint
@@ -13,11 +15,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import cartopy.crs as ccrs
-import glob
 import imageio
+import glob
 
-from ioncast import * 
 matplotlib.use('Agg')
+
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
     if not isinstance(model, (IonCastConvLSTM)):
@@ -161,7 +163,7 @@ def main():
     parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
     parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
     parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["omni", "celestrak", "solar_inds"], default=["omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', choices=["omni", "celestrak", "solar_inds", "sunmoon"], default=["omni", "celestrak", "solar_inds", "sunmoon"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -174,7 +176,7 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
-    parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM', "IonCastGNN"], default='VAE1', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -184,6 +186,9 @@ def main():
     parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
+    parser.add_argument('--channel_list', type=int, default=None, help='List of channels to compute the loss on. If None, the loss is computed on all channels.')
+    parser.add_argument('--mesh_level', type=int, default=6, help='Mesh level for IonCastGNN model')
+    parser.add_argument('--processor_type', type=str, choices=['MessagePassing', 'GraphTransformer'], default='MessagePassing', help='Processor type for IonCastGNN model')
 
     args = parser.parse_args()
 
@@ -192,7 +197,9 @@ def main():
 
     set_random_seed(args.seed)
     device = torch.device(args.device)
+    print('Using device:', device)
 
+    # Set up the log file
     with Tee(log_file):
         print(description)
         print('Log file:', log_file)
@@ -206,25 +213,40 @@ def main():
         if args.mode == 'train':
             print('\n*** Training mode\n')
 
+            # Checks
             if args.batch_size < args.num_evals:
                 print(f'Warning: Batch size {args.batch_size} is less than num_evals {args.num_evals}. Using the batch size for num_evals.')
                 args.num_evals = args.batch_size
 
-            if (args.model_type == 'GraphCast_forecast') & (args.batch_size != 1):
-                raise ValueError(f'model type {args.model_type} requires batch size {args.batch_size} (GraphCast requires batch size 1)')
+            if (args.model_type == 'IonCastGNN') & (args.batch_size != 1):
+                raise ValueError(f'model type {args.model_type} requires batch size {args.batch_size} (IonCastGNN requires batch size 1)')
 
             date_start = datetime.datetime.fromisoformat(args.date_start)
             date_end = datetime.datetime.fromisoformat(args.date_end)
-
             training_sequence_length = args.context_window + args.prediction_window
 
+            # Preparing data paths and constructors
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+            gim_webdataset = os.path.join(args.data_dir, args.jpld_dir)
+            omni_dir = os.path.join(args.data_dir, args.omni_dir)
+            celestrak_file = os.path.join(args.data_dir, args.celestrak_file)
+            solar_index_file = os.path.join(args.data_dir, args.solar_index_file)
+            
+            # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
+            dataset_constructors = {
+                'omni': lambda date_start_, date_end_, date_exclusions_: OMNIDataset(file_dir=omni_dir, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                'sunmoon': lambda date_start_, date_end_, date_exclusions_: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True) # date exclusions not passed since this dataset used with other datasets that 
+            }
 
-            print('Processing excluded dates')
 
             datasets_jpld_valid = []
-
             date_exclusions = []
+            aux_datasets_valid_dict = {}
+
+            # Process excluded dates
+            print('Processing excluded dates')
             if args.test_event_id:
                 for event_id in args.test_event_id:
                     print('Excluding event ID: {}'.format(event_id))
@@ -237,17 +259,27 @@ def main():
 
                     datasets_jpld_valid.append(JPLDGIMDataset(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
 
-            dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
+                    # datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    for name in args.aux_datasets:
+                        if aux_datasets_valid_dict.get(name) is None:
+                            aux_datasets_valid_dict[name] = []
+                        aux_datasets_valid_dict[name].append(dataset_constructors[name](date_start_=exclusion_start, date_end_=exclusion_end, date_exclusions_ = None))
 
 
+                aux_datasets_valid = []
+                dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
+                for name, dataset_list in aux_datasets_valid_dict.items():
+                    aux_datasets_valid.append(UnionDataset(datasets=dataset_list)) # NOTE: the union datasets no longer have the same start dates.
+                    print("\nStart and end dates: ", aux_datasets_valid[-1].date_start, aux_datasets_valid[-1].date_end)
+
+            # Set up datasets for VAE
             if args.model_type == 'VAE1':
                 dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = dataset_jpld_train
                 dataset_valid = dataset_jpld_valid
-            elif args.model_type == 'GraphCast_reconstruct':
-                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_train = dataset_jpld_train
-                dataset_valid = dataset_jpld_valid
+                aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
+
+            # Set up datasets for IonCastConvLSTM
             elif args.model_type == 'IonCastConvLSTM':
                 dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
@@ -256,15 +288,25 @@ def main():
                 dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train], sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid], sequence_length=training_sequence_length)
-            elif args.model_type == 'GraphCast_forecast':
+
+            # Set up datasets for IonCastGNN
+            elif args.model_type == 'IonCastGNN':
+                # TODO: Check whether some aux datasets are image shaped instead of global- getting error when including sunmoonearth datasets
                 dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                # dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
+                # dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train], sequence_length=training_sequence_length)
+                # dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid], sequence_length=training_sequence_length)
+                dataset_train = Sequences([dataset_jpld_train] + aux_datasets_train, delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                dataset_valid = Sequences([dataset_jpld_valid] + aux_datasets_valid, delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
 
+            # Set up the DataLoaders
             train_loader = DataLoader(
                 dataset_train, 
                 batch_size=args.batch_size, 
@@ -277,7 +319,7 @@ def main():
             valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
-            model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
+            model_files = glob.glob(f'{args.target_dir}/epoch-*-model.pth')
             if len(model_files) > 0:
                 model_files.sort()
                 model_file = model_files[-1]
@@ -287,34 +329,65 @@ def main():
                 iteration = iteration + 1
                 print('Next epoch    : {:,}'.format(epoch_start+1))
                 print('Next iteration: {:,}'.format(iteration+1))
-            else:
+                
+            else: # Otherwise, create a new model
                 print('Creating new model')
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
+
                 elif args.model_type == 'IonCastConvLSTM':
                     model = IonCastConvLSTM(input_channels=19, output_channels=19, context_window=args.context_window, prediction_window=args.prediction_window)
+
+                elif args.model_type == 'IonCastGNN':
+                    # TODO, either add nargs argument for the on the fly features, nvm well just remove these flags and move that logic to the sunmoon dataset class
+                    dummy_batch = stack_features(next(iter(train_loader)), include_subsolar=False, include_sublunar=False, include_timestamp=False)
+
+                    _, _, C, _, _ = dummy_batch.shape # B, T, C, H, W
+                    n_feats = args.context_window * C
+
+                    # Note: there are many more features that can be included in IonCastGNN; see iio
+                    model = IonCastGNN(
+                        mesh_level = args.mesh_level,
+                        input_res = (180, 360),
+                        input_dim_grid_nodes = n_feats, # IMPORTANT! Based on how many features are stacked in the input.
+                        output_dim_grid_nodes = n_feats, # TODO: For now predict everything, down the line we dont need to predict the subsolar / sublunar and timestamp based features
+                        input_dim_mesh_nodes = 3, # GraphCast used 3: cos(lat), sin(lon), cos(lon)
+                        input_dim_edges = 4, # GraphCast used 4: length(edge), vector diff b/w 3D positions of sender and receiver nodes in coordinate system of the reciever
+                        processor_type = args.processor_type, # Options: "MessagePassing" or "GraphTransformer", i.e. GraphCast vs. GenCast
+                        khop_neighbors = 32,
+                        num_attention_heads = 4,
+                        processor_layers = 16,
+                        hidden_layers = 1,
+                        hidden_dim = 512,
+                        aggregation = "sum",
+                        activation_fn = "silu",
+                        norm_type = "LayerNorm",
+                        device=device
+                    )
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
-                optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+                # Set up optimizer and initialize loss
+                optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay) # Note: GraphCast used AdamW and FusedAdam
                 iteration = 0
                 epoch_start = 0
                 train_losses = []
                 valid_losses = []
-
+                
                 model = model.to(device)
-
+            
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
+            # Training loop
             for epoch in range(epoch_start, args.epochs):
                 print('\n*** Epoch {:,}/{:,} started'.format(epoch+1, args.epochs))
                 print('*** Training')
+
                 # Training
                 model.train()
                 with tqdm(total=len(train_loader)) as pbar:
                     for i, batch in enumerate(train_loader):
-                        # a = 1/0
                         optimizer.zero_grad()
 
                         if args.model_type == 'VAE1':
@@ -322,6 +395,7 @@ def main():
                             jpld = jpld.to(device)
 
                             loss = model.loss(jpld)
+
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
@@ -330,18 +404,40 @@ def main():
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
 
                             loss = model.loss(combined_seq, context_window=args.context_window)
+
+                        elif args.model_type == "IonCastGNN":
+                            # jpld_dataset, omni_dataset, celestrak_dataset, solar_index_dataset
+                            # Stack features will output shape (B, T, C, H, W)
+                            grid_nodes = stack_features(
+                                batch, 
+                                n_img_datasets=1, 
+                                include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
+                                include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
+                                include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+                            )
+                            grid_nodes = grid_nodes.to(device)                           
+ 
+                            loss = model.loss(
+                                grid_nodes, 
+                                context_window=args.context_window, 
+                                channel_list=args.channel_list,
+                                n_steps=1, #TODO: eventually make n_steps dynamic through out training
+                            )
+
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
+                        # Backpropagation
                         loss.backward()
                         optimizer.step()
                         iteration += 1
 
+                        # Append training loss
                         train_losses.append((iteration, float(loss)))
                         pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, Loss: {loss.item():.4f}')
                         pbar.update(1)
 
-                # Validation
+                # Validation loop
                 print('*** Validation')
                 model.eval()
                 valid_loss = 0.0
@@ -351,22 +447,44 @@ def main():
                             jpld, _ = batch
                             jpld = jpld.to(device)
                             loss = model.loss(jpld)
+
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)  # Combine along the channel dimension
                             loss = model.loss(combined_seq, context_window=args.context_window)
+
+                        elif args.model_type == "IonCastGNN":
+                            grid_nodes = stack_features(
+                                batch, 
+                                n_img_datasets=1, 
+                                include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
+                                include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
+                                include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+                            )
+                            grid_nodes = grid_nodes.to(device)
+
+                            loss = model.loss(
+                                grid_nodes, 
+                                context_window=args.context_window, 
+                                channel_list=args.channel_list,
+                                n_steps=1 #TODO: eventually make n_steps dynamic through out training
+                            )
+                            
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
+                        
+                        # Increase validation loss
                         valid_loss += loss.item()
+                    
+                # Append validation loss
                 valid_loss /= len(valid_loader)
                 valid_losses.append((iteration, valid_loss))
                 print(f'Validation Loss: {valid_loss:.4f}')
 
-                file_name_prefix = f'epoch-{epoch + 1:02d}-'
-
                 # Save model
+                file_name_prefix = f'epoch-{epoch + 1:02d}-'
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
                 save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
 
@@ -455,7 +573,7 @@ def main():
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
-
+        # TODO: Implement testing mode for IonCastGNN
         elif args.mode == 'test':
 
             print('*** Testing mode\n')
@@ -518,3 +636,8 @@ if __name__ == '__main__':
 
 # Example
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
+
+
+# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
+
+# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --mesh_level 1
