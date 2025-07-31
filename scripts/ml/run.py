@@ -18,8 +18,12 @@ import imageio
 
 from util import Tee
 from util import set_random_seed
-from models import VAE1, IonCastConvLSTM
-from datasets import JPLD, Sequences, Union, SunMoonGeometry
+from model_vae import VAE1
+from model_convlstm import IonCastConvLSTM
+from dataset_jpld import JPLD
+from dataset_sequences import Sequences
+from dataset_union import Union
+from dataset_sunmoongeometry import SunMoonGeometry
 from events import EventCatalog
 
 matplotlib.use('Agg')
