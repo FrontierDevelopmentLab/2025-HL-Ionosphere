@@ -318,7 +318,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -334,7 +334,7 @@ def main():
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
 
