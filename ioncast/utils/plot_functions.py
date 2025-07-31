@@ -23,7 +23,7 @@ def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, titl
     im = ax.imshow(
         image,
         extent=[-180, 180, -90, 90],
-        origin='lower',
+        origin='upper',
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,

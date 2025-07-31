@@ -5,7 +5,7 @@ import os
 import sys
 from matplotlib import pyplot as plt
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
@@ -17,7 +17,6 @@ import glob
 import imageio
 
 from ioncast import * 
-
 matplotlib.use('Agg')
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
@@ -48,14 +47,22 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     sequence_data = dataset.get_sequence_data(sequence)
     jpld_original = sequence_data[0]  # Original data
+    sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
     device = next(model.parameters()).device
-    jpld_original = jpld_original.to(device)
-    jpld_forecast_context = jpld_original[:sequence_forecast_start_index]  # Context data for forecast
-    jpld_forecast = model.predict(jpld_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
+    sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
+
+    combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
+
+    combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
+    combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
     # print(jpld_original.shape)
     # print(jpld_forecast_context.shape)
     # print(jpld_forecast.shape)
+
+    jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
+    jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
 
     jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
 
@@ -104,6 +111,10 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_hidden_dim': model.hidden_dim,
+            'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
         }
@@ -118,9 +129,15 @@ def load_model(file_name, device):
         model_z_dim = checkpoint['model_z_dim']
         model = VAE1(z_dim=model_z_dim)
     elif checkpoint['model'] == 'IonCastConvLSTM':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_hidden_dim = checkpoint['model_hidden_dim']
+        model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
-        model = IonCastConvLSTM(context_window=model_context_window, prediction_window=model_prediction_window)
+        model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
+                                hidden_dim=model_hidden_dim, num_layers=model_num_layers,
+                                context_window=model_context_window, prediction_window=model_prediction_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -164,8 +181,9 @@ def main():
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202405101500', 'G2H9-202406280900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='+', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
 
     args = parser.parse_args()
 
@@ -186,7 +204,7 @@ def main():
         print('Start time: {}'.format(start_time))
 
         if args.mode == 'train':
-            print('Training mode selected.')
+            print('\n*** Training mode\n')
 
             if args.batch_size < args.num_evals:
                 print(f'Warning: Batch size {args.batch_size} is less than num_evals {args.num_evals}. Using the batch size for num_evals.')
@@ -212,14 +230,14 @@ def main():
                     print('Excluding event ID: {}'.format(event_id))
                     if event_id not in EventCatalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    _, _, exclusion_start, exclusion_end, _, _ = EventCatalog[event_id]
+                    _, _, exclusion_start, exclusion_end, _, _, _ = EventCatalog[event_id]
                     exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
                     exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
                     date_exclusions.append((exclusion_start, exclusion_end))
 
                     datasets_jpld_valid.append(JPLDGIMDataset(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
 
-            dataset_jpld_valid = UnionDataset(datasets=datasets_jpld_valid)
+            dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
 
 
             if args.model_type == 'VAE1':
@@ -234,10 +252,13 @@ def main():
                 dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end)
+                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train], sequence_length=training_sequence_length)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid], sequence_length=training_sequence_length)
             elif args.model_type == 'GraphCast_forecast':
                 dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -271,7 +292,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=1, output_channels=1, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=19, output_channels=19, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -302,10 +323,13 @@ def main():
 
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, _ = batch
+                            jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-                            
-                            loss = model.loss(jpld_seq, context_window=args.context_window)
+                            sunmoon_seq = sunmoon_seq.to(device)
+
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
+
+                            loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
@@ -328,9 +352,11 @@ def main():
                             jpld = jpld.to(device)
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, _ = batch
+                            jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-                            loss = model.loss(jpld_seq, context_window=args.context_window)
+                            sunmoon_seq = sunmoon_seq.to(device)
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)  # Combine along the channel dimension
+                            loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         valid_loss += loss.item()
@@ -401,78 +427,12 @@ def main():
 
 
                     elif args.model_type == 'IonCastConvLSTM':
-                        # jpld_seq, dates_seq = next(iter(valid_loader))
-                        # jpld_seq = jpld_seq[:num_evals]
-                        # dates_seq = [dates_seq[t][:num_evals] for t in range(args.context_window + args.prediction_window)]
-                        # jpld_seq = jpld_seq.to(device)
-
-                        # jpld_contexts = jpld_seq[:, :args.context_window, :, :]
-                        # jpld_forecasts_originals = jpld_seq[:, args.context_window:, :, :]
-
-                        # # Forecasts
-                        # jpld_forecasts = model.predict(jpld_contexts, prediction_window=args.prediction_window)
-
-                        # jpld_contexts_unnormalized = JPLD.unnormalize(jpld_contexts)
-                        # jpld_forecasts_unnormalized = JPLD.unnormalize(jpld_forecasts)
-                        # jpld_forecasts_originals_unnormalized = JPLD.unnormalize(jpld_forecasts_originals)
-
-                        # # save forecasts
-
-                        # # # jpld_seq_dates is a nested list of dates with shape (context_window + prediction_window, batch_size)
-                        # # for b in range(args.batch_size):
-                        # #     print(f'Batch {b+1}/{args.batch_size} dates:')
-                        # #     for t in range(args.context_window + args.prediction_window):
-                        # #         print(dates_seq[t][b])
-                        # for i in range(num_evals):
-                        #     dates = [dates_seq[t][i] for t in range(args.context_window + args.prediction_window)]
-                        #     dates_context = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[:args.context_window]]
-                        #     dates_forecast = [datetime.datetime.fromisoformat(d).strftime('%Y-%m-%d %H:%M:%S') for d in dates[args.context_window:args.context_window + args.prediction_window]]
-                        #     dates_forecast_ahead = ['{} mins'.format((j + 1) * 15) for j in range(args.prediction_window)]
-                        #     # save videos of the forecasts
-                        #     forecast_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-{i+1:02d}.mp4')
-                        #     save_gim_video(
-                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
-                        #         forecast_video_file,
-                        #         vmin=0, vmax=100,
-                        #         titles=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                        #     )
-
-                        #     # save comparison video (original vs forecast)
-                        #     comparison_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-comparison-{i+1:02d}.mp4')
-                        #     save_gim_video_comparison(
-                        #         jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # top (original)
-                        #         jpld_forecasts_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),  # bottom (forecast)
-                        #         comparison_video_file,
-                        #         vmin=0, vmax=100,
-                        #         titles_top=[f'JPLD GIM TEC Original: {d}' for d in dates_forecast],
-                        #         titles_bottom=[f'JPLD GIM TEC Forecast: {d} ({mins_ahead})' for d, mins_ahead in zip(dates_forecast, dates_forecast_ahead)]
-                        #     )
-
-                        #     if epoch == 0:
-                        #         # save videos of the forecasts originals
-                        #         forecast_original_video_file = os.path.join(args.target_dir, f'{file_name_prefix}forecast-original-{i+1:02d}.mp4')
-                        #         save_gim_video(
-                        #             jpld_forecasts_originals_unnormalized.cpu().numpy()[i].reshape(args.prediction_window, 180, 360),
-                        #             forecast_original_video_file,
-                        #             vmin=0, vmax=100,
-                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_forecast]
-                        #         )
-
-                        #         # save videos of the contexts
-                        #         context_video_file = os.path.join(args.target_dir, f'{file_name_prefix}context-{i+1:02d}.mp4')
-                        #         save_gim_video(
-                        #             jpld_contexts_unnormalized.cpu().numpy()[i].reshape(args.context_window, 180, 360),
-                        #             context_video_file,
-                        #             vmin=0, vmax=100,
-                        #             titles=[f'JPLD GIM TEC: {d}' for d in dates_context]
-                        #         )
-
                         if args.test_event_id:
                             for event_id in args.test_event_id:
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp = event
+                                _, _, date_start, date_end, _, max_kp, _ = event
                                 print('* Testing event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
@@ -486,7 +446,7 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp = event
+                                _, _, date_start, date_end, _, max_kp, _ = event
                                 print('* Testing seen event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
@@ -497,7 +457,55 @@ def main():
 
 
         elif args.mode == 'test':
-            raise NotImplementedError("Testing mode is not implemented yet.")
+
+            print('*** Testing mode\n')
+
+            model, _, _, _, _, _ = load_model(args.model_file, device)
+            model.eval()
+            model = model.to(device)
+
+            with torch.no_grad():
+                tests_to_run = []
+                if args.test_event_id:
+                    for event_id in args.test_event_id:
+                        if event_id not in EventCatalog:
+                            raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                        event = EventCatalog[event_id]
+                        _, _, date_start, date_end, _, max_kp, _ = event
+                        print('* Testing event ID: {}'.format(event_id))
+                        date_start = datetime.datetime.fromisoformat(date_start)
+                        date_end = datetime.datetime.fromisoformat(date_end)
+                        date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                        file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                        title = f'Event: {event_id}, Kp={max_kp}'
+                        tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+                else:
+                    print('No test events specified, will use date_start and date_end arguments')
+                    date_start = datetime.datetime.fromisoformat(args.date_start)
+                    date_end = datetime.datetime.fromisoformat(args.date_end)
+                    date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    file_name = os.path.join(args.target_dir, f'test-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                    title = f'Test from {date_start.strftime("%Y-%m-%d %H:%M:%S")} to {date_end.strftime("%Y-%m-%d %H:%M:%S")}'
+                    tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+
+                dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+                
+                print('Running tests:')
+                for date_start, date_end, date_forecast_start, title, file_name in tests_to_run:
+                    # Create dataset for each test individually with date filtering
+                    # Add some buffer time for context window
+                    dataset_start = date_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=dataset_start, date_end=date_end)
+                    dataset = Sequences(datasets=[dataset_jpld], delta_minutes=args.delta_minutes, 
+                                    sequence_length=model.context_window + model.prediction_window)
+                    
+                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    
+                    # Force cleanup
+                    del dataset_jpld, dataset
+                    torch.cuda.empty_cache()
+        else:
+            raise ValueError('Unknown mode: {}'.format(args.mode))
 
         end_time = datetime.datetime.now()
         print('End time: {}'.format(end_time))
