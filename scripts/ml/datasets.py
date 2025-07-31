@@ -511,6 +511,22 @@ class SunMoonGeometry(Dataset):
         print('Delta                   : {} minutes'.format(self.delta_minutes))
         print('Image size              : {}'.format(self.image_size))
 
+        # Don't initialize Skyfield objects here
+        self._ts = None
+        self._eph = None
+        self._earth_body = None
+        self._sun_body = None
+        self._moon_body = None
+
+    def _init_skyfield_objects(self):
+        """Initialize Skyfield objects once per worker process."""
+        if self._ts is None:
+            self._ts = skyfield.api.load.timescale()
+            self._eph = skyfield.api.load('de421.bsp')
+            self._earth_body = self._eph['earth']
+            self._sun_body = self._eph['sun']
+            self._moon_body = self._eph['moon']
+
     def __len__(self):
         return len(self.dates)
     
@@ -617,13 +633,13 @@ class SunMoonGeometry(Dataset):
         """
         AVG_LUNAR_DISTANCE_KM = 384400.0  # 1 Lunar Distance (LD)
 
-        ts = skyfield.api.load.timescale()
-        eph = skyfield.api.load('de421.bsp')
-        earth_body = eph['earth']
-        celestial_body = eph[body_name]
-        t = ts.from_datetime(utc_dt)
+        # Initialize objects if needed (once per worker)
+        self._init_skyfield_objects()
+        
+        celestial_body = self._sun_body if body_name == 'sun' else self._moon_body
+        t = self._ts.from_datetime(utc_dt)
 
-        astrometric = earth_body.at(t).observe(celestial_body)
+        astrometric = self._earth_body.at(t).observe(celestial_body)
         subpoint = skyfield.api.wgs84.subpoint_of(astrometric)
 
         sub_lat = subpoint.latitude.degrees
