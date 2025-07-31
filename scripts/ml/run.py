@@ -341,7 +341,7 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=48, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=4, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
@@ -390,9 +390,9 @@ def main():
                     print('Excluding event ID: {}'.format(event_id))
                     if event_id not in EventCatalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    _, _, exclusion_start, exclusion_end, _, _, _ = EventCatalog[event_id]
-                    exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
-                    exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
+                    event = EventCatalog[event_id]
+                    exclusion_start = datetime.datetime.fromisoformat(event['date_start']) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                    exclusion_end = datetime.datetime.fromisoformat(event['date_end'])
                     date_exclusions.append((exclusion_start, exclusion_end))
 
                     datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
@@ -583,11 +583,12 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
+                                event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
+
                                 print('* Testing event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(date_start)
-                                date_end = datetime.datetime.fromisoformat(date_end)
-                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                date_start = datetime.datetime.fromisoformat(event_start) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                date_forecast_start = event_start
+                                date_end = datetime.datetime.fromisoformat(event_end)
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
@@ -597,11 +598,12 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
+                                event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
+
                                 print('* Testing seen event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(date_start)
-                                date_end = datetime.datetime.fromisoformat(date_end)
-                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                date_start = datetime.datetime.fromisoformat(event_start) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                date_forecast_start = event_start
+                                date_end = datetime.datetime.fromisoformat(event_end)
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
