@@ -214,7 +214,8 @@ class IonCastGNN(nn.Module):
         assert B == 1, "Batch size must be 1"
 
         # Reshape input to (B, T*C, H, W) for GraphCast
-        input_grid = input_grid.reshape(B, T * C, H, W).float()
+        input_grid = input_grid.reshape(B, T * C, H, W).float() # TODO: consider removing later
+        # print(f"Input Grid type: {input_grid.dtype}")
         # print(f"forward input: {input_grid.shape}")
 
         # Pass through GraphCast
@@ -277,4 +278,4 @@ class IonCastGNN(nn.Module):
         recon_loss = recon_loss / (target_grid.shape[0] * target_grid.shape[1]) # Average over batch size and channels
 
         # For simplicity, we can return just the reconstruction loss
-        return recon_loss
+        return recon_loss.float() # TODO: consider removing later

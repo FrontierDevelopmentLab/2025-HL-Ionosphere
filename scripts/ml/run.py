@@ -350,7 +350,7 @@ def main():
                         mesh_level = args.mesh_level,
                         input_res = (180, 360),
                         input_dim_grid_nodes = n_feats, # IMPORTANT! Based on how many features are stacked in the input.
-                        output_dim_grid_nodes = n_feats, # TODO: For now predict everything, down the line we dont need to predict the subsolar / sublunar and timestamp based features
+                        output_dim_grid_nodes = C, # TODO: For now predict everything, down the line we dont need to predict the subsolar / sublunar and timestamp based features
                         input_dim_mesh_nodes = 3, # GraphCast used 3: cos(lat), sin(lon), cos(lon)
                         input_dim_edges = 4, # GraphCast used 4: length(edge), vector diff b/w 3D positions of sender and receiver nodes in coordinate system of the reciever
                         processor_type = args.processor_type, # Options: "MessagePassing" or "GraphTransformer", i.e. GraphCast vs. GenCast
@@ -374,7 +374,17 @@ def main():
                 train_losses = []
                 valid_losses = []
                 
-                model = model.to(device)
+                model = model.to(device).float()
+
+                for name, param in model.named_parameters():
+                    if param.dtype != torch.float32:
+                        print(f"[param] {name} has dtype {param.dtype}")
+
+                for name, buffer in model.named_buffers():
+                    if buffer.dtype != torch.float32:
+                        print(f"[buffer] {name} has dtype {buffer.dtype}")
+                
+
             
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
@@ -415,7 +425,8 @@ def main():
                                 include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
                                 include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
                             )
-                            grid_nodes = grid_nodes.to(device)                           
+                            grid_nodes = grid_nodes.to(device)
+                            grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32                        
  
                             loss = model.loss(
                                 grid_nodes, 
@@ -486,7 +497,7 @@ def main():
                 # Save model
                 file_name_prefix = f'epoch-{epoch + 1:02d}-'
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
+                # save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
 
                 # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
@@ -544,7 +555,7 @@ def main():
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
 
-                    elif args.model_type == 'IonCastConvLSTM':
+                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
                         if args.test_event_id:
                             for event_id in args.test_event_id:
                                 if event_id not in EventCatalog:
@@ -580,7 +591,7 @@ def main():
 
             model, _, _, _, _, _ = load_model(args.model_file, device)
             model.eval()
-            model = model.to(device)
+            model = model.to(device).float()
 
             with torch.no_grad():
                 tests_to_run = []
@@ -637,7 +648,9 @@ if __name__ == '__main__':
 # Example
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
-
+# GraphCast example
+# With more aux datasets
 # python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
-# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --mesh_level 1
+# Baseline without auxiliary datasets
+# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 1 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 1 --device cuda:0

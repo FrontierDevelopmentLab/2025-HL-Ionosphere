@@ -1,27 +1,27 @@
 NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments
 Log file: ./../../results/ioncastgnn-train-1/log.txt
 Arguments:
---data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --device cuda:0
+--data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 1 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 1 --device cuda:0
 Config:
 {'aux_datasets': ['celestrak'],
  'batch_size': 1,
  'celestrak_file': 'celestrak/kp_ap_processed_timeseries.csv',
  'channel_list': None,
- 'context_window': 2,
+ 'context_window': 1,
  'data_dir': '/home/jupyter/data',
- 'date_end': '2023-08-01T00:00:00',
+ 'date_end': '2023-07-04T00:00:00',
  'date_start': '2023-07-01T00:00:00',
  'delta_minutes': 15,
  'device': 'cuda:0',
  'epochs': 1,
  'jpld_dir': 'jpld/webdataset',
  'learning_rate': 0.001,
- 'mesh_level': 6,
+ 'mesh_level': 1,
  'mode': 'train',
  'model_file': None,
  'model_type': 'IonCastGNN',
  'num_evals': 1,
- 'num_workers': 4,
+ 'num_workers': 12,
  'omni_dir': 'omniweb/cleaned/',
  'prediction_window': 1,
  'processor_type': 'MessagePassing',
@@ -31,7 +31,7 @@ Config:
  'test_event_id': ['G2H9-202406280900'],
  'test_event_seen_id': ['G1H9-202404190600'],
  'weight_decay': 0.0}
-Start time: 2025-07-31 23:27:16.363338
+Start time: 2025-08-01 00:26:26.690940
 
 *** Training mode
 
@@ -73,13 +73,13 @@ JPLD
 Directory  : /home/jupyter/data/jpld/webdataset
 Loading tar files index from cache: /home/jupyter/data/jpld/webdataset/tar_files_index
 Start date : 2023-07-01 00:00:00
-End date   : 2023-08-01 00:00:00
+End date   : 2023-07-04 00:00:00
 Delta      : 15 minutes
 Date exclusions:
   2024-06-28 04:30:00 - 2024-06-29 03:00:00
-Loading dates from cache: /home/jupyter/data/jpld/webdataset/dates_index_2023-07-01T00:00:00_2023-08-01T00:00:00_exclusions__2024-06-28T04:30:00_2024-06-29T03:00:00
-TEC maps total    : 2,976
-TEC maps available: 2,976
+Loading dates from cache: /home/jupyter/data/jpld/webdataset/dates_index_2023-07-01T00:00:00_2023-07-04T00:00:00_exclusions__2024-06-28T04:30:00_2024-06-29T03:00:00
+TEC maps total    : 288
+TEC maps available: 288
 TEC maps dropped  : 0
 
 Celestrak dataset
@@ -90,121 +90,16 @@ Normalize            : True
 Rewind minutes       : 180
 column:['Kp', 'Ap']
 2379829
-Date exclusions:
-  2024-06-28 04:30:00 - 2024-06-29 03:00:00
-Start date           : 2023-07-01 00:00:00
-End date             : 2023-08-01 00:00:00
-Rows after processing: 2,977
-
-Sequences
-Start date              : 2023-07-01 00:00:00
-End date                : 2023-08-01 00:00:00
-Delta                   : 15 minutes
-Sequence length         : 3
-Sequence duration       : 45 minutes
-Number of sequences     : 2,975
-First sequence          : ['2023-07-01T00:00:00', '2023-07-01T00:15:00', '2023-07-01T00:30:00']
-Last sequence           : ['2023-07-31T23:30:00', '2023-07-31T23:45:00', '2023-08-01T00:00:00']
-
-Sequences
-Start date              : 2024-06-28 04:30:00
-End date                : 2024-06-29 02:45:00
-Delta                   : 15 minutes
-Sequence length         : 3
-Sequence duration       : 45 minutes
-Number of sequences     : 88
-First sequence          : ['2024-06-28T04:30:00', '2024-06-28T04:45:00', '2024-06-28T05:00:00']
-Last sequence           : ['2024-06-29T02:15:00', '2024-06-29T02:30:00', '2024-06-29T02:45:00']
-
-Train size: 2,975
-Valid size: 88
-Creating new model
-
-Number of parameters: 35,227,654
-
-
-*** Epoch 1/1 started
-*** Training
 Traceback (most recent call last):
-  File "run.py", line 420, in main
-    loss = model.loss(
-           ^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/models/model_graphcast.py", line 270, in loss
-    output_grid = self(input_grid) # shape (B, context_window, C, H, W)
-                  ^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/models/model_graphcast.py", line 221, in forward
-    output_grid = self.graph_cast(input_grid)
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/graphcast/graph_cast_net.py", line 790, in forward
-    outvar = self.model_checkpoint_fn(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/gnn_layers/utils.py", line 64, in checkpoint_identity
-    return layer(*args)
-           ^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/graphcast/graph_cast_net.py", line 761, in custom_forward
-    mesh_efeat_processed, mesh_nfeat_processed = self.processor(
-                                                 ^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/graphcast/graph_cast_processor.py", line 172, in forward
-    efeat, nfeat = self.checkpoint_fn(
-                   ^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/gnn_layers/utils.py", line 64, in checkpoint_identity
-    return layer(*args)
-           ^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/graphcast/graph_cast_processor.py", line 160, in custom_forward
-    efeat, nfeat = module(efeat, nfeat, graph)
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/gnn_layers/mesh_edge_block.py", line 94, in forward
-    efeat_new = self.edge_mlp(efeat, nfeat, graph)
-                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/physicsnemo/models/gnn_layers/mesh_graph_mlp.py", line 274, in forward
-    efeat = self.model(efeat)
-            ^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/container.py", line 219, in forward
-    input = module(input)
-            ^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 117, in forward
-    return F.linear(input, self.weight, self.bias)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 640.00 MiB. GPU 0 has a total capacity of 14.57 GiB of which 490.75 MiB is free. Including non-PyTorch memory, this process has 14.09 GiB memory in use. Of the allocated memory 13.39 GiB is allocated by PyTorch, and 588.85 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 297, in main
+    aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 238, in <lambda>
+    'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/datasets/celestrak_dataset.py", line 61, in __init__
+    super().__init__('Celestrak dataset', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/datasets/base_datasets.py", line 30, in __init__
+    self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
+                  ^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
