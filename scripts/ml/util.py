@@ -38,12 +38,20 @@ def set_random_seed(seed=None):
     torch.manual_seed(seed)
 
 
-# Takes a list of scalars and returns stack of channels with shape (num_scalars, height, width) 
-# where each scalar is expanded to a 2D image of the specified size.
-def channelize(scalars, image_size=(180, 360)):
-    if not torch.is_tensor(scalars):
-        scalars = torch.tensor(scalars)
-    c = scalars.view(-1, 1, 1)
-    c = c.expand((-1,) + image_size)
+def stack_as_channels(features, image_size=(180,360)):
+    if not isinstance(features, list) and not isinstance(features, tuple):
+        raise ValueError('Expecting a list or tuple of features')
+    c = []
+    for f in features:
+        if f.ndim == 0:
+            f = f.expand(image_size)
+        elif f.ndim == 1:
+            f = f.view(-1, 1, 1)
+            f = f.expand((-1,) + image_size)
+        elif f.shape == image_size:
+            pass
+        else:
+            raise ValueError('Expecting 0d or 1d features, or 2d features with shape equal to image_size')
+        c.append(f)
+    c = torch.stack(c)
     return c
-

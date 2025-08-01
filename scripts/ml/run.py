@@ -18,13 +18,14 @@ import imageio
 
 from util import Tee
 from util import set_random_seed
+from util import stack_as_channels
 from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
 from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
 from dataset_sunmoongeometry import SunMoonGeometry
-from dataset_omniweb import OMNIWeb
+from dataset_celestrak import CelesTrak
 from events import EventCatalog
 
 matplotlib.use('Agg')
@@ -318,7 +319,7 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
-    parser.add_argument('--omniweb_dir', type=str, default='omniweb/csv', help='OMNIWeb dataset directory')
+    parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -373,6 +374,7 @@ def main():
             training_sequence_length = args.context_window + args.prediction_window
 
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+            dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
 
             print('Processing excluded dates')
 
@@ -402,8 +404,10 @@ def main():
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end)
                 dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
-                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train], sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid], sequence_length=training_sequence_length)
+                dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
+                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train], sequence_length=training_sequence_length)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid], sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -470,7 +474,7 @@ def main():
                         elif args.model_type == 'IonCastConvLSTM':
                             jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
+                            sunmoon_seq = stack_as_channels(sunmoon_seq).to(device)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
 
