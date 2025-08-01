@@ -1,22 +1,22 @@
 NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments
 Log file: ./../../results/ioncastgnn-train-1/log.txt
 Arguments:
---data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 1 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 1 --device cuda:0
+--data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 3 --device cuda:0
 Config:
 {'aux_datasets': ['celestrak'],
  'batch_size': 1,
  'celestrak_file': 'celestrak/kp_ap_processed_timeseries.csv',
  'channel_list': None,
- 'context_window': 1,
+ 'context_window': 2,
  'data_dir': '/home/jupyter/data',
  'date_end': '2023-07-04T00:00:00',
  'date_start': '2023-07-01T00:00:00',
  'delta_minutes': 15,
  'device': 'cuda:0',
- 'epochs': 1,
+ 'epochs': 1000,
  'jpld_dir': 'jpld/webdataset',
  'learning_rate': 0.001,
- 'mesh_level': 1,
+ 'mesh_level': 3,
  'mode': 'train',
  'model_file': None,
  'model_type': 'IonCastGNN',
@@ -31,7 +31,7 @@ Config:
  'test_event_id': ['G2H9-202406280900'],
  'test_event_seen_id': ['G1H9-202404190600'],
  'weight_decay': 0.0}
-Start time: 2025-08-01 00:26:26.690940
+Start time: 2025-08-01 16:59:05.204541
 
 *** Training mode
 
@@ -90,16 +90,50 @@ Normalize            : True
 Rewind minutes       : 180
 column:['Kp', 'Ap']
 2379829
+Date exclusions:
+  2024-06-28 04:30:00 - 2024-06-29 03:00:00
+Start date           : 2023-07-01 00:00:00
+End date             : 2023-07-04 00:00:00
+Rows after processing: 289
+
+Sequences
+Start date              : 2023-07-01 00:00:00
+End date                : 2023-07-04 00:00:00
+Delta                   : 15 minutes
+Sequence length         : 3
+Sequence duration       : 45 minutes
+Number of sequences     : 287
+First sequence          : ['2023-07-01T00:00:00', '2023-07-01T00:15:00', '2023-07-01T00:30:00']
+Last sequence           : ['2023-07-03T23:30:00', '2023-07-03T23:45:00', '2023-07-04T00:00:00']
+
+Sequences
+Start date              : 2024-06-28 04:30:00
+End date                : 2024-06-29 02:45:00
+Delta                   : 15 minutes
+Sequence length         : 3
+Sequence duration       : 45 minutes
+Number of sequences     : 88
+First sequence          : ['2024-06-28T04:30:00', '2024-06-28T04:45:00', '2024-06-28T05:00:00']
+Last sequence           : ['2024-06-29T02:15:00', '2024-06-29T02:30:00', '2024-06-29T02:45:00']
+
+Train size: 287
+Valid size: 88
+Creating new model
+
+Number of parameters: 35,226,115
+
+
+*** Epoch 1/1,000 started
+*** Training
+*** Validation
+Validation Loss: 595510.1031
+Saving model to ./../../results/ioncastgnn-train-1/epoch-01-model.pth
 Traceback (most recent call last):
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 297, in main
-    aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 238, in <lambda>
-    'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
-                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/datasets/celestrak_dataset.py", line 61, in __init__
-    super().__init__('Celestrak dataset', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
-  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/ioncast/datasets/base_datasets.py", line 30, in __init__
-    self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
-                  ^^^^^^^^^^^^^^^^^^^^
-KeyboardInterrupt
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 512, in main
+    save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
+  File "/home/LinneaWolniewicz/2025-HL-Ionosphere/scripts/ml/run.py", line 128, in save_model
+    'model_input_channels': model.input_dim_grid_nodes,  # Number of features per grid node
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/LinneaWolniewicz/miniforge3/envs/ioncast-physicsnemo/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1729, in __getattr__
+    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+AttributeError: 'IonCastGNN' object has no attribute 'input_dim_grid_nodes'

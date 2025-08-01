@@ -20,10 +20,10 @@ import glob
 
 matplotlib.use('Agg')
 
-
+# TODO: Make possible for graphcast
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
-    if not isinstance(model, (IonCastConvLSTM)):
-        raise ValueError('Model must be an instance of IonCastConvLSTM')
+    if not isinstance(model, (IonCastConvLSTM, IonCastGNN)):
+        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastGNN')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -47,21 +47,17 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_forecast_start_index = sequence.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
 
-    sequence_data = dataset.get_sequence_data(sequence)
-    jpld_original = sequence_data[0]  # Original data
-    sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
-    device = next(model.parameters()).device
-    jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
-    sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
+    if isinstance(model, IonCastConvLSTM):
+        sequence_data = dataset.get_sequence_data(sequence)
+        jpld_original = sequence_data[0]  # Original data
+        sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
+        device = next(model.parameters()).device
+        jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
+        sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
+        combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
 
-    combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
-
-    combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
-    combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-
-    # print(jpld_original.shape)
-    # print(jpld_forecast_context.shape)
-    # print(jpld_forecast.shape)
+        combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
+        combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
     jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
     jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
@@ -120,11 +116,27 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
         }
+    elif isinstance(model, IonCastGNN):
+        checkpoint = {
+            'model': 'IonCastGNN',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'model_input_channels': model.input_dim_grid_nodes,  # Number of features per grid node
+            'model_output_channels': model.output_dim_grid_nodes,  # Number of features to predict per grid node
+            'model_hidden_dim': model.hidden_dim,
+            'model_num_processor_layers': model.processor_layers,
+            'model_mesh_level': model.mesh_level,
+            'model_processor_type': model.processor_type,
+        }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
 
-
+# TODO: Make compatible with IonCastGNN
 def load_model(file_name, device):
     checkpoint = torch.load(file_name, weights_only=False)
     if checkpoint['model'] == 'VAE1':
@@ -497,7 +509,7 @@ def main():
                 # Save model
                 file_name_prefix = f'epoch-{epoch + 1:02d}-'
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                # save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
+                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
 
                 # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
@@ -554,35 +566,36 @@ def main():
                             sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
+                    # TODO: Check compatibility with IonCastGNN
+                    # elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
+                    #     if args.test_event_id:
+                    #         for event_id in args.test_event_id:
+                    #             if event_id not in EventCatalog:
+                    #                 raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                    #             event = EventCatalog[event_id]
+                    #             _, _, date_start, date_end, _, max_kp, _ = event
+                    #             print('* Testing event ID: {}'.format(event_id))
+                    #             date_start = datetime.datetime.fromisoformat(date_start)
+                    #             date_end = datetime.datetime.fromisoformat(date_end)
+                    #             date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    #             file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                    #             title = f'Event: {event_id}, Kp={max_kp}'
+                    #             run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
-                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
-                        if args.test_event_id:
-                            for event_id in args.test_event_id:
-                                if event_id not in EventCatalog:
-                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
-                                print('* Testing event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(date_start)
-                                date_end = datetime.datetime.fromisoformat(date_end)
-                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
-
-                        if args.test_event_seen_id:
-                            for event_id in args.test_event_seen_id:
-                                if event_id not in EventCatalog:
-                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
-                                print('* Testing seen event ID: {}'.format(event_id))
-                                date_start = datetime.datetime.fromisoformat(date_start)
-                                date_end = datetime.datetime.fromisoformat(date_end)
-                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                    #     # TODO: Isn't this a repeat of above?
+                    #     if args.test_event_seen_id:
+                    #         for event_id in args.test_event_seen_id:
+                    #             if event_id not in EventCatalog:
+                    #                 raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                    #             event = EventCatalog[event_id]
+                    #             _, _, date_start, date_end, _, max_kp, _ = event
+                    #             print('* Testing seen event ID: {}'.format(event_id))
+                    #             date_start = datetime.datetime.fromisoformat(date_start)
+                    #             date_end = datetime.datetime.fromisoformat(date_end)
+                    #             date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                    #             file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                    #             title = f'Event: {event_id}, Kp={max_kp}'
+                    #             run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
         # TODO: Implement testing mode for IonCastGNN
         elif args.mode == 'test':
@@ -653,4 +666,4 @@ if __name__ == '__main__':
 # python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
 # Baseline without auxiliary datasets
-# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 1 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 1 --device cuda:0
+# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 3 --device cuda:0
