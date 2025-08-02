@@ -203,6 +203,11 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     print('Context start date : {}'.format(date_start))
     print('Forecast start date: {}'.format(date_forecast_start))
     print('End date           : {}'.format(date_end))
+
+    if date_end > date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes):
+        date_end = date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes)
+    print('Adjusted end date  : {} ({} time steps after start)'.format(date_end, args.test_event_max_time_steps))
+    
     sequence_start = date_start
     sequence_end = date_end
     sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
@@ -235,10 +240,6 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 100)
-
-    # Limit the number of time steps to args.test_event_max_time_steps
-    jpld_original_unnormalized = jpld_original_unnormalized[:args.test_event_max_time_steps]
-    jpld_forecast_unnormalized = jpld_forecast_unnormalized[:args.test_event_max_time_steps]
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence_forecast]
