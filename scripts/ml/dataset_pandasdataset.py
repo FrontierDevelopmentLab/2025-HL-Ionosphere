@@ -16,16 +16,17 @@ class PandasDataset(Dataset):
         self.column = column
         self.delta_minutes = delta_minutes
 
-        print('Delta minutes        : {:,}'.format(self.delta_minutes))
+        print('Delta minutes         : {:,}'.format(self.delta_minutes))
         self.normalize = normalize
-        print('Normalize            : {}'.format(self.normalize))
+        print('Normalize             : {}'.format(self.normalize))
         self.rewind_minutes = rewind_minutes
-        print('Rewind minutes       : {:,}'.format(self.rewind_minutes))
-        print(f"column:{column}")
+        print('Rewind minutes        : {:,}'.format(self.rewind_minutes))
+        print('Columns               : {}'.format(self.column))
+        print('Rows before processing: {:,}'.format(len(self.data)))
 
         self.data[column] = self.data[column].astype(np.float32)
         self.data.replace([np.inf, -np.inf], np.nan, inplace=True)
-        print(len(self.data))
+
         self.data = self.data.dropna() # This drops ~10% of omniweb, a bit wasteful as it drops entire row at a time but not too bad
         # Get dates available
         self.data['Datetime'] = pd.to_datetime(self.data['Datetime']) # this line wasnt present previously but is necessary if the col contains strings instead of pandas timestamps for the date.to_pydatetime() to run as expected
@@ -85,13 +86,13 @@ class PandasDataset(Dataset):
         self.dates_set = set(self.dates)
         self.date_start = self.dates[0]
         self.date_end = self.dates[-1]
-        print('Start date           : {}'.format(self.date_start))
-        print('End date             : {}'.format(self.date_end))
+        print('Start date            : {}'.format(self.date_start))
+        print('End date              : {}'.format(self.date_end))
 
-        print('Rows after processing: {:,}'.format(len(self.data)))
+        print('Rows after processing : {:,}'.format(len(self.data)))
         # self.data.set_index("Datetime", inplace=True) # sets the indexing to be done with datetime
 
-        # print('Memory usage         : {:,} bytes'.format(self.data.memory_usage(deep=True).sum()))
+        # print('Memory usage          : {:,} bytes'.format(self.data.memory_usage(deep=True).sum()))
 
 
 
@@ -142,7 +143,7 @@ class PandasDataset(Dataset):
             data = self.data[self.data['Datetime'] == date][self.column]
             if len(data) == 0:
                 raise RuntimeError('Should not happen')
-        data = torch.tensor(data.values[0])
+        data = torch.tensor(data.values[0], dtype=torch.float32)
         if self.normalize:
             data = self.normalize_data(data)
 

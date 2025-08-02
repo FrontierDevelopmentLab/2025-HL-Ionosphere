@@ -4,6 +4,7 @@ import datetime
 import numpy as np
 import skyfield.api
 
+from util import stack_as_channels
 
 class SunMoonGeometry(Dataset):
     """
@@ -32,12 +33,13 @@ class SunMoonGeometry(Dataset):
     Note: The scalar values (coordinates, distances, day of year) are broadcast
     to the same spatial dimensions as the zenith angle maps.
     """
-    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True):
+    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True):
         self.date_start = date_start
         self.date_end = date_end
         self.delta_minutes = delta_minutes
         self.image_size = image_size
         self.normalize = normalize
+        self.combined = combined
 
         if self.date_start is None:
             self.date_start = datetime.datetime(2010, 5, 13, 0, 0, 0)
@@ -105,17 +107,24 @@ class SunMoonGeometry(Dataset):
 
         day_of_year = self.day_of_year(date)
 
-        sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
-        sun_subsolar_coords = torch.tensor(sun_subsolar_coords, dtype=torch.float32)
-        sun_antipode_coords = torch.tensor(sun_antipode_coords, dtype=torch.float32)
-        sun_distance = torch.tensor(sun_distance, dtype=torch.float32)
-        moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
-        moon_sublunar_coords = torch.tensor(moon_sublunar_coords, dtype=torch.float32)
-        moon_antipode_coords = torch.tensor(moon_antipode_coords, dtype=torch.float32)
-        moon_distance = torch.tensor(moon_distance, dtype=torch.float32)
-        day_of_year = torch.tensor(day_of_year, dtype=torch.float32)
+        solar_features = sun_subsolar_coords + sun_antipode_coords + (sun_distance, )
+        lunar_features = moon_sublunar_coords + moon_antipode_coords + (moon_distance, )
+        all_features = solar_features + lunar_features + (day_of_year, )
 
-        return (sun_zenith_angle_map, sun_subsolar_coords, sun_antipode_coords, sun_distance, moon_zenith_angle_map, moon_sublunar_coords, moon_antipode_coords, moon_distance, day_of_year), date.isoformat()
+        if self.combined:
+            sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
+            moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
+            combined_features = stack_as_channels(all_features, image_size=self.image_size)
+            combined_data = torch.cat([sun_zenith_angle_map.unsqueeze(0), moon_zenith_angle_map.unsqueeze(0), combined_features], dim=0)
+
+            return combined_data, date.isoformat()
+        else:
+            sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
+            moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
+            combined_maps = torch.stack([sun_zenith_angle_map, moon_zenith_angle_map], dim=0)
+            combined_features = torch.tensor(all_features, dtype=torch.float32)
+
+            return combined_maps, combined_features, date.isoformat()
 
     def day_of_year(self, date):
         """Calculates the cyclical day-of-year features."""

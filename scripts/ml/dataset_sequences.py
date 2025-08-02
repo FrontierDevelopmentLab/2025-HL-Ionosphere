@@ -59,7 +59,6 @@ class Sequences(Dataset):
                         data.append(d)
                     else:
                         data.append(data[i-1])
-            print(data)
             data = torch.stack(data)
             sequence_data.append(data)
         sequence_data.append([date.isoformat() for date in sequence])

@@ -43,15 +43,18 @@ def stack_as_channels(features, image_size=(180,360)):
         raise ValueError('Expecting a list or tuple of features')
     c = []
     for f in features:
+        if not isinstance(f, torch.Tensor):
+            f = torch.tensor(f, dtype=torch.float32)
         if f.ndim == 0:
             f = f.expand(image_size)
+            f = f.unsqueeze(0)
         elif f.ndim == 1:
             f = f.view(-1, 1, 1)
             f = f.expand((-1,) + image_size)
         elif f.shape == image_size:
-            pass
+            f = f.unsqueeze(0)  # add channel dimension
         else:
             raise ValueError('Expecting 0d or 1d features, or 2d features with shape equal to image_size')
         c.append(f)
-    c = torch.stack(c)
+    c = torch.cat(c, dim=0)
     return c

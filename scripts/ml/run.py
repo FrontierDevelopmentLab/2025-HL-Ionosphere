@@ -218,11 +218,14 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_data = dataset.get_sequence_data(sequence)
     jpld_seq = sequence_data[0]  # Original data
     sunmoon_seq = sequence_data[1]  # Sun and Moon geometry data
+    celestrak_seq = sequence_data[2]  # CelesTrak data
     device = next(model.parameters()).device
     jpld_seq = jpld_seq.to(device) # sequence_length, channels, 180, 360
     sunmoon_seq = sunmoon_seq.to(device) # sequence_length, channels, 180, 360
+    celestrak_seq = celestrak_seq.to(device) # sequence_length, channels, 180, 360
+    celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, 2, 180, 360)
 
-    combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=1)  # Combine along the channel dimension
+    combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=1)  # Combine along the channel dimension
 
     combined_seq_context = combined_seq[:sequence_forecast_start_index]  # Context data for forecast
     combined_seq_forecast = model.predict(combined_seq_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
@@ -230,11 +233,12 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast = combined_seq_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = jpld_seq[sequence_forecast_start_index:]
 
-    print(jpld_original.shape)
-    print(jpld_forecast.shape)
-
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 100)
+
+    # Limit the number of time steps to args.test_event_max_time_steps
+    jpld_original_unnormalized = jpld_original_unnormalized[:args.test_event_max_time_steps]
+    jpld_forecast_unnormalized = jpld_forecast_unnormalized[:args.test_event_max_time_steps]
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence_forecast]
@@ -336,11 +340,12 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=6, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H9-202406280900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='*', default=['G1H9-202404190600'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202406071200'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
 
     args = parser.parse_args()
@@ -441,7 +446,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=19, output_channels=19, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=21, output_channels=21, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -472,11 +477,14 @@ def main():
 
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, sunmoon_seq, _ = batch
+                            jpld_seq, sunmoon_seq, celestrak_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = stack_as_channels(sunmoon_seq).to(device)
+                            sunmoon_seq = sunmoon_seq.to(device)
+                            celestrak_seq = celestrak_seq.to(device)
+                            celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2) # Combine along the channel dimension
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2) # Combine along the channel dimension
 
                             loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
@@ -501,10 +509,13 @@ def main():
                             jpld = jpld.to(device)
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, sunmoon_seq, _ = batch
+                            jpld_seq, sunmoon_seq, celestrak_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)  # Combine along the channel dimension
+                            celestrak_seq = celestrak_seq.to(device)
+                            celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
+
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2)  # Combine along the channel dimension
                             loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
