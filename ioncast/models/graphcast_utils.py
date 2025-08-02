@@ -87,6 +87,7 @@ def stack_features(
     assert n_img_datasets > 0, f"n_img_datasets {n_img_datasets} must be greater than 0"
     assert len(sequence_batch) > 0, f"sequence_batch of length {len(sequence_batch)} must not be empty"
 
+
     # elapsed_time = timer("process dataset features")
 
     # List to hold all features stacked in shape [B, T, C, H, W]
@@ -95,7 +96,11 @@ def stack_features(
     # Split the dataset into image datasets, global feature datasets, and timestamps
     image_datasets = sequence_batch[:n_img_datasets] # torch.Size(torch.Size([B, T, C_i, H, W])
     global_param_datasets = sequence_batch[n_img_datasets:-1] # torch.Size(torch.Size([B, T, F_i])
-    timestamps = sequence_batch[-1] # List[Tuple] -> [T, B]
+    _ = sequence_batch[-1] # List[Tuple] -> [T, B]
+    
+    if len(image_datasets[0].shape) == 4:
+        image_datasets = [T.unsqueeze(0) for T in image_datasets] # if batch size is missing, the sequence_batch will be a tuple
+        global_param_datasets = [T.unsqueeze(0) for T in global_param_datasets]
 
     # Stack the datasets along the channel dimension
     stacked_imgs = torch.cat(image_datasets, dim=2) # torch.Size(torch.Size([B, T, Sum(C_i), H, W])
@@ -114,86 +119,86 @@ def stack_features(
         assert B == B_g, "Mismatch in sequence length between image data and globals"
         features_list.append(stacked_globals)
 
-    # elapsed_time()
+    # # elapsed_time()
 
-    # elapsed_time = timer("compute lat-lon grid")
+    # # elapsed_time = timer("compute lat-lon grid")
 
-    # Handle subsolar and sublunar points
-    if include_subsolar or include_sublunar:
-        # compute lat_grid and lon_grid matching shape H, W
-        lon_grid, lat_grid = get_lat_lon_grid(H, W)
+    # # Handle subsolar and sublunar points
+    # if include_subsolar or include_sublunar:
+    #     # compute lat_grid and lon_grid matching shape H, W
+    #     lon_grid, lat_grid = get_lat_lon_grid(H, W)
 
-    # elapsed_time()
+    # # elapsed_time()
 
-    # Skip logic if no subsolar or sublunar points are requested
-    if include_subsolar or include_sublunar:
+    # # Skip logic if no subsolar or sublunar points are requested
+    # if include_subsolar or include_sublunar:
         
-        # elapsed_time = timer("compute subsolar & sublunar lat long points")
+    #     # elapsed_time = timer("compute subsolar & sublunar lat long points")
 
-        sublunar_list = [] 
-        subsolar_list = [] 
-        # For each timestamp in each sequence and batch, compute subsolar and sublunar points
-        for batch_idx in range(B): # B will usually be 1 (for graphcast only)
-            for seq_idx in range(T): # under default conditions T = 2 (number of frames of history to include)
-                timestamp = timestamps[seq_idx][batch_idx]
-                if include_subsolar:
-                    subsolar_lat, subsolar_lon = compute_subsolar_point(timestamp)
-                    subsolar_list.append([subsolar_lat, subsolar_lon])
-                if include_sublunar:
-                    sublunar_lat, sublunar_lon = compute_sublunar_point(timestamp)
-                    sublunar_list.append([sublunar_lat, sublunar_lon]) 
-        # Useful example for debugging maybe:
-        #  # [T=2, B=4] [T_0B_0, T_0B_1, T_0B_2, T_0B_3, T_1B_0, T_1B_1, ...] (if looping over T then B)
-        #  # [T=2, B=4] [T_0B_0, T_1B_0, T_0B_1, T_1B_1, T_0B_0, T_1B_0, T_0B_1, T_1B_1,  ...] (if looping over B then T)
+    #     sublunar_list = [] 
+    #     subsolar_list = [] 
+    #     # For each timestamp in each sequence and batch, compute subsolar and sublunar points
+    #     for batch_idx in range(B): # B will usually be 1 (for graphcast only)
+    #         for seq_idx in range(T): # under default conditions T = 2 (number of frames of history to include)
+    #             timestamp = timestamps[seq_idx][batch_idx]
+    #             if include_subsolar:
+    #                 subsolar_lat, subsolar_lon = compute_subsolar_point(timestamp)
+    #                 subsolar_list.append([subsolar_lat, subsolar_lon])
+    #             if include_sublunar:
+    #                 sublunar_lat, sublunar_lon = compute_sublunar_point(timestamp)
+    #                 sublunar_list.append([sublunar_lat, sublunar_lon]) 
+    #     # Useful example for debugging maybe:
+    #     #  # [T=2, B=4] [T_0B_0, T_0B_1, T_0B_2, T_0B_3, T_1B_0, T_1B_1, ...] (if looping over T then B)
+    #     #  # [T=2, B=4] [T_0B_0, T_1B_0, T_0B_1, T_1B_1, T_0B_0, T_1B_0, T_0B_1, T_1B_1,  ...] (if looping over B then T)
         
-        # elapsed_time()
+    #     # elapsed_time()
 
-        # elapsed_time = timer("compute subsolar & sublunar haversine images")
+    #     # elapsed_time = timer("compute subsolar & sublunar haversine images")
         
 
-        # For each lat/lon pair, compute the Haversine distance to the grid
-        if include_subsolar:
-            subsolar_latlons = np.array(subsolar_list)
-            subsolar_dist_map = haversine_distance(subsolar_latlons[:,0], subsolar_latlons[:,1], lat_grid, lon_grid, standardize=True) # [B x T, H, W]
-            subsolar_dist_map = torch.from_numpy(subsolar_dist_map).float().reshape(B, T, 1, H, W) # [B, T, C=1, H, W]
-            features_list.append(subsolar_dist_map)
+    #     # For each lat/lon pair, compute the Haversine distance to the grid
+    #     if include_subsolar:
+    #         subsolar_latlons = np.array(subsolar_list)
+    #         subsolar_dist_map = haversine_distance(subsolar_latlons[:,0], subsolar_latlons[:,1], lat_grid, lon_grid, standardize=True) # [B x T, H, W]
+    #         subsolar_dist_map = torch.from_numpy(subsolar_dist_map).float().reshape(B, T, 1, H, W) # [B, T, C=1, H, W]
+    #         features_list.append(subsolar_dist_map)
             
-        if include_sublunar:
-            sublunar_latlons = np.array(sublunar_list)
-            sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid, standardize=True) # [B x T, H, W]
-            sublunar_dist_map = torch.from_numpy(sublunar_dist_map).float().reshape(B, T, 1, H, W) # [B, T, C=1, H, W]
-            features_list.append(sublunar_dist_map)
-        # elapsed_time()
+    #     if include_sublunar:
+    #         sublunar_latlons = np.array(sublunar_list)
+    #         sublunar_dist_map = haversine_distance(sublunar_latlons[:,0], sublunar_latlons[:,1], lat_grid, lon_grid, standardize=True) # [B x T, H, W]
+    #         sublunar_dist_map = torch.from_numpy(sublunar_dist_map).float().reshape(B, T, 1, H, W) # [B, T, C=1, H, W]
+    #         features_list.append(sublunar_dist_map)
+    #     # elapsed_time()
 
-    if include_timestamp: 
-        # elapsed_time = timer("compute timestamp encodings")
-        # Transpose to shape (B, T)
-        timestamps_TB = list(zip(*timestamps))  # Now shape (B, T)
+    # if include_timestamp: 
+    #     # elapsed_time = timer("compute timestamp encodings")
+    #     # Transpose to shape (B, T)
+    #     timestamps_TB = list(zip(*timestamps))  # Now shape (B, T)
 
-        # Apply parse_fast and flatten to shape (B, T, C=4)
-        timestamp_batch_features = []
-        for ts_list in timestamps_TB:  # For each batch of sequences (B sequenc)
-            timestamp_sequence_features = []
-            for ts in ts_list: # For each timestamp in the batch
-                # Parse timestamp
-                tod, doy = parse_fast(ts)
+    #     # Apply parse_fast and flatten to shape (B, T, C=4)
+    #     timestamp_batch_features = []
+    #     for ts_list in timestamps_TB:  # For each batch of sequences (B sequenc)
+    #         timestamp_sequence_features = []
+    #         for ts in ts_list: # For each timestamp in the batch
+    #             # Parse timestamp
+    #             tod, doy = parse_fast(ts)
 
-                # Compute sine and cosine features of time of day and day of year (normalized to [0, 1])
-                sin_tod = np.sin(2 * np.pi * tod)
-                cos_tod = np.cos(2 * np.pi * tod)
-                sin_doy = np.sin(2 * np.pi * doy)
-                cos_doy = np.cos(2 * np.pi * doy)
+    #             # Compute sine and cosine features of time of day and day of year (normalized to [0, 1])
+    #             sin_tod = np.sin(2 * np.pi * tod)
+    #             cos_tod = np.cos(2 * np.pi * tod)
+    #             sin_doy = np.sin(2 * np.pi * doy)
+    #             cos_doy = np.cos(2 * np.pi * doy)
 
-                # timestamp_sequence_features is shape (T, 4)
-                timestamp_sequence_features.append([sin_tod, cos_tod, sin_doy, cos_doy])
-            # timestamp_batch_features is shape (B, T, 4)
-            timestamp_batch_features.append(timestamp_sequence_features)
+    #             # timestamp_sequence_features is shape (T, 4)
+    #             timestamp_sequence_features.append([sin_tod, cos_tod, sin_doy, cos_doy])
+    #         # timestamp_batch_features is shape (B, T, 4)
+    #         timestamp_batch_features.append(timestamp_sequence_features)
 
-        # Reshape (B, T, C=4, H, W) (repeat along H and W dimensions) 
-        time_tensor = torch.tensor(timestamp_batch_features)[:,:,:,None,None].repeat(1, 1, 1, H, W)
-        features_list.append(time_tensor)
+    #     # Reshape (B, T, C=4, H, W) (repeat along H and W dimensions) 
+    #     time_tensor = torch.tensor(timestamp_batch_features)[:,:,:,None,None].repeat(1, 1, 1, H, W)
+    #     features_list.append(time_tensor)
         
-        # elapsed_time()
+    #     # elapsed_time()
 
     # Stack all features in features_list along the channel dimension
     stacked_features = torch.cat(features_list, dim=2) # [B, T, C_stacked, H, W]

@@ -1,3 +1,5 @@
+# TODO: slowly deprecate this file, convert to format where each dataset has its own file
+
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -382,61 +384,61 @@ import numpy as np
 import datetime
 
 
-class CompositeDataset(Dataset): # DONT
-    '''Note: dont use composite dataset, rather use sequences with sequence length 1, this class is currently buggy and likely wont be'''
-    def __init__(self, datasets):
-        self._datasets = datasets
-        # print("Number of datasets stored in the composite is: {}".format(len(datasets)))
-        self._date_start =  max(ds.date_start for ds in self._datasets)
-        self._date_end = min(ds.date_end for ds in self._datasets)
+# class CompositeDataset(Dataset): # DONT
+#     '''Note: dont use composite dataset, rather use sequences with sequence length 1, this class is currently buggy and likely wont be'''
+#     def __init__(self, datasets):
+#         self._datasets = datasets
+#         # print("Number of datasets stored in the composite is: {}".format(len(datasets)))
+#         self._date_start =  max(ds.date_start for ds in self._datasets)
+#         self._date_end = min(ds.date_end for ds in self._datasets)
 
-        self._delta_minutes = self._datasets[0].delta_minutes
-        self._length = len(self._datasets[0])
-        # for dataset in self._datasets:
-            # NOTE: the datasets wont/dont have the same start end date even though the same exlusion date ranges are provided
-            # should not be a problem generally as long as indexing based off of timestamp AND disallowing timestamp indeces 
-            # beyond the start and end range AND using the largest start date and smallest end date
-            # if dataset.date_start != self._date_start:
-            #     raise ValueError(
-            #         "Expecting all datasets to have the same starting date"
-            #     )
-            # if dataset.date_end != self._date_end:
-            #     raise ValueError("Expecting all datasets to have the same ending date")
-            # if dataset.delta_minutes != self._delta_minutes:
-            #     raise ValueError(
-            #         "Expecting all datasets to have the same delta seconds"
-            #     )
-            # if len(dataset) != self._length: # NOTE: this is removed temporarily but lengths can not be the same?
-            #     raise ValueError(
-            #         "Expecting all datasets to have the same length - synchronize dates or delta_seconds"
-            #     )
+#         self._delta_minutes = self._datasets[0].delta_minutes
+#         self._length = len(self._datasets[0])
+#         # for dataset in self._datasets:
+#             # NOTE: the datasets wont/dont have the same start end date even though the same exlusion date ranges are provided
+#             # should not be a problem generally as long as indexing based off of timestamp AND disallowing timestamp indeces 
+#             # beyond the start and end range AND using the largest start date and smallest end date
+#             # if dataset.date_start != self._date_start:
+#             #     raise ValueError(
+#             #         "Expecting all datasets to have the same starting date"
+#             #     )
+#             # if dataset.date_end != self._date_end:
+#             #     raise ValueError("Expecting all datasets to have the same ending date")
+#             # if dataset.delta_minutes != self._delta_minutes:
+#             #     raise ValueError(
+#             #         "Expecting all datasets to have the same delta seconds"
+#             #     )
+#             # if len(dataset) != self._length: # NOTE: this is removed temporarily but lengths can not be the same?
+#             #     raise ValueError(
+#             #         "Expecting all datasets to have the same length - synchronize dates or delta_seconds"
+#             #     )
 
-        print("\nComposite - Length             : {}".format(self._length))
-        print("Composite - Start date         : {}".format(self._date_start))
-        print("Composite - End date           : {}".format(self._date_end))
-        # print("Composite - Time delta         : {} minutes".format(self._delta_minutes))
+#         print("\nComposite - Length             : {}".format(self._length))
+#         print("Composite - Start date         : {}".format(self._date_start))
+#         print("Composite - End date           : {}".format(self._date_end))
+#         # print("Composite - Time delta         : {} minutes".format(self._delta_minutes))
 
-    def __len__(self):
-        return self._length
+#     def __len__(self):
+#         return self._length
 
-    def __getitem__(self, index):
-        data = []
+#     def __getitem__(self, index):
+#         data = []
 
-        # assert not isinstance(index, int), "int based indexing not supported due to potential for timestamp mismatch errors"
-        if isinstance(index, datetime.datetime):
-            assert index >= self._date_start and index <= self._date_end, f"index {index} out of range ({self._date_start} - {self._date_end})"
-        if isinstance(index, int):
-            raise ValueError("Expected Datetime index, not int")
-            index = self._date_start + datetime.timedelta(minutes = index * self._delta_minutes) # this while it should work since dates are exlcuded wihtin the underlying datasets, but this means many indeces will map to nan data
-        for i, dataset in enumerate(self._datasets):
-            # time_start = datetime.datetime.now()
-            data.append(dataset[index])
-            # time_spent = (datetime.datetime.now() - time_start).total_seconds()
-            # print('dataset {} took {} seconds'.format(i, time_spent))
-        return tuple(data)
+#         # assert not isinstance(index, int), "int based indexing not supported due to potential for timestamp mismatch errors"
+#         if isinstance(index, datetime.datetime):
+#             assert index >= self._date_start and index <= self._date_end, f"index {index} out of range ({self._date_start} - {self._date_end})"
+#         if isinstance(index, int):
+#             raise ValueError("Expected Datetime index, not int")
+#             index = self._date_start + datetime.timedelta(minutes = index * self._delta_minutes) # this while it should work since dates are exlcuded wihtin the underlying datasets, but this means many indeces will map to nan data
+#         for i, dataset in enumerate(self._datasets):
+#             # time_start = datetime.datetime.now()
+#             data.append(dataset[index])
+#             # time_spent = (datetime.datetime.now() - time_start).total_seconds()
+#             # print('dataset {} took {} seconds'.format(i, time_spent))
+#         return tuple(data)
 
-    def get_datasets(self):
-        return self._datasets
+#     def get_datasets(self):
+#         return self._datasets
 
 class UnionDataset(Dataset):
     """ fills gaps by merging all passed in datasets, if a dataset without a gap at indexed time is found, returns its (and only its) value """
@@ -478,85 +480,84 @@ class UnionDataset(Dataset):
                 return value, date
         return None, None
 
-class Sequences(Dataset):
-    def __init__(self, datasets, delta_minutes=1, sequence_length=10):
-        super().__init__()
-        self.datasets = datasets
-        self.delta_minutes = delta_minutes
-        self.sequence_length = sequence_length
+# class Sequences(Dataset):
+#     def __init__(self, datasets, delta_minutes=1, sequence_length=10):
+#         super().__init__()
+#         self.datasets = datasets
+#         self.delta_minutes = delta_minutes
+#         self.sequence_length = sequence_length
 
-        self.date_start = max([dataset.date_start for dataset in self.datasets])
-        self.date_end = min([dataset.date_end for dataset in self.datasets])
-        if self.date_start > self.date_end:
-            raise ValueError('No overlapping date range between datasets')
+#         self.date_start = max([dataset.date_start for dataset in self.datasets])
+#         self.date_end = min([dataset.date_end for dataset in self.datasets])
+#         if self.date_start > self.date_end:
+#             raise ValueError('No overlapping date range between datasets')
 
-        print('\nSequences')
-        print('Start date              : {}'.format(self.date_start))
-        print('End date                : {}'.format(self.date_end))
-        print('Delta                   : {} minutes'.format(self.delta_minutes))
-        print('Sequence length         : {}'.format(self.sequence_length))
-        print('Sequence duration       : {} minutes'.format(self.delta_minutes*self.sequence_length))
+#         print('\nSequences')
+#         print('Start date              : {}'.format(self.date_start))
+#         print('End date                : {}'.format(self.date_end))
+#         print('Delta                   : {} minutes'.format(self.delta_minutes))
+#         print('Sequence length         : {}'.format(self.sequence_length))
+#         print('Sequence duration       : {} minutes'.format(self.delta_minutes*self.sequence_length))
 
-        self.sequences = self.find_sequences()
-        if len(self.sequences) == 0:
-            print('**** No sequences found ****')
-        print('Number of sequences     : {:,}'.format(len(self.sequences)))
-        if len(self.sequences) > 0:
-            print('First sequence          : {}'.format([date.isoformat() for date in self.sequences[0]]))
-            print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))
+#         self.sequences = self.find_sequences()
+#         if len(self.sequences) == 0:
+#             print('**** No sequences found ****')
+#         print('Number of sequences     : {:,}'.format(len(self.sequences)))
+#         if len(self.sequences) > 0:
+#             print('First sequence          : {}'.format([date.isoformat() for date in self.sequences[0]]))
+#             print('Last sequence           : {}'.format([date.isoformat() for date in self.sequences[-1]]))
 
-    def __len__(self):
-        return len(self.sequences)
+#     def __len__(self):
+#         return len(self.sequences)
     
-    def __getitem__(self, index):
-        # print('constructing sequence')
-        sequence = self.sequences[index]
-        sequence_data = []
-        for dataset in self.datasets:
-            data = []
-            for i, date in enumerate(sequence):
-                if i == 0:
-                    # All data is available at the first step in sequence (by construction of sequences by find_sequence)
-                    d, _ = dataset[date]
-                    data.append(d)
-                else:
-                    if date in dataset.dates_set:
-                        d, _ = dataset[date]
-                        data.append(d)
-                    else:
-                        data.append(data[i-1])
-            data = torch.stack(data)
-            sequence_data.append(data)
-        sequence_data.append([date.isoformat() for date in sequence])
-        # print('done constructing sequence')
-        return tuple(sequence_data)
+#     def __getitem__(self, index):
+#         # print('constructing sequence')
+#         sequence = self.sequences[index]
+#         sequence_data = []
+#         for dataset in self.datasets:
+#             data = []
+#             for i, date in enumerate(sequence):
+#                 if i == 0:
+#                     # All data is available at the first step in sequence (by construction of sequences by find_sequence)
+#                     d, _ = dataset[date]
+#                     data.append(d)
+#                 else:
+#                     if date in dataset.dates_set:
+#                         d, _ = dataset[date]
+#                         data.append(d)
+#                     else:
+#                         data.append(data[i-1])
+#             data = torch.stack(data)
+#             sequence_data.append(data)
+#         sequence_data.append([date.isoformat() for date in sequence])
+#         # print('done constructing sequence')
+#         return tuple(sequence_data)
 
-# Output of DataLoader with Sequences dataset is a tuple of:
-# (Dset1_batch, Dset2_batch, ..., timestamps_batch)
-# Each Dset_batch is a tensor of shape [B, T, F] where F are the features for each dataset
-# timestamps_batch is a list of timestamps for each sequence step, btached- i.e. [(timestamp0_batch0, timestamp0_batch1, ...), (timestamp1_batch0, timestamp1_batch1, ...), ...]
-# [[B, T, C, H, W], [B, T, F], [(B)] - where B is batch size, T is sequence length, C is number of channels, H is height, W is width, F is number of features]
+# # Output of DataLoader with Sequences dataset is a tuple of:
+# # (Dset1_batch, Dset2_batch, ..., timestamps_batch)
+# # Each Dset_batch is a tensor of shape [B, T, F] where F are the features for each dataset
+# # timestamps_batch is a list of timestamps for each sequence step, btached- i.e. [(timestamp0_batch0, timestamp0_batch1, ...), (timestamp1_batch0, timestamp1_batch1, ...), ...]
+# # [[B, T, C, H, W], [B, T, F], [(B)] - where B is batch size, T is sequence length, C is number of channels, H is height, W is width, F is number of features]
 
-    def find_sequences(self):
-        sequences = []
-        sequence_start = self.date_start
-        while sequence_start <= self.date_end - datetime.timedelta(minutes=(self.sequence_length-1)*self.delta_minutes):
-            # New sequence
-            sequence = []
-            sequence_available = True
-            for i in range(self.sequence_length):
-                date = sequence_start + datetime.timedelta(minutes=i*self.delta_minutes)
-                if i == 0: # this if block is causing issues for our datasets, but its also justifiable
-                    for dataset in self.datasets:
-                        if date not in dataset.dates_set:
-                            # if not dataset[date]: NOTE: this causes further problems
-                            sequence_available = False
-                            break
-                if not sequence_available:
-                    break
-                sequence.append(date)
-            if sequence_available:
-                sequences.append(sequence)
-            # Move to next sequence
-            sequence_start += datetime.timedelta(minutes=self.delta_minutes)
-        return sequences
+#     def find_sequences(self):
+#         sequences = []
+#         sequence_start = self.date_start
+#         while sequence_start <= self.date_end - datetime.timedelta(minutes=(self.sequence_length-1)*self.delta_minutes):
+#             # New sequence
+#             sequence = []
+#             sequence_available = True
+#             for i in range(self.sequence_length):
+#                 date = sequence_start + datetime.timedelta(minutes=i*self.delta_minutes)
+#                 if i == 0: # this if block is causing issues for our datasets, but its also justifiable
+#                     for dataset in self.datasets:
+#                         if date not in dataset.dates_set:
+#                             sequence_available = False
+#                             break
+#                 if not sequence_available:
+#                     break
+#                 sequence.append(date)
+#             if sequence_available:
+#                 sequences.append(sequence)
+#             # Move to next sequence
+#             sequence_start += datetime.timedelta(minutes=self.delta_minutes)
+#         return sequences

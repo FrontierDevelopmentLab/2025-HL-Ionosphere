@@ -64,6 +64,12 @@ class Sequences(Dataset):
         sequence_data.append([date.isoformat() for date in sequence])
         return tuple(sequence_data)
 
+# Output of DataLoader with Sequences dataset is a tuple of:
+# (Dset1_batch, Dset2_batch, ..., timestamps_batch)
+# Each Dset_batch is a tensor of shape [B, T, F] where F are the features for each dataset
+# timestamps_batch is a list of timestamps for each sequence step, btached- i.e. [(timestamp0_batch0, timestamp0_batch1, ...), (timestamp1_batch0, timestamp1_batch1, ...), ...]
+# [[B, T, C, H, W], [B, T, F], [(B)] - where B is batch size, T is sequence length, C is number of channels, H is height, W is width, F is number of features]
+
     def find_sequences(self):
         sequences = []
         sequence_start = self.date_start
@@ -87,3 +93,21 @@ class Sequences(Dataset):
             sequence_start += datetime.timedelta(minutes=self.delta_minutes)
         return sequences
 
+    # TODO: Maybe remove on Monday, and move to stack_features
+    @staticmethod
+    def add_batch_dim(sequence_data):
+        """
+        Adds a batch dimension to the sequence data. This is done for IonCastGNN, because it expects a batch dimension
+        Expects that the last dimension of the sequence_data is a list of strings and the rest are tensors
+        """
+        # (T for T in sequence_data )
+        for i in range(len(sequence_data)):
+            T = sequence_data[i] # T for dataset tensor, but it may also be a tupe due to the timestamps
+            if isinstance(T, torch.Tensor):
+                T.unsqueeze_(0)
+            if isinstance(T, list):
+                batched_timestamps = []
+                for timestamp in T:
+                    batched_timestamps.append(tuple(timestamp))
+                sequence_data[i] = batched_timestamps # replaces the unbatched timestamps with batched_timestamps
+        return 

@@ -143,7 +143,8 @@ class IonCastGNN(nn.Module):
         global_features_on_rank_0: bool = False,
         produce_aggregated_output: bool = True,
         produce_aggregated_output_on_all_ranks: bool = True,
-        device="cpu"
+        device="cpu",
+        context_window: int = 2,
     ):
 
         super().__init__()
@@ -180,6 +181,15 @@ class IonCastGNN(nn.Module):
             produce_aggregated_output=produce_aggregated_output,
             produce_aggregated_output_on_all_ranks=produce_aggregated_output_on_all_ranks,
         )
+
+        self.input_dim_grid_nodes = input_dim_grid_nodes
+        self.output_dim_grid_nodes = output_dim_grid_nodes
+        self.hidden_dim = hidden_dim
+        self.hidden_layers = hidden_layers
+        self.processor_layers = processor_layers
+        self.mesh_level = mesh_level
+        self.processor_type = processor_type
+        self.context_window = context_window
         
         # Move the model to the specified device
         self.graph_cast = self.graph_cast.to(device)
@@ -214,7 +224,7 @@ class IonCastGNN(nn.Module):
         assert B == 1, "Batch size must be 1"
 
         # Reshape input to (B, T*C, H, W) for GraphCast
-        input_grid = input_grid.reshape(B, T * C, H, W).float() # TODO: consider removing later
+        input_grid = input_grid.reshape(B, T * C, H, W)
         # print(f"Input Grid type: {input_grid.dtype}")
         # print(f"forward input: {input_grid.shape}")
 
@@ -223,13 +233,28 @@ class IonCastGNN(nn.Module):
 
         return output_grid
     
-    def predict(self, input_grid):
+    def predict(self, input_grid, data_context, prediction_window=4):
         """ 
         Forecasts the next time step given an input grid. 
         Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
         The input grid is expected to be of shape (B, T, C, H, W), and the forward pass will reshape it to (B, T*C, H, W) for processing.
         """
         return self(input_grid)
+    
+    # def predict(self, data_context, prediction_window=4):
+    #     """ Forecasts the next time step given the context window. """
+    #     # data_context shape: (batch_size, time_steps, channels, height, width)
+    #     # time steps = context_window
+    #     x, hidden_state = self(data_context) # inits hidden state
+    #     x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
+    #     prediction = [x]
+    #     for _ in range(prediction_window - 1):
+    #         # Prepare the next input by appending the last prediction
+    #         x, hidden_state = self(x, hidden_state=hidden_state)
+    #         x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
+    #         prediction.append(x)
+    #     prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
+    #     return prediction
 
     def loss(self, grid_features, channel_list=None, context_window=None, n_steps=1):
         """ 
@@ -278,4 +303,4 @@ class IonCastGNN(nn.Module):
         recon_loss = recon_loss / (target_grid.shape[0] * target_grid.shape[1]) # Average over batch size and channels
 
         # For simplicity, we can return just the reconstruction loss
-        return recon_loss.float() # TODO: consider removing later
+        return recon_loss

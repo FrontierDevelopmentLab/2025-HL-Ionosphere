@@ -21,6 +21,7 @@ import glob
 matplotlib.use('Agg')
 
 # TODO: Make possible for graphcast
+# For Monday: Fix predict function for IonCastGNN (both stack_features needs batch dimension and predict_function needs to be able to roll out predictions)
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
     if not isinstance(model, (IonCastConvLSTM, IonCastGNN)):
         raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastGNN')
@@ -59,10 +60,32 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
         combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-    jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
-    jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
+        jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
+        jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
 
-    jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+        jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
+        
+    if isinstance(model, IonCastGNN):
+        sequence_data = dataset.get_sequence_data(sequence)
+        print(sequence_data)
+        
+        # Add batch dimension at first dimensionto make compatible with stack_features and IonCastGNN
+        sequence_data = Sequences.add_batch_dim(sequence_data)
+
+        # Stack features will output shape (B, T, C, H, W)
+        grid_nodes = stack_features(
+            sequence_data, 
+            n_img_datasets=1, 
+            include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
+            include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
+            include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+        )
+        
+        device = next(model.parameters()).device
+        grid_nodes = grid_nodes.to(device)
+        grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32 
+
+        combined_forecast = model.predict(grid_nodes)
 
     jpld_original_unnormalized = JPLDGIMDataset.unnormalize(jpld_original)
     jpld_forecast_with_context_unnormalized = JPLDGIMDataset.unnormalize(jpld_forecast_with_context)
@@ -125,18 +148,19 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
-            'model_input_channels': model.input_dim_grid_nodes,  # Number of features per grid node
-            'model_output_channels': model.output_dim_grid_nodes,  # Number of features to predict per grid node
-            'model_hidden_dim': model.hidden_dim,
-            'model_num_processor_layers': model.processor_layers,
-            'model_mesh_level': model.mesh_level,
-            'model_processor_type': model.processor_type,
+            'input_dim_grid_nodes': model.input_dim_grid_nodes,  # Number of features per grid node
+            'output_dim_grid_nodes': model.output_dim_grid_nodes,  # Number of features to predict per grid node
+            'hidden_dim': model.hidden_dim,
+            'hidden_layers': model.hidden_layers,
+            'processor_layers': model.processor_layers,
+            'mesh_level': model.mesh_level,
+            'processor_type': model.processor_type,
+            'context_window': model.context_window,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
 
-# TODO: Make compatible with IonCastGNN
 def load_model(file_name, device):
     checkpoint = torch.load(file_name, weights_only=False)
     if checkpoint['model'] == 'VAE1':
@@ -152,6 +176,36 @@ def load_model(file_name, device):
         model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                                 hidden_dim=model_hidden_dim, num_layers=model_num_layers,
                                 context_window=model_context_window, prediction_window=model_prediction_window)
+
+    elif checkpoint["model"] == "IonCastGNN":
+        mesh_level = checkpoint["mesh_level"]
+        input_dim_grid_nodes = checkpoint["input_dim_grid_nodes"]
+        output_dim_grid_nodes = checkpoint["output_dim_grid_nodes"] 
+        processor_type = checkpoint["processor_type"]
+        processor_layers = checkpoint["processor_layers"]
+        hidden_layers = checkpoint["hidden_layers"]
+        context_window = checkpoint["context_window"]
+        hidden_dim = checkpoint["hidden_dim"]
+
+        model = IonCastGNN(
+            mesh_level = mesh_level,
+            input_res = (180, 360),
+            input_dim_grid_nodes = input_dim_grid_nodes, # IMPORTANT! Based on how many features are stacked in the input.
+            output_dim_grid_nodes = output_dim_grid_nodes, # TODO: For now predict everything, down the line we dont need to predict the subsolar / sublunar and timestamp based features
+            input_dim_mesh_nodes = 3, # GraphCast used 3: cos(lat), sin(lon), cos(lon)
+            input_dim_edges = 4, # GraphCast used 4: length(edge), vector diff b/w 3D positions of sender and receiver nodes in coordinate system of the reciever
+            processor_type = processor_type, # Options: "MessagePassing" or "GraphTransformer", i.e. GraphCast vs. GenCast
+            khop_neighbors = 32,
+            num_attention_heads = 4,
+            processor_layers = processor_layers,
+            hidden_layers = hidden_layers,
+            hidden_dim = hidden_dim,
+            aggregation = "sum",
+            activation_fn = "silu",
+            norm_type = "LayerNorm",
+            context_window=context_window,
+            device=device
+        )
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -164,8 +218,6 @@ def load_model(file_name, device):
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
     return model, optimizer, epoch, iteration, train_losses, valid_losses
-
-
 
 def main():
     description = 'NASA Heliolab 2025 - Ionosphere-Thermosphere Twin, ML experiments'
@@ -201,6 +253,9 @@ def main():
     parser.add_argument('--channel_list', type=int, default=None, help='List of channels to compute the loss on. If None, the loss is computed on all channels.')
     parser.add_argument('--mesh_level', type=int, default=6, help='Mesh level for IonCastGNN model')
     parser.add_argument('--processor_type', type=str, choices=['MessagePassing', 'GraphTransformer'], default='MessagePassing', help='Processor type for IonCastGNN model')
+    parser.add_argument('--ioncast_hidden_dim', type=int, default=512, help='Hidden dimension for IonCastGNN model')
+    parser.add_argument('--ioncast_hidden_layers', type=int, default=1, help='Number of hidden layers for IonCastGNN model')
+    parser.add_argument('--ioncast_processor_layers', type=int, default=6, help='Number of processor layers for IonCastGNN model')
 
     args = parser.parse_args()
 
@@ -368,12 +423,13 @@ def main():
                         processor_type = args.processor_type, # Options: "MessagePassing" or "GraphTransformer", i.e. GraphCast vs. GenCast
                         khop_neighbors = 32,
                         num_attention_heads = 4,
-                        processor_layers = 16,
-                        hidden_layers = 1,
-                        hidden_dim = 512,
+                        processor_layers = args.ioncast_processor_layers,
+                        hidden_layers = args.ioncast_hidden_layers,
+                        hidden_dim = args.ioncast_hidden_dim,
                         aggregation = "sum",
                         activation_fn = "silu",
                         norm_type = "LayerNorm",
+                        context_window=args.context_window,
                         device=device
                     )
                 else:
@@ -386,7 +442,7 @@ def main():
                 train_losses = []
                 valid_losses = []
                 
-                model = model.to(device).float()
+                model = model.to(device)
 
                 for name, param in model.named_parameters():
                     if param.dtype != torch.float32:
@@ -486,7 +542,9 @@ def main():
                                 include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
                                 include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
                             )
+                            
                             grid_nodes = grid_nodes.to(device)
+                            grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
 
                             loss = model.loss(
                                 grid_nodes, 
@@ -526,76 +584,76 @@ def main():
                 plt.close()
 
                 # Plot model eval results
-                model.eval()
-                with torch.no_grad():
-                    num_evals = args.num_evals
+                # model.eval()
+                # with torch.no_grad():
+                #     num_evals = args.num_evals
 
-                    if args.model_type == 'VAE1':
-                        # Set random seed for reproducibility of evaluation samples across epochs
-                        rng_state = torch.get_rng_state()
-                        torch.manual_seed(args.seed)
+                #     if args.model_type == 'VAE1':
+                #         # Set random seed for reproducibility of evaluation samples across epochs
+                #         rng_state = torch.get_rng_state()
+                #         torch.manual_seed(args.seed)
 
-                        # Reconstruct a batch from the validation set
-                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
-                        jpld_orig = jpld_orig[:num_evals]
-                        jpld_orig_dates = jpld_orig_dates[:num_evals]
+                #         # Reconstruct a batch from the validation set
+                #         jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                #         jpld_orig = jpld_orig[:num_evals]
+                #         jpld_orig_dates = jpld_orig_dates[:num_evals]
 
-                        jpld_orig = jpld_orig.to(device)
-                        jpld_recon, _, _ = model.forward(jpld_orig)
-                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
-                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
+                #         jpld_orig = jpld_orig.to(device)
+                #         jpld_recon, _, _ = model.forward(jpld_orig)
+                #         jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
+                #         jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
 
-                        # Sample a batch from the model
-                        jpld_sample = model.sample(n=num_evals)
-                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
-                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
-                        torch.set_rng_state(rng_state)
-                        # Resume with the original random state
+                #         # Sample a batch from the model
+                #         jpld_sample = model.sample(n=num_evals)
+                #         jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                #         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
+                #         torch.set_rng_state(rng_state)
+                #         # Resume with the original random state
 
-                        # Save plots
-                        for i in range(num_evals):
-                            date = jpld_orig_dates[i]
-                            date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
+                #         # Save plots
+                #         for i in range(num_evals):
+                #             date = jpld_orig_dates[i]
+                #             date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
 
-                            recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+                #             recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                #             save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
 
-                            recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
+                #             recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                #             save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
 
-                            sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
+                #             sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                #             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
-                    # TODO: Check compatibility with IonCastGNN
-                    # elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
-                    #     if args.test_event_id:
-                    #         for event_id in args.test_event_id:
-                    #             if event_id not in EventCatalog:
-                    #                 raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    #             event = EventCatalog[event_id]
-                    #             _, _, date_start, date_end, _, max_kp, _ = event
-                    #             print('* Testing event ID: {}'.format(event_id))
-                    #             date_start = datetime.datetime.fromisoformat(date_start)
-                    #             date_end = datetime.datetime.fromisoformat(date_end)
-                    #             date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                    #             file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                    #             title = f'Event: {event_id}, Kp={max_kp}'
-                    #             run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                #     elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
+                #         # Run forecast for test events
+                #         if args.test_event_id:
+                #             for event_id in args.test_event_id:
+                #                 if event_id not in EventCatalog:
+                #                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                #                 event = EventCatalog[event_id]
+                #                 _, _, date_start, date_end, _, max_kp, _ = event
+                #                 print('* Testing event ID: {}'.format(event_id))
+                #                 date_start = datetime.datetime.fromisoformat(date_start)
+                #                 date_end = datetime.datetime.fromisoformat(date_end)
+                #                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                #                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                #                 title = f'Event: {event_id}, Kp={max_kp}'
+                #                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
-                    #     # TODO: Isn't this a repeat of above?
-                    #     if args.test_event_seen_id:
-                    #         for event_id in args.test_event_seen_id:
-                    #             if event_id not in EventCatalog:
-                    #                 raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    #             event = EventCatalog[event_id]
-                    #             _, _, date_start, date_end, _, max_kp, _ = event
-                    #             print('* Testing seen event ID: {}'.format(event_id))
-                    #             date_start = datetime.datetime.fromisoformat(date_start)
-                    #             date_end = datetime.datetime.fromisoformat(date_end)
-                    #             date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                    #             file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                    #             title = f'Event: {event_id}, Kp={max_kp}'
-                    #             run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                #         # Run forecast for seen test events
+                #         if args.test_event_seen_id:
+                #             for event_id in args.test_event_seen_id:
+                #                 if event_id not in EventCatalog:
+                #                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                #                 event = EventCatalog[event_id]
+                #                 _, _, date_start, date_end, _, max_kp, _ = event
+                #                 print('* Testing seen event ID: {}'.format(event_id))
+                #                 date_start = datetime.datetime.fromisoformat(date_start)
+                #                 date_end = datetime.datetime.fromisoformat(date_end)
+                #                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                #                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                #                 title = f'Event: {event_id}, Kp={max_kp}'
+                #                 run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
         # TODO: Implement testing mode for IonCastGNN
         elif args.mode == 'test':
@@ -666,4 +724,4 @@ if __name__ == '__main__':
 # python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
 # Baseline without auxiliary datasets
-# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-07-04T00:00:00 --mesh_level 3 --device cuda:0
+# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir ./home/jupyter/linnea_results/ioncastgnn-train-3 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --date_start 2022-07-01T00:00:00 --date_end 2023-07-02T00:00:00 --mesh_level 4 --device cuda:0
