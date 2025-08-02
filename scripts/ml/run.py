@@ -206,8 +206,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     if date_end > date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes):
         date_end = date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes)
-    print('Adjusted end date  : {} ({} time steps after start)'.format(date_end, args.test_event_max_time_steps))
-    
+        print('Adjusted end date  : {} ({} time steps after forecast start)'.format(date_end, args.test_event_max_time_steps))
+
     sequence_start = date_start
     sequence_end = date_end
     sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
@@ -239,7 +239,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_original = jpld_seq[sequence_forecast_start_index:]
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
-    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 100)
+    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence_forecast]
@@ -249,7 +249,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         file_name=file_name,
-        vmin=0, vmax=100,
+        # vmin=0, vmax=100,
         titles_top=titles_original,
         titles_bottom=titles_forecast
     )
@@ -344,7 +344,7 @@ def main():
     parser.add_argument('--context_window', type=int, default=6, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202406071200'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202311050900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
     parser.add_argument('--test_event_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -568,7 +568,7 @@ def main():
                         # Sample a batch from the model
                         jpld_sample = model.sample(n=num_evals)
                         jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
-                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
+                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 140)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
 
