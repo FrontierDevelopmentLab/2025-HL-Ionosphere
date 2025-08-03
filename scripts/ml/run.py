@@ -597,11 +597,11 @@ def main():
                                 event_start = datetime.datetime.fromisoformat(event_start)
                                 event_end = datetime.datetime.fromisoformat(event_end)
 
-                                print('* Testing event ID: {}'.format(event_id))
+                                print('* Validating event ID: {}'.format(event_id))
                                 date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                                 date_forecast_start = event_start
                                 date_end = event_end
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
@@ -614,11 +614,11 @@ def main():
                                 event_start = datetime.datetime.fromisoformat(event_start)
                                 event_end = datetime.datetime.fromisoformat(event_end)
 
-                                print('* Testing seen event ID: {}'.format(event_id))
+                                print('* Validating seen event ID: {}'.format(event_id))
                                 date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                                 date_forecast_start = event_start
                                 date_end = event_end
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
