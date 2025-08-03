@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 
 from util import Tee
 from util import set_random_seed
-from datasets import JPLD
-# from src.omniweb_dataset import OMNIDataset
+from dataset_jpld import JPLD
+from dataset_celestrak import CelesTrak
 
 
 matplotlib.use('Agg')
@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--num_samples', type=int, default=1000, help='Number of samples to use')
-    parser.add_argument('--instruments', nargs='+', default=['jpld', 'omniweb'], help='List of instruments to process')
+    parser.add_argument('--instruments', nargs='+', default=['jpld', 'celestrak'], help='List of datasets to process')
 
     args = parser.parse_args()
 
@@ -47,6 +47,7 @@ def main():
         print('Start time: {}'.format(start_time))
 
         data_dir_jpld = os.path.join(args.data_dir, args.jpld_dir)
+        dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
 
         for instrument in args.instruments:
             if instrument == 'jpld':
@@ -54,10 +55,10 @@ def main():
                     ('normalized', JPLD(data_dir_jpld, normalize=True), 'JPLD (normalized)'),
                     ('unnormalized', JPLD(data_dir_jpld, normalize=False), 'JPLD (unnormalized)'),
                 ]
-            elif instrument == 'omniweb':
+            elif instrument == 'celestrak':
                 runs = [
-                    ('normalized', OMNIDataset(data_dir_jpld, normalize=True), 'OMNIWEB (normalized)'),
-                    ('unnormalized', OMNIDataset(data_dir_jpld, normalize=False), 'OMNIWEB (unnormalized)'),
+                    ('normalized', CelesTrak(dataset_celestrak_file_name, normalize=True), 'CELESTRAK (normalized)'),
+                    ('unnormalized', CelesTrak(dataset_celestrak_file_name, normalize=False), 'CELESTRAK (unnormalized)'),
                 ]
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
