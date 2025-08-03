@@ -27,6 +27,9 @@ import pandas as pd
 from dataset_pandasdataset import PandasDataset
 
 
+CelesTrak_mean = torch.tensor([ 2.1530, 12.9432], dtype=torch.float32)  # Kp, Ap
+CelesTrak_std = torch.tensor([ 1.4018, 18.8137], dtype=torch.float32)  # Kp, Ap
+
 # celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
 class CelesTrak(PandasDataset):
     def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
@@ -37,14 +40,6 @@ class CelesTrak(PandasDataset):
         # data['Datetime'] = pd.to_datetime(data['Datetime'])
         # data = data.sort_values(by='Datetime')
         self.column = ["Kp", "Ap"]
-
-        data_mean = data[self.column].mean()
-        data_std = data[self.column].std()
-        self.col_means = torch.tensor(np.array(data_mean), dtype=torch.float32)
-        self.col_std = torch.tensor(np.array(data_std), dtype=torch.float32)
-
-        print('Column means          : {}'.format(self.col_means))
-        print('Column stds           : {}'.format(self.col_std))
 
         stem = Path(file_name).stem
         new_stem = f"{stem}_deltamin_{delta_minutes}_rewind_{rewind_minutes}" 
@@ -57,11 +52,10 @@ class CelesTrak(PandasDataset):
 
         super().__init__('CelesTrak', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
-    # NOTE: what is the reason these methods were kept as instance methods but also passing the data in as an argument in the RSTNRadio dataset (or the other dattasets as well)?
     def normalize_data(self, data): 
-        data = (data - self.col_means) / self.col_std
+        data = (data - CelesTrak_mean) / CelesTrak_std
         return data
     
     def unnormalize_data(self, data):
-        data = data * self.col_std + self.col_means
+        data = data * CelesTrak_std + CelesTrak_mean
         return data
