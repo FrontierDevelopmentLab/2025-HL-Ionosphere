@@ -249,7 +249,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         file_name=file_name,
-        # vmin=0, vmax=100,
+        vmin=0, vmax=100,
         titles_top=titles_original,
         titles_bottom=titles_forecast
     )
@@ -344,7 +344,9 @@ def main():
     parser.add_argument('--context_window', type=int, default=16, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900'], help='Test event IDs to use for evaluation')
+    # parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900'], help='Test event IDs to use for evaluation')
+    # parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
     parser.add_argument('--test_event_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -649,7 +651,25 @@ def main():
                         file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                         title = f'Event: {event_id}, Kp={max_kp}'
                         tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
-                else:
+                
+                if args.test_event_seen_id:
+                    for event_id in args.test_event_seen_id:
+                        if event_id not in EventCatalog:
+                            raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                        event = EventCatalog[event_id]
+                        date_start, date_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
+                        event_start = datetime.datetime.fromisoformat(date_start)
+                        event_end = datetime.datetime.fromisoformat(date_end)
+
+                        print('* Testing seen event ID: {}'.format(event_id))
+                        date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                        date_forecast_start = event_start
+                        date_end = event_end
+                        file_name = os.path.join(args.target_dir, f'test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                        title = f'Event: {event_id}, Kp={max_kp}'
+                        tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+                
+                if len(tests_to_run) == 0:
                     print('No test events specified, will use date_start and date_end arguments')
                     event_start = datetime.datetime.fromisoformat(args.date_start)
                     event_end = datetime.datetime.fromisoformat(args.date_end)
@@ -661,15 +681,17 @@ def main():
                     tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
 
                 dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-                
+                dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+                training_sequence_length = args.context_window + args.prediction_window
+
                 print('Running tests:')
-                for date_start, date_end, date_forecast_start, title, file_name in tests_to_run:
+                for i, (date_start, date_end, date_forecast_start, title, file_name) in enumerate(tests_to_run):
+                    print(f'\n\n* Testing event {i+1}/{len(tests_to_run)}: {title}')
                     # Create dataset for each test individually with date filtering
                     dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
                     dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end)
-                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon], delta_minutes=args.delta_minutes, 
-                                    sequence_length=model.context_window + model.prediction_window)
-                    
+                    dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
+                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                     run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
                     
                     # Force cleanup
