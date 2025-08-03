@@ -204,9 +204,9 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     print('Forecast start date: {}'.format(date_forecast_start))
     print('End date           : {}'.format(date_end))
 
-    if date_end > date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes):
-        date_end = date_forecast_start + datetime.timedelta(minutes=args.test_event_max_time_steps * args.delta_minutes)
-        print('Adjusted end date  : {} ({} time steps after forecast start)'.format(date_end, args.test_event_max_time_steps))
+    if date_end > date_forecast_start + datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes):
+        date_end = date_forecast_start + datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes)
+        print('Adjusted end date  : {} ({} time steps after forecast start)'.format(date_end, args.forecast_max_time_steps))
 
     sequence_start = date_start
     sequence_end = date_end
@@ -328,7 +328,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -343,12 +343,10 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=16, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    # parser.add_argument('--test_event_id', nargs='+', default=['G2H9-202311050900'], help='Test event IDs to use for evaluation')
-    # parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900'], help='Test event IDs to use for evaluation')
-    # parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
+    parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
-    parser.add_argument('--test_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Test event IDs that the model has seen during training')
-    parser.add_argument('--test_event_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
+    parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
 
     args = parser.parse_args()
@@ -389,8 +387,8 @@ def main():
             datasets_jpld_valid = []
 
             date_exclusions = []
-            if args.test_event_id:
-                for event_id in args.test_event_id:
+            if args.valid_event_id:
+                for event_id in args.valid_event_id:
                     print('Excluding event ID: {}'.format(event_id))
                     if event_id not in EventCatalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
@@ -590,8 +588,8 @@ def main():
 
 
                     elif args.model_type == 'IonCastConvLSTM':
-                        if args.test_event_id:
-                            for event_id in args.test_event_id:
+                        if args.valid_event_id:
+                            for event_id in args.valid_event_id:
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
@@ -607,8 +605,8 @@ def main():
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
-                        if args.test_event_seen_id:
-                            for event_id in args.test_event_seen_id:
+                        if args.valid_event_seen_id:
+                            for event_id in args.valid_event_seen_id:
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
@@ -651,25 +649,8 @@ def main():
                         file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                         title = f'Event: {event_id}, Kp={max_kp}'
                         tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
-                
-                if args.test_event_seen_id:
-                    for event_id in args.test_event_seen_id:
-                        if event_id not in EventCatalog:
-                            raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                        event = EventCatalog[event_id]
-                        date_start, date_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
-                        event_start = datetime.datetime.fromisoformat(date_start)
-                        event_end = datetime.datetime.fromisoformat(date_end)
 
-                        print('* Testing seen event ID: {}'.format(event_id))
-                        date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                        date_forecast_start = event_start
-                        date_end = event_end
-                        file_name = os.path.join(args.target_dir, f'test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                        title = f'Event: {event_id}, Kp={max_kp}'
-                        tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
-                
-                if len(tests_to_run) == 0:
+                else:
                     print('No test events specified, will use date_start and date_end arguments')
                     event_start = datetime.datetime.fromisoformat(args.date_start)
                     event_end = datetime.datetime.fromisoformat(args.date_end)
