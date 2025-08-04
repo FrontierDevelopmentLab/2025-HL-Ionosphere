@@ -116,7 +116,8 @@ class PandasDataset(Dataset):
             date = datetime.datetime.fromisoformat(index)
         elif isinstance(index, int): # THIS WILL CAUSE ERRORS WHEN DEALING WITH MULTPLIE DATASETS
             date = self.data.iloc[index]['Datetime'] 
-            warn("Should not index dataset by int if aligning multiple datasets, this is error prone if datasets have holes.")
+            # warn("Should not index dataset by int if aligning multiple datasets, this is error prone if datasets have holes.")
+            # Gunes: I think the behavior here is fine, it's just an index to iterate over the number of rows in the dataset, whatever they may be. A problem can happen if someone manually tries to align the datasets by integer indices, which we shouldn't do anyway.
         else:
             raise ValueError('Expecting index to be int, datetime.datetime, or str (in the format of 2022-11-01T00:01:00)')
         data = self.get_data(date)
