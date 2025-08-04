@@ -175,12 +175,12 @@ class PandasDataset(Dataset):
         return dates, values
     
     @staticmethod
-    def fill_to_cadence(df, delta_minutes=15, rewind_time = 50):
+    def fill_to_cadence(df, delta_minutes=15, rewind_minutes=50):
         df["Datetime"] = pd.to_datetime(df["Datetime"]) # strs to convert to datetime objs
 
         df = df.sort_values("Datetime").reset_index(drop=True) # to make sure df is ordered properly
         filled_rows = []
-        rewind_time = datetime.timedelta(minutes=rewind_time)
+        rewind_minutes = datetime.timedelta(minutes=rewind_minutes)
 
         for i in tqdm(range(1, len(df))):
             prev_row = df.iloc[i - 1]
@@ -189,7 +189,7 @@ class PandasDataset(Dataset):
             t0 = prev_row["Datetime"]
             t1 = curr_row["Datetime"]
 
-            if (t1 - t0) > rewind_time:  # no infilling if gap larger than rewind time
+            if (t1 - t0) > rewind_minutes:  # no infilling if gap larger than rewind time
                 filled_rows.append(prev_row)
                 continue
             # Generate target timestamps at delta_minutes cadence

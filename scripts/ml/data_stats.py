@@ -57,10 +57,10 @@ def main():
                     ('unnormalized', JPLD(data_dir_jpld, normalize=False), 'JPLD (unnormalized)'),
                 ]
             elif instrument == 'celestrak':
-                runs = [
-                    ('normalized', CelesTrak(dataset_celestrak_file_name, normalize=True), 'CELESTRAK (normalized)'),
-                    ('unnormalized', CelesTrak(dataset_celestrak_file_name, normalize=False), 'CELESTRAK (unnormalized)'),
-                ]
+                runs = []
+                for column in ['Kp', 'Ap']:
+                    runs.append((f'normalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=True, column=[column]), f'CELESTRAK {column} (normalized)'))
+                    runs.append((f'unnormalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=False, column=[column]), f'CELESTRAK {column} (unnormalized)'))
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
                 continue
@@ -105,8 +105,30 @@ def main():
                 plt.figure()
                 plt.hist(hist_data, log=True, bins=100)
                 plt.tight_layout()
-                plt.savefig(file_name_hist) 
+                plt.savefig(file_name_hist)
 
+                if instrument != 'jpld':
+                    # plot the whole dataset time series
+                    dates = []
+                    values = []
+                    for i in range(0, len(dataset), len(dataset)//args.num_samples):
+                        d = dataset[i]
+                        dates.append(d[1])
+                        values.append(d[0])
+
+                    file_name_ts = os.path.join(args.target_dir, '{}_{}_time_series.pdf'.format(instrument, postfix))
+                    print('Saving time series: {}'.format(file_name_ts))
+                    plt.figure(figsize=(24,6))
+                    plt.plot(dates, values)
+                    plt.ylabel(label)
+                    # Limit number of xticks
+                    plt.xticks(np.arange(0, len(dates), step=len(dates)//40))
+                    # Rotate xticks
+                    plt.xticks(rotation=45)
+                    # Shift xticks so that the end of the text is at the tick
+                    plt.xticks(ha='right')
+                    plt.tight_layout()
+                    plt.savefig(file_name_ts)
 
 if __name__ == '__main__':
     main()
