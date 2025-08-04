@@ -593,7 +593,14 @@ def main():
                 model.eval()
                 with torch.no_grad():
                     num_evals = args.num_evals
+                model.eval()
+                with torch.no_grad():
+                    num_evals = args.num_evals
 
+                    if args.model_type == 'VAE1':
+                        # Set random seed for reproducibility of evaluation samples across epochs
+                        rng_state = torch.get_rng_state()
+                        torch.manual_seed(args.seed)
                     if args.model_type == 'VAE1':
                         # Set random seed for reproducibility of evaluation samples across epochs
                         rng_state = torch.get_rng_state()
@@ -603,7 +610,15 @@ def main():
                         jpld_orig, jpld_orig_dates = next(iter(valid_loader))
                         jpld_orig = jpld_orig[:num_evals]
                         jpld_orig_dates = jpld_orig_dates[:num_evals]
+                        # Reconstruct a batch from the validation set
+                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                        jpld_orig = jpld_orig[:num_evals]
+                        jpld_orig_dates = jpld_orig_dates[:num_evals]
 
+                        jpld_orig = jpld_orig.to(device)
+                        jpld_recon, _, _ = model.forward(jpld_orig)
+                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
                         jpld_orig = jpld_orig.to(device)
                         jpld_recon, _, _ = model.forward(jpld_orig)
                         jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
@@ -615,7 +630,17 @@ def main():
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
+                        # Sample a batch from the model
+                        jpld_sample = model.sample(n=num_evals)
+                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
+                        torch.set_rng_state(rng_state)
+                        # Resume with the original random state
 
+                        # Save plots
+                        for i in range(num_evals):
+                            date = jpld_orig_dates[i]
+                            date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
                         # Save plots
                         for i in range(num_evals):
                             date = jpld_orig_dates[i]
@@ -623,10 +648,16 @@ def main():
 
                             recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
                             save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+                            recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
 
                             recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
                             save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
+                            recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
 
+                            sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
                             sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
@@ -645,7 +676,36 @@ def main():
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
+                        # Run forecast for test events
+                        if args.test_event_id:
+                            for event_id in args.test_event_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp, _ = event
+                                print('* Testing event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
+                        # Run forecast for seen test events
+                        if args.test_event_seen_id:
+                            for event_id in args.test_event_seen_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp, _ = event
+                                print('* Testing seen event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
                         # Run forecast for seen test events
                         if args.test_event_seen_id:
                             for event_id in args.test_event_seen_id:
