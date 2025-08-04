@@ -68,9 +68,6 @@ def get_lat_lon_grid(H, W):
 def stack_features(
         sequence_batch, 
         n_img_datasets = 1, 
-        include_subsolar=True, 
-        include_sublunar=True, 
-        include_timestamp=True
     ): 
     """
     Sequence batch is a batch returned from a dataloader of a Sequences dataset 
