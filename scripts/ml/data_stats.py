@@ -14,7 +14,7 @@ from util import Tee
 from util import set_random_seed
 from dataset_jpld import JPLD
 from dataset_celestrak import CelesTrak
-from dataset_omniweb import OMNIWeb
+from dataset_omniweb import OMNIWeb, omniweb_all_columns
 
 
 matplotlib.use('Agg')
@@ -71,7 +71,7 @@ def main():
                     runs.append((f'unnormalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=False, column=[column]), f'CELESTRAK {column} (unnormalized)'))
             elif instrument == 'omniweb':
                 runs = []
-                for column in ['omniweb__speed__[km/s]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]']:
+                for column in omniweb_all_columns:
                     runs.append((f'normalized_{column}', OMNIWeb(data_dir_omniweb, normalize=True, column=[column]), f'OMNIWeb {column} (normalized)'))
                     runs.append((f'unnormalized_{column}', OMNIWeb(data_dir_omniweb, normalize=False, column=[column]), f'OMNIWeb {column} (unnormalized)'))
             else:

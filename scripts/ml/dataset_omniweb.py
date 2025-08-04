@@ -6,7 +6,7 @@ import pandas as pd
 from dataset_pandasdataset import PandasDataset
 
 
-all_columns = ['omniweb__ae_index__[nT]',
+omniweb_all_columns = ['omniweb__ae_index__[nT]',
                'omniweb__al_index__[nT]',
                'omniweb__au_index__[nT]',
                'omniweb__sym_d__[nT]', 
@@ -20,9 +20,40 @@ all_columns = ['omniweb__ae_index__[nT]',
                'omniweb__vy_velocity__[km/s]', 
                'omniweb__vz_velocity__[km/s]']
 
+omniweb_column_means = {'omniweb__ae_index__[nT]': 171.78419494628906,
+                        'omniweb__al_index__[nT]': -104.44080352783203,
+                        'omniweb__au_index__[nT]': 61.04460144042969,
+                        'omniweb__sym_d__[nT]': -0.24560000002384186,
+                        'omniweb__sym_h__[nT]': -10.619400024414062,
+                        'omniweb__asy_d__[nT]': 18.769800186157227,
+                        'omniweb__bx_gse__[nT]': -0.030805999413132668,
+                        'omniweb__by_gse__[nT]': 0.009642007760703564,
+                        'omniweb__bz_gse__[nT]': 0.033528003841638565,
+                        'omniweb__speed__[km/s]': 418.8190002441406,
+                        'omniweb__vx_velocity__[km/s]': -417.7730407714844,
+                        'omniweb__vy_velocity__[km/s]': 0.2976999580860138,
+                        'omniweb__vz_velocity__[km/s]': -2.238880157470703}
+
+omniweb_column_stds = {'omniweb__ae_index__[nT]': 198.90577697753906,
+                       'omniweb__al_index__[nT]': 145.14234924316406,
+                       'omniweb__au_index__[nT]': 67.07356262207031,
+                       'omniweb__sym_d__[nT]': 2.9613230228424072,
+                       'omniweb__sym_h__[nT]': 17.97284507751465,
+                       'omniweb__asy_d__[nT]': 13.876084327697754,
+                       'omniweb__bx_gse__[nT]': 3.473517417907715,
+                       'omniweb__by_gse__[nT]': 4.016483306884766,
+                       'omniweb__bz_gse__[nT]': 3.231107711791992,
+                       'omniweb__speed__[km/s]': 94.15789031982422,
+                       'omniweb__vx_velocity__[km/s]': 89.83809661865234,
+                       'omniweb__vy_velocity__[km/s]': 23.594484329223633,
+                       'omniweb__vz_velocity__[km/s]': 21.573925018310547}
+   
+omniweb_all_columns_means = torch.tensor([omniweb_column_means[col] for col in omniweb_all_columns], dtype=torch.float32)
+omniweb_all_columns_stds = torch.tensor([omniweb_column_stds[col] for col in omniweb_all_columns], dtype=torch.float32)
+
 # ionosphere-data/omniweb_karman_2025
 class OMNIWeb(PandasDataset):
-    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=all_columns, delta_minutes=15): # 50 minutes rewind defualt
+    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
         file_name_indices = os.path.join(data_dir, 'omniweb_indices_15min.csv')
         file_name_magnetic_field = os.path.join(data_dir, 'omniweb_magnetic_field_15min.csv')
         file_name_solar_wind = os.path.join(data_dir, 'omniweb_solar_wind_15min.csv')
@@ -59,10 +90,21 @@ class OMNIWeb(PandasDataset):
 
         super().__init__('OMNIWeb', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
-    # NOTE: what is the reason these methods were kept as instance methods but also passing the data in as an argument in the RSTNRadio dataset (or the other dattasets as well)?
     def normalize_data(self, data): 
+        if self.column == omniweb_all_columns:
+            data = (data - omniweb_all_columns_means) / omniweb_all_columns_stds
+        else:
+            means = torch.tensor([omniweb_column_means[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([omniweb_column_stds[col] for col in self.column], dtype=torch.float32)
+            data = (data - means) / stds
         return data
 
     def unnormalize_data(self, data):
+        if self.column == omniweb_all_columns:
+            data = data * omniweb_all_columns_stds + omniweb_all_columns_means
+        else:
+            means = torch.tensor([omniweb_column_means[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([omniweb_column_stds[col] for col in self.column], dtype=torch.float32)
+            data = data * stds + means
         return data
 
