@@ -35,6 +35,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
         raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
 
+    # Get forecast sequence and prediction window
     print('Evaluation from {} to {}'.format(date_start, date_end))
     print('Forecast start date: {}'.format(date_forecast_start))
     sequence_start = date_start
@@ -48,45 +49,53 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_forecast_start_index = sequence.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
 
+    # Get the sequence
+    sequence_data = dataset.get_sequence_data(sequence)
+
+    # Get JPLD original data
+    device = next(model.parameters()).device
+    jpld_original = sequence_data[0]      # JPLD GIM TEC data
+    jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
+
+    # If IonCastConvLSTM, load data and concatenate along channel dimension
     if isinstance(model, IonCastConvLSTM):
-        sequence_data = dataset.get_sequence_data(sequence)
-        jpld_original = sequence_data[0]  # Original data
+        # Separate datasets from the sequence and stack along the channel dimension
         sunmoon_original = sequence_data[1]  # Sun and Moon geometry data
-        device = next(model.parameters()).device
-        jpld_original = jpld_original.to(device) # sequence_length, channels, 180, 360
         sunmoon_original = sunmoon_original.to(device) # sequence_length, channels, 180, 360
         combined_original = torch.cat((jpld_original, sunmoon_original), dim=1)  # Combine along the channel dimension
 
+        # Predict by passing in the context data and prediction window
         combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
         combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
+        # Get JPLD prediction and context channels, and stack the forecast with the context
         jpld_forecast_context = combined_forecast_context[:, 0]  # Extract JPLD channels from the context
         jpld_forecast = combined_forecast[:, 0]  # Extract JPLD channels from the forecast
-
         jpld_forecast_with_context = torch.cat((jpld_forecast_context, jpld_forecast), dim=0)
-        
+    
+    # If IonCastGNN, pass sequence data to stack_features
     if isinstance(model, IonCastGNN):
-        sequence_data = dataset.get_sequence_data(sequence)
-        print(sequence_data)
-
         # Stack features will output shape (B, T, C, H, W)
         grid_nodes = stack_features(
             sequence_data, 
-            n_img_datasets=1, 
-            include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
-            include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
-            include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+            n_img_datasets=1
         )
         
-        device = next(model.parameters()).device
         grid_nodes = grid_nodes.to(device)
         grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32 
 
-        combined_forecast = model.predict(grid_nodes)
+        combined_forecast = model.predict(grid_nodes) # Output context & forecast for all time steps, shape (B, T, C, H, W)
 
+        # Extract JPLD channels
+        jpld_forecast_with_context = combined_forecast[0, :, 0, :, :]  # Extract JPLD channels from the forecast and removing
+                                                                       # the batch dimension (batchsize = 1 as we previously added 
+                                                                       # the batch dimension as a processing step before stacking 
+                                                                       # the features.
+        
+    # Unnormalize the JPLD data (reference and context/forecast)
     jpld_original_unnormalized = JPLDGIMDataset.unnormalize(jpld_original)
     jpld_forecast_with_context_unnormalized = JPLDGIMDataset.unnormalize(jpld_forecast_with_context)
-    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100)
+    jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100) # Clamp to valid range for comparison
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence]
