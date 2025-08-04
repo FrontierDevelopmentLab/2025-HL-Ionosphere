@@ -92,22 +92,3 @@ class Sequences(Dataset):
             # Move to next sequence
             sequence_start += datetime.timedelta(minutes=self.delta_minutes)
         return sequences
-
-    # TODO: Maybe remove on Monday, and move to stack_features
-    @staticmethod
-    def add_batch_dim(sequence_data):
-        """
-        Adds a batch dimension to the sequence data. This is done for IonCastGNN, because it expects a batch dimension
-        Expects that the last dimension of the sequence_data is a list of strings and the rest are tensors
-        """
-        # (T for T in sequence_data )
-        for i in range(len(sequence_data)):
-            T = sequence_data[i] # T for dataset tensor, but it may also be a tupe due to the timestamps
-            if isinstance(T, torch.Tensor):
-                T.unsqueeze_(0)
-            if isinstance(T, list):
-                batched_timestamps = []
-                for timestamp in T:
-                    batched_timestamps.append(tuple(timestamp))
-                sequence_data[i] = batched_timestamps # replaces the unbatched timestamps with batched_timestamps
-        return 
