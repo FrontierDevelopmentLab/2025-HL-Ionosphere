@@ -108,14 +108,15 @@ class SunMoonGeometry(Dataset):
         moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
         moon_data = torch.tensor(moon_sublunar_coords + moon_antipode_coords + (moon_distance,), dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
 
-        # Add day of year feature
+        # Add timestamp feature
         day_of_year_sin, day_of_year_cos = self._get_day_of_year_features(date)
-        day_of_year_data = torch.tensor([day_of_year_sin, day_of_year_cos], dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
+        time_of_day_sin, time_of_day_cos = self._get_day_of_year_features(date)
+        time_data = torch.tensor([day_of_year_sin, day_of_year_cos, time_of_day_sin, time_of_day_cos], dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
 
         # Concatenate the maps and data along the channel dimension
         combined_data = torch.cat((sun_zenith_angle_map.unsqueeze(0), sun_data,
                                    moon_zenith_angle_map.unsqueeze(0), moon_data,
-                                   day_of_year_data), dim=0)
+                                   time_data), dim=0)
         
         return combined_data, date.isoformat()
 
@@ -126,6 +127,13 @@ class SunMoonGeometry(Dataset):
         day_of_year_sin = np.sin(2 * np.pi * (day_of_year - 1) / days_in_year)
         day_of_year_cos = np.cos(2 * np.pi * (day_of_year - 1) / days_in_year)
         return day_of_year_sin, day_of_year_cos
+    
+    def _get_time_of_day_features(self, date):
+        """Calculates the cyclical day-of-year features."""
+        time_of_day = date.hour + date.minute / 60.0 + date.second / 3600.0
+        time_of_day_sin = np.sin(2 * np.pi * time_of_day / 24)
+        time_of_day_cos = np.cos(2 * np.pi * time_of_day / 24)
+        return time_of_day_sin, time_of_day_cos
 
     def _normalize_coords(self, lat, lon):
         """Normalizes geographic coordinates into a 3D vector suitable for ML.
