@@ -233,28 +233,44 @@ class IonCastGNN(nn.Module):
 
         return output_grid
     
-    def predict(self, input_grid, data_context, prediction_window=4):
+    def predict(self, data_context, prediction_window=4):
         """ 
         Forecasts the next time step given an input grid. 
         Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
         The input grid is expected to be of shape (B, T, C, H, W), and the forward pass will reshape it to (B, T*C, H, W) for processing.
+
+        Parameters
+        ----------
+        data_context : torch.Tensor
+            Input tensor of shape (B, T, C, H, W), where:
+            - B is the batch size, can be > 1
+            - T is the context window length (number of time steps),
+            - C is the number of grid node features (input_dim_grid_nodes),
+            - H is the height of the grid (n_lat),
+            - W is the width of the grid (n_lon).
+
+        prediction_window : int, optional
+            Number of time steps to predict autoregressively. Default is 4.
         """
-        return self(input_grid)
-    
-    # def predict(self, data_context, prediction_window=4):
-    #     """ Forecasts the next time step given the context window. """
-    #     # data_context shape: (batch_size, time_steps, channels, height, width)
-    #     # time steps = context_window
-    #     x, hidden_state = self(data_context) # inits hidden state
-    #     x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-    #     prediction = [x]
-    #     for _ in range(prediction_window - 1):
-    #         # Prepare the next input by appending the last prediction
-    #         x, hidden_state = self(x, hidden_state=hidden_state)
-    #         x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-    #         prediction.append(x)
-    #     prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
-    #     return prediction
+        
+        # Create a masked grid and fill in :context_window with the context data
+        B, T, C, H, W = data_context.shape
+        masked_grid = torch.zeros(B, T+prediction_window, C, H, W)
+        masked_grid[:, :T, :, :, :] = data_context
+        
+        for step in range(prediction_window): 
+            # Pass context data through the model
+            input_grid = masked_grid[:, step:T+step, :, :, :] # [B, T, C, H, W]
+            print(f"input shape: {input_grid.shape}")
+
+            step_output = self(input_grid) # [B, 1*C, H, W]
+            print(f"step_output shape: {step_output.shape}")
+            
+            # Fill the masked grid with the output of the model
+            masked_grid[:, T+step, :, :, :] = step_output # [B, C, H, W]
+            print(f"masked_grid shape: {masked_grid.shape}")
+
+        return masked_grid
 
     def loss(self, grid_features, channel_list=None, context_window=None, n_steps=1):
         """ 
@@ -272,10 +288,10 @@ class IonCastGNN(nn.Module):
             List of channels to compute the loss on. If None, the loss is computed on all channels.
         context_window : int, optional
             If provided, the model will use the context window idx as the target for the loss.
-        n_steps : int, optional
+        prediction_window : int, optional
         """
-        if n_steps > 1:
-            raise NotImplementedError("Multi step forcasting loss not supported yet")
+        # if n_steps > 1:
+        #     raise NotImplementedError("Multi step forcasting loss not supported yet")
         
         B, T, C, H, W = grid_features.shape
         if context_window is None:
@@ -284,23 +300,84 @@ class IonCastGNN(nn.Module):
         
         input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
         all_targets = grid_features[:, context_window:, :, :, :] # shape (B, T - context_window, C, H, W)
-        target_grid = all_targets[:, 0, :, :, :] # shape (B, C, H, W)
 
-        if n_steps > 1:
-            # for more than 1 step forcasting input grid should be the masked grid with the last entry filled with the prev prediction
-            # its masked to make sure we arent accidentally using ground truth features in multi step forcasting
-            masked_grid = grid_features
-            masked_grid[:, context_window:] = masked_grid[:, context_window:] * 0
+        # if n_steps > 1: # NOTE: i thikn this should be removed since we are doing the multi step forecasting in the predict method now
+        #     # for more than 1 step forcasting input grid should be the masked grid with the last entry filled with the prev prediction
+        #     # its masked to make sure we arent accidentally using ground truth features in multi step forcasting
+        #     masked_grid = grid_features
+        #     masked_grid[:, context_window:] = masked_grid[:, context_window:] * 0
 
-        # Forward pass
-        output_grid = self(input_grid) # shape (B, context_window, C, H, W)
+        # multistep forward pass is done trhough the predict method
+        # Note, that the first 'context_window' frames along the T dim will of ground truth 
+        output_grid = self.predict(input_grid, prediction_window=n_steps) # shape (B, T, C, H, W) 
+        predictions_grid = output_grid[:,:T, :, :, :]
+
+        assert predictions_grid.shape[1] == n_steps, f"Expected predictions_grid to have {n_steps} time steps, got {predictions_grid.shape[1]}" # this should be true as long as predict is working properly i think, as predict forms tensor masked_grid of shape T+n_steps along context dim
+        # if channel_list is not None:
+        #     # If specific channels are provided, select them
+        #     predictions_grid = predictions_grid[:, channel_list, :, :]
+        #     all_targets = all_targets[:, channel_list, :, :]
         if channel_list is not None:
             # If specific channels are provided, select them
-            output_grid = output_grid[:, channel_list, :, :]
-            target_grid = target_grid[:, channel_list, :, :]
+            print(predictions_grid.shape, all_targets.shape)
+            assert predictions_grid.shape[1] == n_steps, f"Expected predictions_grid to have {n_steps} time steps, got {predictions_grid.shape[1]}"
+            assert all_targets.shape[1] == n_steps, f"Expected all_targets to have {n_steps} time steps, got {all_targets.shape[1]}"
+            predictions_grid = predictions_grid[:, :, channel_list, :, :]
+            all_targets = all_targets[:, :, channel_list, :, :]
+            # predictions_grid = predictions_grid[:, channel_list, :, :] # NOTE: i think in these commented lined from before, we were indexing the wrong dims for comparison / Assuming it was 1 step ahead prediction with the timestamp dim flattened out
+            # target_grid = target_grid[:, channel_list, :, :]
 
         recon_loss = nn.functional.mse_loss(output_grid, target_grid, reduction='sum') # Sum over all pixels and channels
         recon_loss = recon_loss / (target_grid.shape[0] * target_grid.shape[1]) # Average over batch size and channels
 
         # For simplicity, we can return just the reconstruction loss
         return recon_loss
+    
+    # def loss(self, grid_features, channel_list=None, context_window=None, n_steps=1):
+    #     """ 
+    #     Computes the loss for the IonCastGraph model. 
+    #     In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
+    #     For vTEC predictions, we can use a simple MSE loss between the predicted and target grid nodes.
+    #     For now, loss is computed between all node features (vTEC, F10.7, cos(lat), etc)- this
+    #     is maybe not the best choice, and we might want to compute the loss only on the vTEC feature.
+
+    #     Parameters
+    #     ----------
+    #     grid_features : torch.Tensor
+    #         Input tensor of shape (B, C, H, W)
+    #     channel_list : list, optional
+    #         List of channels to compute the loss on. If None, the loss is computed on all channels.
+    #     context_window : int, optional
+    #         If provided, the model will use the context window idx as the target for the loss.
+    #     prediction_window : int, optional
+    #     """
+    #     if n_steps > 1:
+    #         raise NotImplementedError("Multi step forcasting loss not supported yet")
+        
+    #     B, T, C, H, W = grid_features.shape
+    #     if context_window is None:
+    #         context_window = T - 1
+        
+        
+    #     input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
+    #     all_targets = grid_features[:, context_window:, :, :, :] # shape (B, T - context_window, C, H, W)
+    #     target_grid = all_targets[:, 0, :, :, :] # shape (B, C, H, W)
+
+    #     if n_steps > 1:
+    #         # for more than 1 step forcasting input grid should be the masked grid with the last entry filled with the prev prediction
+    #         # its masked to make sure we arent accidentally using ground truth features in multi step forcasting
+    #         masked_grid = grid_features
+    #         masked_grid[:, context_window:] = masked_grid[:, context_window:] * 0
+
+    #     # Forward pass
+    #     output_grid = self(input_grid) # shape (B, context_window, C, H, W)
+    #     if channel_list is not None:
+    #         # If specific channels are provided, select them
+    #         output_grid = output_grid[:, channel_list, :, :]
+    #         target_grid = target_grid[:, channel_list, :, :]
+
+    #     recon_loss = nn.functional.mse_loss(output_grid, target_grid, reduction='sum') # Sum over all pixels and channels
+    #     recon_loss = recon_loss / (target_grid.shape[0] * target_grid.shape[1]) # Average over batch size and channels
+
+    #     # For simplicity, we can return just the reconstruction loss
+    #     return recon_loss
