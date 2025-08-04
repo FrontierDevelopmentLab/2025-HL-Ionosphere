@@ -29,6 +29,10 @@ class PandasDataset(Dataset):
 
         self.data = self.data.dropna() # This drops ~10% of omniweb, a bit wasteful as it drops entire row at a time but not too bad
         # Get dates available
+
+        # Explicitly create a copy after dropna() to avoid SettingWithCopyWarning
+        self.data = self.data.copy()
+
         self.data['Datetime'] = pd.to_datetime(self.data['Datetime']) # this line wasnt present previously but is necessary if the col contains strings instead of pandas timestamps for the date.to_pydatetime() to run as expected
         self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
 

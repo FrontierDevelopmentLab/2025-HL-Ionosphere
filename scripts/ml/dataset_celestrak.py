@@ -40,7 +40,7 @@ CelesTrak_std_of_log1p = torch.tensor([0.4444892108440399, 0.8150267004966736], 
 #
 # For both features, we apply log1p scaling and then (z-score) normalization.
 
-# celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
+# ionosphere-data/celestrak/kp_ap_processed_timeseries.csv
 class CelesTrak(PandasDataset):
     def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
         print('\nCelesTrak')
