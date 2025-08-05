@@ -26,6 +26,8 @@ from dataset_sequences import Sequences
 from dataset_union import Union
 from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
+from dataset_omniweb import OMNIWeb
+from dataset_set import SET
 from events import EventCatalog
 
 matplotlib.use('Agg')
@@ -229,8 +231,14 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sunmoon_seq = sunmoon_seq.to(device) # sequence_length, channels, 180, 360
     celestrak_seq = celestrak_seq.to(device) # sequence_length, channels, 180, 360
     celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, 2, 180, 360)
+    omniweb_seq = sequence_data[3]  # OMNIWeb data
+    omniweb_seq = omniweb_seq.to(device)  # sequence_length, channels, 180, 360
+    omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, 13, 180, 360)
+    set_seq = sequence_data[4]  # SET data
+    set_seq = set_seq.to(device)  # sequence_length, channels, 180, 360
+    set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, 4, 180, 360)
 
-    combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=1)  # Combine along the channel dimension
+    combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=1)  # Combine along the channel dimension
 
     combined_seq_context = combined_seq[:sequence_forecast_start_index]  # Context data for forecast
     combined_seq_forecast = model.predict(combined_seq_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
@@ -325,10 +333,12 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
+    parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
+    parser.add_argument('--set_file_name', type=str, default='set/space_env_tech_indices_Indices_F10_processed.csv', help='SET dataset file name')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -382,6 +392,8 @@ def main():
 
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
             dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+            dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
+            dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
 
             print('Processing excluded dates')
 
@@ -413,8 +425,12 @@ def main():
                 dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
                 dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
-                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train], sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid], sequence_length=training_sequence_length)
+                dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end)
+                dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end)
+                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -448,7 +464,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=39, output_channels=39, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=56, output_channels=56, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -479,14 +495,17 @@ def main():
 
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, sunmoon_seq, celestrak_seq, _ = batch
+                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
                             celestrak_seq = celestrak_seq.to(device)
                             celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
+                            omniweb_seq = omniweb_seq.to(device)
+                            omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 13, 180, 360)
+                            set_seq = set_seq.to(device)
+                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 4, 180, 360)
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2) # Combine along the channel dimension
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2) # Combine along the channel dimension
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
                             loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
@@ -511,13 +530,17 @@ def main():
                             jpld = jpld.to(device)
                             loss = model.loss(jpld)
                         elif args.model_type == 'IonCastConvLSTM':
-                            jpld_seq, sunmoon_seq, celestrak_seq, _ = batch
+                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
                             celestrak_seq = celestrak_seq.to(device)
                             celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
+                            omniweb_seq = omniweb_seq.to(device)
+                            omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 13, 180, 360)
+                            set_seq = set_seq.to(device)
+                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 4, 180, 360)
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq), dim=2)  # Combine along the channel dimension
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                             loss = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
@@ -673,7 +696,9 @@ def main():
                     dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
                     dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                     dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                    dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end)
+                    dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
+                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                     run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
                     
                     # Force cleanup

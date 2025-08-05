@@ -15,6 +15,7 @@ from util import set_random_seed
 from dataset_jpld import JPLD
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb, omniweb_all_columns
+from dataset_set import SET, set_all_columns
 
 
 matplotlib.use('Agg')
@@ -31,11 +32,12 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
+    parser.add_argument('--set_file_name', type=str, default='set/space_env_tech_indices_Indices_F10_processed.csv', help='SET dataset file name')
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--num_samples', type=int, default=1000, help='Number of samples to use')
-    parser.add_argument('--instruments', nargs='+', default=['jpld', 'celestrak', 'omniweb'], help='List of datasets to process')
+    parser.add_argument('--instruments', nargs='+', default=['jpld', 'celestrak', 'omniweb', 'set'], help='List of datasets to process')
 
     args = parser.parse_args()
 
@@ -57,6 +59,7 @@ def main():
         data_dir_jpld = os.path.join(args.data_dir, args.jpld_dir)
         data_dir_omniweb = os.path.join(args.data_dir, args.omniweb_dir)
         dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+        dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
 
         for instrument in args.instruments:
             if instrument == 'jpld':
@@ -74,6 +77,11 @@ def main():
                 for column in omniweb_all_columns:
                     runs.append((f'normalized_{column}', OMNIWeb(data_dir_omniweb, normalize=True, column=[column]), f'OMNIWeb {column} (normalized)'))
                     runs.append((f'unnormalized_{column}', OMNIWeb(data_dir_omniweb, normalize=False, column=[column]), f'OMNIWeb {column} (unnormalized)'))
+            elif instrument == 'set':
+                runs = []
+                for column in set_all_columns:
+                    runs.append((f'normalized_{column}', SET(dataset_set_file_name, normalize=True, column=[column]), f'SET {column} (normalized)'))
+                    runs.append((f'unnormalized_{column}', SET(dataset_set_file_name, normalize=False, column=[column]), f'SET {column} (unnormalized)'))
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
                 continue
