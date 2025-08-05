@@ -5,6 +5,21 @@ import pandas as pd
 
 from dataset_pandasdataset import PandasDataset
 
+# Consider the following scaling, not currently implemented:
+# omniweb__ae_index__[nT] clamp(0, inf) -> log1p -> z-score
+# omniweb__al_index__[nT] -= 11 -> clamp(-inf, 0) -> neg -> log1p -> z-score
+# omniweb__au_index__[nT] += 9 -> log1p -> z-score
+# omniweb__sym_d__[nT] z-score
+# omniweb__sym_h__[nT] z-score
+# omniweb__asy_d__[nT] z-score
+# omniweb__bx_gse__[nT] z-score
+# omniweb__by_gse__[nT] z-score
+# omniweb__bz_gse__[nT] z-score
+# omniweb__speed__[km/s] z-score
+# omniweb__vx_velocity__[km/s] z-score
+# omniweb__vy_velocity__[km/s] z-score
+# omniweb__vz_velocity__[km/s] z-score
+
 
 omniweb_all_columns = ['omniweb__ae_index__[nT]',
                'omniweb__al_index__[nT]',
