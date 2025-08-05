@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--num_samples', type=int, default=1000, help='Number of samples to use')
     parser.add_argument('--instruments', nargs='+', default=['jpld', 'celestrak', 'omniweb', 'set'], help='List of datasets to process')
+    parser.add_argument('--log_histogram', action='store_true', help='Logarithmic scale for histogram')
 
     args = parser.parse_args()
 
@@ -77,6 +78,7 @@ def main():
                 for column in omniweb_all_columns:
                     runs.append((f'normalized_{column}', OMNIWeb(data_dir_omniweb, normalize=True, column=[column]), f'OMNIWeb {column} (normalized)'))
                     runs.append((f'unnormalized_{column}', OMNIWeb(data_dir_omniweb, normalize=False, column=[column]), f'OMNIWeb {column} (unnormalized)'))
+                    runs.append((f'normalized_unnormalized_{column}', OMNIWeb(data_dir_omniweb, normalize=True, column=[column]), f'OMNIWeb {column} (normalized and unnormalized)'))
             elif instrument == 'set':
                 runs = []
                 for column in set_all_columns:
@@ -99,7 +101,9 @@ def main():
 
                 data = []
                 for i in tqdm(indices, desc='Processing samples', unit='sample'):
-                    d, date = dataset[int(i)]
+                    d, _ = dataset[int(i)]
+                    if 'normalized and unnormalized' in label:
+                        d = dataset.unnormalize_data(d)
                     data.append(d)
 
                 data = torch.stack(data).flatten()
@@ -128,7 +132,7 @@ def main():
                 indices = np.random.choice(len(data), hist_samples, replace=True)
                 hist_data = data[indices]
                 plt.figure()
-                plt.hist(hist_data, log=True, bins=100)
+                plt.hist(hist_data, log=args.log_histogram, bins=100)
                 plt.tight_layout()
                 plt.savefig(file_name_hist)
 

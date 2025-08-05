@@ -5,6 +5,8 @@ import pandas as pd
 
 from dataset_pandasdataset import PandasDataset
 
+# Space Environment Technologies (SET) dataset
+# https://setinc.com/space-environment-technologies/
 
 set_all_columns = ['F10', 'S10', 'M10', 'Y10']
 

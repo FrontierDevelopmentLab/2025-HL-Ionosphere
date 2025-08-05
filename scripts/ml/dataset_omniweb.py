@@ -1,70 +1,138 @@
 import torch
 import os
-from pathlib import Path
 import pandas as pd
+import numpy as np
 
 from dataset_pandasdataset import PandasDataset
 
 # Consider the following scaling, not currently implemented:
 # omniweb__ae_index__[nT] clamp(0, inf) -> log1p -> z-score
-# omniweb__al_index__[nT] -= 11 -> clamp(-inf, 0) -> neg -> log1p -> z-score
-# omniweb__au_index__[nT] += 9 -> log1p -> z-score
-# omniweb__sym_d__[nT] z-score
-# omniweb__sym_h__[nT] z-score
+# omniweb__al_index__[nT] -= 11 -> clamp(-inf, 0) -> neg -> log1p -> z-score (or maybe discard)
+# omniweb__au_index__[nT] += 9 -> clamp(0, inf) -> log1p -> z-score (or maybe discard)
+# omniweb__sym_d__[nT] z-score / yeo 
+# omniweb__sym_h__[nT] z-score x -> sign(x) * log1p(abs(x))
 # omniweb__asy_d__[nT] z-score
-# omniweb__bx_gse__[nT] z-score
-# omniweb__by_gse__[nT] z-score
-# omniweb__bz_gse__[nT] z-score
+# omniweb__bx_gse__[nT] z-score OK
+# omniweb__by_gse__[nT] z-score OK
+# omniweb__bz_gse__[nT] z-score OK
 # omniweb__speed__[km/s] z-score
 # omniweb__vx_velocity__[km/s] z-score
 # omniweb__vy_velocity__[km/s] z-score
 # omniweb__vz_velocity__[km/s] z-score
 
+# mean and std for omni indices after yeo-johnson transformation
+# omniweb__ae_index__[nT]: mean=3.382117810171, std=0.599638789174
+# omniweb__al_index__[nT]: mean=-10.758787729440, std=7.776873220187
+# omniweb__au_index__[nT]: mean=21.202255971757, std=17.939704773432
+# omniweb__sym_d__[nT]: mean=-0.181702064224, std=2.998393072357
+# omniweb__sym_h__[nT]: mean=-6.992693259217, std=12.396448647053
+# omniweb__asy_d__[nT]: mean=2.628395773277, std=0.500936940952
+# omniweb__speed__[km/s]: mean=0.962903675585, std=0.000397192623
+# omniweb__vx_velocity__[km/s]: mean=-0.959153291778, std=0.000387756752
+# omniweb__vy_velocity__[km/s]: mean=-1.591600332192, std=24.061675738624
+# omniweb__vz_velocity__[km/s]: mean=-3.172566847907, std=21.392025871686
+# omniweb__bx_gse__[nT]: mean=0.009877579877, std=3.477797581682
+# omniweb__by_gse__[nT]: mean=-0.086797729712, std=4.004904143231
+# omniweb__bz_gse__[nT]: mean=0.009738823405, std=3.251240498296
 
-omniweb_all_columns = ['omniweb__ae_index__[nT]',
-               'omniweb__al_index__[nT]',
-               'omniweb__au_index__[nT]',
-               'omniweb__sym_d__[nT]', 
-               'omniweb__sym_h__[nT]', 
-               'omniweb__asy_d__[nT]',
-               'omniweb__bx_gse__[nT]', 
-               'omniweb__by_gse__[nT]', 
-               'omniweb__bz_gse__[nT]',
-               'omniweb__speed__[km/s]', 
-               'omniweb__vx_velocity__[km/s]', 
-               'omniweb__vy_velocity__[km/s]', 
-               'omniweb__vz_velocity__[km/s]']
+omniweb_all_columns = [
+    'omniweb__ae_index__[nT]',
+    'omniweb__al_index__[nT]',
+    'omniweb__au_index__[nT]',
+    'omniweb__sym_d__[nT]',
+    'omniweb__sym_h__[nT]',
+    'omniweb__asy_d__[nT]',
+    'omniweb__bx_gse__[nT]',
+    'omniweb__by_gse__[nT]',
+    'omniweb__bz_gse__[nT]',
+    'omniweb__speed__[km/s]',
+    'omniweb__vx_velocity__[km/s]',
+    'omniweb__vy_velocity__[km/s]',
+    'omniweb__vz_velocity__[km/s]'
+]
 
-omniweb_column_means = {'omniweb__ae_index__[nT]': 171.78419494628906,
-                        'omniweb__al_index__[nT]': -104.44080352783203,
-                        'omniweb__au_index__[nT]': 61.04460144042969,
-                        'omniweb__sym_d__[nT]': -0.24560000002384186,
-                        'omniweb__sym_h__[nT]': -10.619400024414062,
-                        'omniweb__asy_d__[nT]': 18.769800186157227,
-                        'omniweb__bx_gse__[nT]': -0.030805999413132668,
-                        'omniweb__by_gse__[nT]': 0.009642007760703564,
-                        'omniweb__bz_gse__[nT]': 0.033528003841638565,
-                        'omniweb__speed__[km/s]': 418.8190002441406,
-                        'omniweb__vx_velocity__[km/s]': -417.7730407714844,
-                        'omniweb__vy_velocity__[km/s]': 0.2976999580860138,
-                        'omniweb__vz_velocity__[km/s]': -2.238880157470703}
+# lambda values for yeo-johnson transformation computed by Giacomo Acciarini, 5 Aug 2025
+omniweb_yeojohnson_lambdas = {
+    'omniweb__ae_index__[nT]': -0.127596533271,
+    'omniweb__al_index__[nT]': 1.593553014366,
+    'omniweb__au_index__[nT]': 0.694548772242,
+    'omniweb__sym_d__[nT]': 1.023942223073,
+    'omniweb__sym_h__[nT]': 1.150157823027,
+    'omniweb__asy_d__[nT]': -0.044273161179,
+    'omniweb__bx_gse__[nT]': 0.995147537010,
+    'omniweb__by_gse__[nT]': 0.990598907069,
+    'omniweb__bz_gse__[nT]': 1.007983055426,
+    'omniweb__speed__[km/s]': -1.036437447980,
+    'omniweb__vx_velocity__[km/s]': 3.040535004580,
+    'omniweb__vy_velocity__[km/s]': 0.965800969635,
+    'omniweb__vz_velocity__[km/s]': 0.998312073289
+}
 
-omniweb_column_stds = {'omniweb__ae_index__[nT]': 198.90577697753906,
-                       'omniweb__al_index__[nT]': 145.14234924316406,
-                       'omniweb__au_index__[nT]': 67.07356262207031,
-                       'omniweb__sym_d__[nT]': 2.9613230228424072,
-                       'omniweb__sym_h__[nT]': 17.97284507751465,
-                       'omniweb__asy_d__[nT]': 13.876084327697754,
-                       'omniweb__bx_gse__[nT]': 3.473517417907715,
-                       'omniweb__by_gse__[nT]': 4.016483306884766,
-                       'omniweb__bz_gse__[nT]': 3.231107711791992,
-                       'omniweb__speed__[km/s]': 94.15789031982422,
-                       'omniweb__vx_velocity__[km/s]': 89.83809661865234,
-                       'omniweb__vy_velocity__[km/s]': 23.594484329223633,
-                       'omniweb__vz_velocity__[km/s]': 21.573925018310547}
-   
-omniweb_all_columns_means = torch.tensor([omniweb_column_means[col] for col in omniweb_all_columns], dtype=torch.float32)
-omniweb_all_columns_stds = torch.tensor([omniweb_column_stds[col] for col in omniweb_all_columns], dtype=torch.float32)
+omniweb_mean_after_yeojohnson = {'omniweb__ae_index__[nT]': 3.382117810171,
+                       'omniweb__al_index__[nT]': -10.758787729440,
+                       'omniweb__au_index__[nT]': 21.202255971757,
+                       'omniweb__sym_d__[nT]': -0.181702064224,
+                       'omniweb__sym_h__[nT]': -6.992693259217,
+                       'omniweb__asy_d__[nT]': 2.628395773277,
+                       'omniweb__bx_gse__[nT]': 0.009877579877,
+                       'omniweb__by_gse__[nT]': -0.086797729712,
+                       'omniweb__bz_gse__[nT]': 0.009738823405,
+                       'omniweb__speed__[km/s]': 0.962903675585,
+                       'omniweb__vx_velocity__[km/s]': -0.959153291778,
+                       'omniweb__vy_velocity__[km/s]': -1.591600332192,
+                       'omniweb__vz_velocity__[km/s]': -3.172566847907}
+omniweb_std_after_yeojohnson = {'omniweb__ae_index__[nT]': 0.599638789174,
+                       'omniweb__al_index__[nT]': 7.776873220187,
+                       'omniweb__au_index__[nT]': 17.939704773432,
+                       'omniweb__sym_d__[nT]': 2.998393072357,
+                       'omniweb__sym_h__[nT]': 12.396448647053,
+                       'omniweb__asy_d__[nT]': 0.500936940952,
+                       'omniweb__bx_gse__[nT]': 3.477797581682,
+                       'omniweb__by_gse__[nT]': 4.004904143231,
+                       'omniweb__bz_gse__[nT]': 3.251240498296,
+                       'omniweb__speed__[km/s]': 0.000397192623,
+                       'omniweb__vx_velocity__[km/s]': 0.000387756752,
+                       'omniweb__vy_velocity__[km/s]': 24.061675738624,
+                       'omniweb__vz_velocity__[km/s]': 21.392025871686}
+
+omniweb_all_columns_yeojohnson_lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in omniweb_all_columns], dtype=np.float32)
+omniweb_all_columns_mean_of_yeojohnson = np.array([omniweb_mean_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=np.float32)
+omniweb_all_columns_std_of_yeojohnson = np.array([omniweb_std_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=np.float32)
+
+# Yeo-Johnson transformation
+# Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3480
+def yeojohnson(X, lambdas):
+    out = np.zeros_like(X)
+    pos = X >= 0  # binary mask
+
+    # when x >= 0
+    if abs(lambdas) < np.spacing(1.0):
+        out[pos] = np.log1p(X[pos])
+    else:  # lambdas != 0
+        out[pos] = (np.power(X[pos] + 1, lambdas) - 1) / lambdas
+
+    # when x < 0
+    if abs(lambdas - 2) > np.spacing(1.0):
+        out[~pos] = -(np.power(-X[~pos] + 1, 2 - lambdas) - 1) / (2 - lambdas)
+    else:  # lambdas == 2
+        out[~pos] = -np.log1p(-X[~pos])
+    return out
+
+
+# Yeo-Johnson inverse transformation
+# Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3424C1-L3431C41
+def yeojhonson_inverse(X, lambdas):
+    if X >= 0 and lambdas == 0:
+        X_original = np.exp(X) - 1
+    elif X >= 0 and lambdas != 0:
+        X_original = (X * lambdas + 1) ** (1 / lambdas) - 1
+    elif X < 0 and lambdas != 2:
+        X_original = 1 - (-(2 - lambdas) * X + 1) ** (1 / (2 - lambdas))
+    elif X < 0 and lambdas == 2:
+        X_original = 1 - np.exp(-X)
+    return X_original
+
+
 
 # ionosphere-data/omniweb_karman_2025
 class OMNIWeb(PandasDataset):
@@ -92,8 +160,6 @@ class OMNIWeb(PandasDataset):
 
         print('Data shape             : {}'.format(data.shape))
         print('Data columns           : {}'.format(data.columns.tolist()))
-        print('Data index             : {}'.format(data.index.name))
-        print(data.head())
         
         # rename all__dates_datetime__ to Datetime
         data.rename(columns={'all__dates_datetime__': 'Datetime'}, inplace=True)
@@ -106,20 +172,29 @@ class OMNIWeb(PandasDataset):
         super().__init__('OMNIWeb', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
     def normalize_data(self, data): 
+        data = data.detach().cpu().numpy()
         if self.column == omniweb_all_columns:
-            data = (data - omniweb_all_columns_means) / omniweb_all_columns_stds
+            data = yeojohnson(data, omniweb_all_columns_yeojohnson_lambdas)
+            data = (data - omniweb_all_columns_mean_of_yeojohnson) / omniweb_all_columns_std_of_yeojohnson
         else:
-            means = torch.tensor([omniweb_column_means[col] for col in self.column], dtype=torch.float32)
-            stds = torch.tensor([omniweb_column_stds[col] for col in self.column], dtype=torch.float32)
+            lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=np.float32)
+            means = np.array([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=np.float32)
+            stds = np.array([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=np.float32)
+            data = yeojohnson(data, lambdas)
             data = (data - means) / stds
+        data = torch.from_numpy(data)
         return data
 
     def unnormalize_data(self, data):
+        data = data.detach().cpu().numpy()
         if self.column == omniweb_all_columns:
-            data = data * omniweb_all_columns_stds + omniweb_all_columns_means
+            data = data * omniweb_all_columns_std_of_yeojohnson + omniweb_all_columns_mean_of_yeojohnson
+            data = yeojhonson_inverse(data, omniweb_all_columns_yeojohnson_lambdas)
         else:
-            means = torch.tensor([omniweb_column_means[col] for col in self.column], dtype=torch.float32)
-            stds = torch.tensor([omniweb_column_stds[col] for col in self.column], dtype=torch.float32)
+            lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=np.float32)
+            means = np.array([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=np.float32)
+            stds = np.array([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=np.float32)
             data = data * stds + means
+            data = yeojhonson_inverse(data, lambdas)
+        data = torch.from_numpy(data)
         return data
-

@@ -34,7 +34,7 @@ class PandasDataset(Dataset):
         self.data = self.data.copy()
 
         self.data['Datetime'] = pd.to_datetime(self.data['Datetime']) # this line wasnt present previously but is necessary if the col contains strings instead of pandas timestamps for the date.to_pydatetime() to run as expected
-        self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
+        self.dates = [date.to_pydatetime() for date in self.data['Datetime']] # super slow!
 
         self.dates_set = set(self.dates)
         self.date_start = self.dates[0]
@@ -73,7 +73,6 @@ class PandasDataset(Dataset):
             else:
                 break
         
-
         # Filter out dates outside the range
         self.data = self.data[(self.data['Datetime'] >=self.date_start) & (self.data['Datetime'] <=self.date_end)]
 
@@ -85,13 +84,15 @@ class PandasDataset(Dataset):
                 print('  {} - {}'.format(exclusion_date_start, exclusion_date_end))
                 self.data = self.data[~self.data['Datetime'].between(exclusion_date_start, exclusion_date_end)]
 
-        # Get dates available (redo to make sure things match up)q
-        self.dates = [date.to_pydatetime() for date in self.data['Datetime']]
+        # Get dates available (redo to make sure things match up)
+        self.dates = [date.to_pydatetime() for date in self.data['Datetime']] # super slow!
         self.dates_set = set(self.dates)
         self.date_start = self.dates[0]
         self.date_end = self.dates[-1]
         print('Start date            : {}'.format(self.date_start))
         print('End date              : {}'.format(self.date_end))
+
+        print('i')
 
         print('Rows after processing : {:,}'.format(len(self.data)))
         # self.data.set_index("Datetime", inplace=True) # sets the indexing to be done with datetime
