@@ -348,6 +348,7 @@ def main():
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
+    parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
 
     args = parser.parse_args()
 
@@ -408,8 +409,8 @@ def main():
                 dataset_valid = dataset_jpld_valid
             elif args.model_type == 'IonCastConvLSTM':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end)
-                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
                 dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train], sequence_length=training_sequence_length)
@@ -447,7 +448,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=21, output_channels=21, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=39, output_channels=39, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -670,7 +671,7 @@ def main():
                     print(f'\n\n* Testing event {i+1}/{len(tests_to_run)}: {title}')
                     # Create dataset for each test individually with date filtering
                     dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
-                    dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end)
+                    dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                     dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
                     dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                     run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)

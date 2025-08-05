@@ -30,16 +30,21 @@ class SunMoonGeometry(Dataset):
     - Channel 15: Earth-Moon distance (in Lunar Distances, LD).
     - Channels 16-17: Cyclical features for the day of the year (sin, cos).
 
+    If extra_time_steps is specified, for each time step, the dataset will return another set of 
+    the same features computed for the next time step(s). Each time step is delta_minutes apart.
+    In other words, the number of features returned will be multiplied by (1 + extra_time_steps).
+    
     Note: The scalar values (coordinates, distances, day of year) are broadcast
     to the same spatial dimensions as the zenith angle maps.
     """
-    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True):
+    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0):
         self.date_start = date_start
         self.date_end = date_end
         self.delta_minutes = delta_minutes
         self.image_size = image_size
         self.normalize = normalize
         self.combined = combined
+        self.extra_time_steps = extra_time_steps
 
         if self.date_start is None:
             self.date_start = datetime.datetime(2010, 5, 13, 0, 0, 0)
@@ -60,6 +65,7 @@ class SunMoonGeometry(Dataset):
         print('End date                : {}'.format(self.date_end))
         print('Delta                   : {} minutes'.format(self.delta_minutes))
         print('Image size              : {}'.format(self.image_size))
+        print('Extra time steps        : {}'.format(self.extra_time_steps))
 
         # Don't initialize Skyfield objects here
         self._ts = None
@@ -98,15 +104,30 @@ class SunMoonGeometry(Dataset):
         if date.tzinfo is None:
             date = date.replace(tzinfo=datetime.timezone.utc)
 
-        # get the sun data and the moon data and concat everything in the channel dimension
+        if self.extra_time_steps == 0:
+            return self.get_data(date)
+        else:
+            data = []
+            for i in range(self.extra_time_steps+1):
+                date = date + datetime.timedelta(minutes=i * self.delta_minutes)
+                data.append(self.get_data(date))
+            if self.combined:
+                combined_data = torch.cat([d[0] for d in data], dim=0)
+                date = data[0][1]  # Use the date of the first item
+                return combined_data, date
+            else:
+                combined_maps = torch.cat([d[0] for d in data], dim=0)
+                combined_features = torch.cat([d[1] for d in data], dim=0)
+                date = data[0][2]  # Use the date of the first item
+                return combined_maps, combined_features, date
+        
+    def get_data(self, date):
         sun_data = self.generate_data(date, 'sun')
         moon_data = self.generate_data(date, 'moon')
-
         sun_zenith_angle_map, sun_subsolar_coords, sun_antipode_coords, sun_distance = sun_data
         moon_zenith_angle_map, moon_sublunar_coords, moon_antipode_coords, moon_distance = moon_data
 
         day_of_year = self.day_of_year(date)
-
         solar_features = sun_subsolar_coords + sun_antipode_coords + (sun_distance, )
         lunar_features = moon_sublunar_coords + moon_antipode_coords + (moon_distance, )
         all_features = solar_features + lunar_features + (day_of_year, )
