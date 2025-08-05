@@ -288,7 +288,7 @@ class IonCastGNN(nn.Module):
 
     #     return torch.cat([data_context, *predictions], dim=1)
     
-    def predict(self, masked_inputs, prediction_window=4):
+    def predict(self, input_grid, forcing_channels, prediction_window=4):
         """ 
         Forecasts the next time step given an input grid. 
         Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
@@ -358,7 +358,7 @@ class IonCastGNN(nn.Module):
     #     prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
     #     return prediction
 
-    def loss(self, grid_features, channel_list=None, context_window=None, n_steps=1):
+    def loss(self, grid_features, channel_list=None, context_window=None, n_steps=1): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
         """ 
         Computes the loss for the IonCastGraph model. 
         In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
@@ -387,8 +387,12 @@ class IonCastGNN(nn.Module):
         input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
         all_targets = grid_features[:, context_window:, :, :, :] # shape (B, T - context_window, C, H, W)
 
+        # pass in the mask list to predict from loss so that entries not used in the loss will be included in forcings
+
+        # 
         output_grid = self.predict(input_grid, prediction_window=n_steps) # shape (B, T, C, H, W) 
         predictions_grid = output_grid[:, context_window:, :, :, :]
+
 
         assert predictions_grid.shape[1] == n_steps, f"Expected predictions_grid to have {n_steps} time steps, got {predictions_grid.shape[1]}" # this should be true as long as predict is working properly i think, as predict forms tensor masked_grid of shape T+n_steps along context dim
 
