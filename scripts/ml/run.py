@@ -20,8 +20,6 @@ import glob
 
 matplotlib.use('Agg')
 
-# TODO: Make possible for graphcast
-# For Monday: Fix predict function for IonCastGNN (both stack_features needs batch dimension and predict_function needs to be able to roll out predictions)
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
     if not isinstance(model, (IonCastConvLSTM, IonCastGNN)):
         raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastGNN')
@@ -66,6 +64,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
         # Predict by passing in the context data and prediction window
         combined_forecast_context = combined_original[:sequence_forecast_start_index]  # Context data for forecast
+        print(combined_forecast_context.unsqueeze(0))
         combined_forecast = model.predict(combined_forecast_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
         # Get JPLD prediction and context channels, and stack the forecast with the context
@@ -76,15 +75,17 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     # If IonCastGNN, pass sequence data to stack_features
     if isinstance(model, IonCastGNN):
         # Stack features will output shape (B, T, C, H, W)
-        grid_nodes = stack_features(
+        grid_nodes_original = stack_features(
             sequence_data, 
             n_img_datasets=1
         )
-        
-        grid_nodes = grid_nodes.to(device)
-        grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32 
 
-        combined_forecast = model.predict(grid_nodes) # Output context & forecast for all time steps, shape (B, T, C, H, W)
+        grid_nodes_original = grid_nodes_original.to(device)
+        grid_nodes_original = grid_nodes_original.float() # Ensure the grid nodes are in float32 
+
+        grid_nodes_context = grid_nodes_original[:, :sequence_forecast_start_index, :, :, :]  # Context data for forecast
+        # grid_nodes_context = grid_nodes_context[:, -args.context_window:, :, :, :] # NOTE: unideal but crop out any context that doesnt fit into model context window
+        combined_forecast = model.predict(grid_nodes_context, prediction_window=sequence_prediction_window) # Output context & forecast for all time steps, shape (B, T, C, H, W)
 
         # Extract JPLD channels
         jpld_forecast_with_context = combined_forecast[0, :, 0, :, :]  # Extract JPLD channels from the forecast and removing
@@ -116,7 +117,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     )
 
 
-def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
+def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, n_img_datasets, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -129,6 +130,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'valid_losses': valid_losses,
             'model_z_dim': model.z_dim,
         }
+
     elif isinstance(model, IonCastConvLSTM):
         checkpoint = {
             'model': 'IonCastConvLSTM',
@@ -154,6 +156,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'optimizer_state_dict': optimizer.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'n_img_datasets': n_img_datasets,
             'input_dim_grid_nodes': model.input_dim_grid_nodes,  # Number of features per grid node
             'output_dim_grid_nodes': model.output_dim_grid_nodes,  # Number of features to predict per grid node
             'hidden_dim': model.hidden_dim,
@@ -233,7 +236,7 @@ def main():
     parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
     parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
     parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["omni", "celestrak", "solar_inds", "sunmoon"], default=["omni", "celestrak", "solar_inds", "sunmoon"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "solar_inds", "sunmoon"], default=["sunmoon", "omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -300,17 +303,17 @@ def main():
 
             # Preparing data paths and constructors
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-            gim_webdataset = os.path.join(args.data_dir, args.jpld_dir)
+            # gim_webdataset = os.path.join(args.data_dir, args.jpld_dir)
             omni_dir = os.path.join(args.data_dir, args.omni_dir)
             celestrak_file = os.path.join(args.data_dir, args.celestrak_file)
             solar_index_file = os.path.join(args.data_dir, args.solar_index_file)
             
             # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
             dataset_constructors = {
+                'sunmoon': lambda date_start_, date_end_, date_exclusions_: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True), # date exclusions not passed since this dataset used with other datasets that 
                 'omni': lambda date_start_, date_end_, date_exclusions_: OMNIDataset(file_dir=omni_dir, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
                 'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
                 'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
-                'sunmoon': lambda date_start_, date_end_, date_exclusions_: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True) # date exclusions not passed since this dataset used with other datasets that 
             }
 
 
@@ -402,6 +405,9 @@ def main():
                 iteration = iteration + 1
                 print('Next epoch    : {:,}'.format(epoch_start+1))
                 print('Next iteration: {:,}'.format(iteration+1))
+
+                    
+
                 
             else: # Otherwise, create a new model
                 print('Creating new model')
@@ -412,8 +418,20 @@ def main():
                     model = IonCastConvLSTM(input_channels=19, output_channels=19, context_window=args.context_window, prediction_window=args.prediction_window)
 
                 elif args.model_type == 'IonCastGNN':
-                    # TODO, either add nargs argument for the on the fly features, nvm well just remove these flags and move that logic to the sunmoon dataset class
-                    dummy_batch = stack_features(next(iter(train_loader)), include_subsolar=False, include_sublunar=False, include_timestamp=False)
+                    # Calculate the number of image-like features and make sure image-like datasets are before non-image-like datasets in the dataset list
+                    seq_dataset_batch = next(iter(train_loader))
+                    n_img_datasets = 0
+                    non_img_encountered_flag = False
+                    for T in seq_dataset_batch:
+                        if isinstance(T, torch.Tensor):
+                            if len(T.shape) == 5:
+                                if non_img_encountered_flag:
+                                    raise ValueError('All image-like datasets must be before non-image-like datasets in the dataset list')
+                                n_img_datasets += 1
+                            else:
+                                non_img_encountered_flag = True
+                        
+                    dummy_batch = stack_features(seq_dataset_batch, n_img_datasets=n_img_datasets) # 
 
                     _, _, C, _, _ = dummy_batch.shape # B, T, C, H, W
                     n_feats = args.context_window * C
@@ -494,10 +512,7 @@ def main():
                             # Stack features will output shape (B, T, C, H, W)
                             grid_nodes = stack_features(
                                 batch, 
-                                n_img_datasets=1, 
-                                include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
-                                include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
-                                include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+                                n_img_datasets=n_img_datasets, 
                             )
                             grid_nodes = grid_nodes.to(device)
                             grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32                        
@@ -543,10 +558,7 @@ def main():
                         elif args.model_type == "IonCastGNN":
                             grid_nodes = stack_features(
                                 batch, 
-                                n_img_datasets=1, 
-                                include_subsolar=False,  # If true, computes on the fly subsolar point and distance to it from eahc grid node
-                                include_sublunar=False,  # If true, computes on the fly sublunar point and distance to it from eahc grid node
-                                include_timestamp=False, # If true, computes on the fly timestamp features for each grid node (sin & cos (tod), sin & cos (doy))
+                                n_img_datasets=n_img_datasets, 
                             )
                             
                             grid_nodes = grid_nodes.to(device)
@@ -593,7 +605,14 @@ def main():
                 model.eval()
                 with torch.no_grad():
                     num_evals = args.num_evals
+                model.eval()
+                with torch.no_grad():
+                    num_evals = args.num_evals
 
+                    if args.model_type == 'VAE1':
+                        # Set random seed for reproducibility of evaluation samples across epochs
+                        rng_state = torch.get_rng_state()
+                        torch.manual_seed(args.seed)
                     if args.model_type == 'VAE1':
                         # Set random seed for reproducibility of evaluation samples across epochs
                         rng_state = torch.get_rng_state()
@@ -603,7 +622,15 @@ def main():
                         jpld_orig, jpld_orig_dates = next(iter(valid_loader))
                         jpld_orig = jpld_orig[:num_evals]
                         jpld_orig_dates = jpld_orig_dates[:num_evals]
+                        # Reconstruct a batch from the validation set
+                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                        jpld_orig = jpld_orig[:num_evals]
+                        jpld_orig_dates = jpld_orig_dates[:num_evals]
 
+                        jpld_orig = jpld_orig.to(device)
+                        jpld_recon, _, _ = model.forward(jpld_orig)
+                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
                         jpld_orig = jpld_orig.to(device)
                         jpld_recon, _, _ = model.forward(jpld_orig)
                         jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
@@ -615,7 +642,17 @@ def main():
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
+                        # Sample a batch from the model
+                        jpld_sample = model.sample(n=num_evals)
+                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
+                        torch.set_rng_state(rng_state)
+                        # Resume with the original random state
 
+                        # Save plots
+                        for i in range(num_evals):
+                            date = jpld_orig_dates[i]
+                            date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
                         # Save plots
                         for i in range(num_evals):
                             date = jpld_orig_dates[i]
@@ -623,10 +660,16 @@ def main():
 
                             recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
                             save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+                            recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
 
                             recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
                             save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
+                            recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
 
+                            sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                            save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
                             sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
@@ -645,7 +688,36 @@ def main():
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                 title = f'Event: {event_id}, Kp={max_kp}'
                                 run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastGNN':
+                        # Run forecast for test events
+                        if args.test_event_id:
+                            for event_id in args.test_event_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp, _ = event
+                                print('* Testing event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
+                        # Run forecast for seen test events
+                        if args.test_event_seen_id:
+                            for event_id in args.test_event_seen_id:
+                                if event_id not in EventCatalog:
+                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                event = EventCatalog[event_id]
+                                _, _, date_start, date_end, _, max_kp, _ = event
+                                print('* Testing seen event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
+                                date_end = datetime.datetime.fromisoformat(date_end)
+                                date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                title = f'Event: {event_id}, Kp={max_kp}'
+                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
                         # Run forecast for seen test events
                         if args.test_event_seen_id:
                             for event_id in args.test_event_seen_id:
@@ -727,7 +799,7 @@ if __name__ == '__main__':
 
 # GraphCast example
 # With more aux datasets
-# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir ./../../results/ioncastgnn-train-1 --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
+# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-sunmoon-celestrak --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --mesh_level 4 --device cuda:0
 
 # Baseline without auxiliary datasets
-# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-3 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --date_start 2022-07-01T00:00:00 --date_end 2023-07-02T00:00:00 --mesh_level 4 --device cuda:0
+# python run.py --data_dir /home/jupyter/data --aux_dataset celestrak --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-3 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --date_start 2022-07-01T00:00:00 --date_end 2022-07-01T05:00:00 --mesh_level 4 --device cuda:0
