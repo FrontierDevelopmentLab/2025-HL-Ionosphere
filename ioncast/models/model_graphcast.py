@@ -288,42 +288,54 @@ class IonCastGNN(nn.Module):
 
     #     return torch.cat([data_context, *predictions], dim=1)
     
-    def predict(self, input_grid, forcing_channels, prediction_window=4):
-        """ 
-        Forecasts the next time step given an input grid. 
-        Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
-        The input grid is expected to be of shape (B, T, C, H, W), and the forward pass will reshape it to (B, T*C, H, W) for processing.
+    # def predict(self, input_grid, forcing_channels, context_window):
+    #     """ 
+    #     Forecasts the next time step given an input grid. 
+    #     Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
+    #     The input grid is expected to be of shape (B, T, C, H, W), and the forward pass will reshape it to (B, T*C, H, W) for processing.
 
-        Parameters
-        ----------
-        data_context : torch.Tensor
-            Input tensor of shape (B, T, C, H, W), where:
-            - B is the batch size, can be > 1
-            - T is the context window length (number of time steps),
-            - C is the number of grid node features (input_dim_grid_nodes),
-            - H is the height of the grid (n_lat),
-            - W is the width of the grid (n_lon).
+    #     Parameters
+    #     ----------
+    #     data_context : torch.Tensor
+    #         Input tensor of shape (B, T, C, H, W), where:
+    #         - B is the batch size, can be > 1
+    #         - T is the context window length (number of time steps),
+    #         - C is the number of grid node features (input_dim_grid_nodes),
+    #         - H is the height of the grid (n_lat),
+    #         - W is the width of the grid (n_lon).
 
-        prediction_window : int, optional
-            Number of time steps to predict autoregressively. Default is 4.
-        """
+    #     prediction_window : int, optional
+    #         Number of time steps to predict autoregressively. Default is 4.
+    #     """
+
+    #     B, T, C, H, W = input_grid.shape
+    #     prediction_window = T - context_window
         
-        # Create a masked grid and fill in :context_window with the context data
-        B, T, C, H, W = data_context.shape
-        masked_grid = torch.zeros(B, T + prediction_window, C, H, W).to(data_context.device) # [B, T + prediction_window, C, H, W]
-        masked_grid[:, :T, :, :, :] = data_context
-    
-        for step in range(prediction_window): 
-            # Pass context data through the model
-            input_grid = masked_grid[:, step:T+step, :, :, :] # [B, T, C, H, W]
-            step_output = self(input_grid) # [B, 1*C, H, W]
-                
-            # Fill the masked grid with the output of the model
-            masked_grid[:, T+step, :, :, :] = step_output # [B, C, H, W]
+    #     # Create a masked grid and fill in :context_window with the context data
+    #     if forcing_channels.max() > 1:
+    #         forcing_mask = torch.zeros(forcing_channels.max() + 1)
+    #         forcing_mask[forcing_channels] = 1
+    #         forcing_channels = forcing_mask.bool() # convert forcing_channels to bool mask
 
-        return masked_grid
+
+    #     data_context = input_grid[:, :context_window, :, :, :] # [B, context_window, C, H, W]
+    #     forcing_context = input_grid[:, :, forcing_channels, :, :] # [B, T, len(forcing_channels), H, W]
+    #     masked_grid = torch.zeros_like(input_grid).to(data_context.device)
+    #     masked_grid[:, :context_window, :, :, :] = data_context
+    #     masked_grid[:, :, forcing_channels, :, :] = forcing_context
+
+    #     for step in range(prediction_window): 
+    #         # Pass context data through the model
+    #         input_grid = masked_grid[:, step:context_window+step, :, :, :].detach().clone() # [B, context_window, C, H, W]
+    #         step_output = self(input_grid) # [B, 1*C, H, W]
+    #         masked_grid[:, context_window+step, ~forcing_channels, :, :] = step_output[:, ~forcing_channels, :, :] # only fill in the non-forcing channels
+                
+    #         # Fill the masked grid with the output of the model
+    #         masked_grid[:, T+step, :, :, :] = step_output # [B, C, H, W]
+
+    #     return masked_grid
     
-    # def predict(self, data_context, prediction_window=4):
+    def predict(self, data_context, prediction_window=4):
         B, T, C, H, W = data_context.shape
         device = data_context.device
 
