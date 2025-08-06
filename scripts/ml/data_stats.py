@@ -32,7 +32,7 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
-    parser.add_argument('--set_file_name', type=str, default='set/space_env_tech_indices_Indices_F10_processed.csv', help='SET dataset file name')
+    parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')

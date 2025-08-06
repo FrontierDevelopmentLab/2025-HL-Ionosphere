@@ -58,3 +58,47 @@ def stack_as_channels(features, image_size=(180,360)):
         c.append(f)
     c = torch.cat(c, dim=0)
     return c
+
+
+# Yeo-Johnson transformation
+# Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3480
+def yeojohnson(X, lambdas):
+    if X.shape != lambdas.shape:
+        raise ValueError("X and lambdas must have the same shape.")
+    if X.ndim != 1:
+        raise ValueError("X must be a 1D tensor.")
+    
+    # Ensure that no lambdas are 0 or 2 to avoid division by zero
+    if torch.isclose(lambdas, torch.zeros_like(lambdas), atol=1e-8).any() or torch.isclose(lambdas, torch.tensor(2.0, dtype=lambdas.dtype, device=lambdas.device), atol=1e-8).any():
+        raise ValueError("Lambdas must not contain 0 or 2 to avoid division by zero.")
+
+    out = torch.zeros_like(X)
+    pos = X >= 0  # binary mask
+
+    # CAUTION: this assumes a lambda will never be 0 or 2
+    out[pos] = (torch.pow(X[pos] + 1, lambdas[pos]) - 1) / lambdas[pos]
+    out[~pos] = -(torch.pow(-X[~pos] + 1, 2 - lambdas[~pos]) - 1) / (2 - lambdas[~pos])
+    return out
+
+
+# Yeo-Johnson inverse transformation
+# Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3424C1-L3431C41
+def yeojhonson_inverse(X, lambdas):
+    if X.shape != lambdas.shape:
+        raise ValueError("X and lambdas must have the same shape.")
+    if X.ndim != 1:
+        raise ValueError("X must be a 1D tensor.")
+    X_original = torch.zeros_like(X)
+    pos = X >= 0
+
+    # Ensure that no lambdas are 0 or 2 to avoid division by zero
+    if torch.isclose(lambdas, torch.zeros_like(lambdas), atol=1e-8).any() or torch.isclose(lambdas, torch.tensor(2.0, dtype=lambdas.dtype, device=lambdas.device), atol=1e-8).any():
+        raise ValueError("Lambdas must not contain 0 or 2 to avoid division by zero.")
+
+
+    # CAUTION: this assumes a lambda will never be 0 or 2
+    X_original[pos] = (X[pos] * lambdas[pos] + 1) ** (1 / lambdas[pos]) - 1
+    X_original[~pos] = 1 - (-(2 - lambdas[~pos]) * X[~pos] + 1) ** (1 / (2 - lambdas[~pos]))
+
+    return X_original
+

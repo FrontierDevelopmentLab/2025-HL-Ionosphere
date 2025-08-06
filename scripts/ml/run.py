@@ -335,7 +335,7 @@ def main():
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
-    parser.add_argument('--set_file_name', type=str, default='set/space_env_tech_indices_Indices_F10_processed.csv', help='SET dataset file name')
+    parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -465,7 +465,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=53, output_channels=53, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=58, output_channels=58, context_window=args.context_window, prediction_window=args.prediction_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -504,7 +504,7 @@ def main():
                             omniweb_seq = omniweb_seq.to(device)
                             omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
                             set_seq = set_seq.to(device)
-                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 4, 180, 360)
+                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
@@ -539,7 +539,7 @@ def main():
                             omniweb_seq = omniweb_seq.to(device)
                             omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
                             set_seq = set_seq.to(device)
-                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 4, 180, 360)
+                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                             loss = model.loss(combined_seq, context_window=args.context_window)
