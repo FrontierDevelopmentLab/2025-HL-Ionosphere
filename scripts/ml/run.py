@@ -369,7 +369,7 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=2, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=8, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
@@ -378,6 +378,7 @@ def main():
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
     parser.add_argument('--dropout', type=float, default=0.25, help='Dropout rate for the model')
+    parser.add_argument('--jpld_weight', type=float, default=1.0, help='Weight for the JPLD loss in the total loss calculation')
 
     args = parser.parse_args()
 
@@ -533,7 +534,7 @@ def main():
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window, jpld_weight=args.jpld_weight)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
@@ -572,7 +573,7 @@ def main():
                             set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window, jpld_weight=args.jpld_weight)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         valid_loss += loss.item()

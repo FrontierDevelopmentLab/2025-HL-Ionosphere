@@ -127,85 +127,96 @@ class ConvLSTM(nn.Module):
 
 
 class IonCastConvLSTM(nn.Module):
-    """The final model for sequence-to-one prediction."""
+    """The final model for sequence-to-sequence prediction."""
     def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4, dropout=0.25):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.context_window = context_window  # Number of time steps in the input sequence during training
-        self.prediction_window = prediction_window  # Number of time steps to predict during training
+        self.context_window = context_window
+        self.prediction_window = prediction_window
         self.dropout = dropout
 
         # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
                                   hidden_dim=hidden_dim, 
                                   kernel_size=(5, 5), 
-                                  num_layers=num_layers, # Number of stacked layers
+                                  num_layers=num_layers,
                                   batch_first=True,
                                   dropout=dropout)
         
         # Final 1x1 convolution to get the desired number of output channels
         self.final_conv = nn.Conv2d(in_channels=hidden_dim, 
-                                    out_channels=output_channels, 
-                                    kernel_size=(1, 1))
-        
+                                  out_channels=output_channels, 
+                                  kernel_size=(1, 1))
 
     def forward(self, x, hidden_state=None):
         # x shape: (B, T, C, H, W)
         
-        # Pass through ConvLSTM
-        # We only need the last hidden state to make the prediction
-        _, hidden_state = self.conv_lstm(x, hidden_state=hidden_state)
+        # Pass through ConvLSTM. layer_output is a sequence of hidden states from the last layer.
+        layer_output, hidden_state = self.conv_lstm(x, hidden_state)
+        # layer_output shape: (B, T, hidden_dim, H, W)
         
-        # Get the last hidden state of the last layer
-        last_hidden_state = hidden_state[-1][0] # h_n of the last layer
+        # To apply the final 2D convolution, we need to reshape the output.
+        # We treat the batch and time dimensions as one.
+        B, T, C, H, W = layer_output.shape
+        layer_output_flat = layer_output.view(B * T, C, H, W)
         
-        # Pass through the final convolution
-        output = self.final_conv(last_hidden_state)
+        # Pass each time step's hidden state through the final convolution
+        output_flat = self.final_conv(layer_output_flat)
+        
+        # Reshape back to the sequence format
+        output = output_flat.view(B, T, self.output_channels, H, W)
         
         return output, hidden_state
-    
-    def predict(self, data_context, prediction_window=4):
-        """ Forecasts the next time step given the context window. """
-        # data_context shape: (batch_size, time_steps, channels, height, width)
-        # time steps = context_window
-        x, hidden_state = self(data_context) # inits hidden state
-        x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-        prediction = [x]
-        for _ in range(prediction_window - 1):
-            # Prepare the next input by appending the last prediction
-            x, hidden_state = self(x, hidden_state=hidden_state)
-            x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-            prediction.append(x)
-        prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
-        return prediction
 
     def loss(self, data, context_window=4, jpld_channel_index=0, jpld_weight=1.0):
         """ Computes a weighted MSE loss for the IonCastConvLSTM model. """
-        # data shape: (batch_size, time_steps, channels, height, width)
-        data_context = data[:, :context_window, :, :, :]
-        data_target = data[:, context_window, :, :, :]
+        # data shape: (B, T_total, C, H, W)
+        # For seq-to-seq, input is steps 0 to T-1, target is steps 1 to T
+        data_input = data[:, :-1, :, :, :]
+        data_target = data[:, 1:, :, :, :]
 
         # Forward pass
-        data_predict, _ = self(data_context)
+        data_predict, _ = self(data_input)
 
-        # Create a weight tensor for the channels, shape (1, C, 1, 1) for broadcasting
-        weights = torch.ones(1, data_target.shape[1], 1, 1, device=data.device)
+        # Calculate per-element squared error
+        elementwise_loss = nn.functional.mse_loss(data_predict, data_target, reduction='none')
+
+        # Create a weight tensor for the channels
+        weights = torch.ones_like(data_target[0, 0, :, :, :]).unsqueeze(0).unsqueeze(0) # Shape (1, 1, C, H, W)
+        weights[:, :, jpld_channel_index, :, :] = jpld_weight
+
+        # Apply weights and calculate the mean
+        loss = torch.mean(weights * elementwise_loss)
         
-        if jpld_weight != 1.0:
-            weights[:, jpld_channel_index, :, :] = jpld_weight
-
-        # Calculate weighted mean squared error
-        # Using reduction='none' allows us to apply weights before averaging.
-        loss = torch.mean(weights * nn.functional.mse_loss(data_predict, data_target, reduction='none'))
-
-        # report also the rmse
-        rmse = torch.sqrt(loss)
-
-        # report also the rmse for the JPLD channel
-        jpld_rmse = torch.sqrt(nn.functional.mse_loss(data_predict[:, jpld_channel_index, :, :], 
-                                                      data_target[:, jpld_channel_index, :, :], reduction='mean'))        
-
+        # Calculate RMSE for diagnostics (unweighted)
+        with torch.no_grad():
+            rmse = torch.sqrt(nn.functional.mse_loss(data_predict, data_target, reduction='mean'))
+            jpld_rmse = torch.sqrt(nn.functional.mse_loss(data_predict[:, :, jpld_channel_index, :, :], 
+                                                          data_target[:, :, jpld_channel_index, :, :], reduction='mean'))
+        
         return loss, rmse, jpld_rmse
+
+    def predict(self, data_context, prediction_window=4):
+        """ Forecasts the next time steps given the context window. """
+        # data_context shape: (B, T_context, C, H, W)
+        
+        # First, process the context to get the initial hidden state
+        _, hidden_state = self(data_context)
+        
+        # Get the last frame of the context as the first input for prediction
+        next_input = data_context[:, -1:, :, :, :]
+        
+        prediction = []
+        for _ in range(prediction_window):
+            # Predict one step ahead
+            output, hidden_state = self(next_input, hidden_state=hidden_state)
+            
+            # The output is the prediction, use it as the next input
+            next_input = output
+            prediction.append(output)
+            
+        prediction = torch.cat(prediction, dim=1)
+        return prediction
