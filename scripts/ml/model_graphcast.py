@@ -288,7 +288,7 @@ class IonCastGNN(nn.Module):
 
     #     return torch.cat([data_context, *predictions], dim=1)
     
-    def predict(self, masked_inputs, prediction_window=4):
+    def predict(self, input_grid, context_window, forcing_channels=None):
         """ 
         Forecasts the next time step given an input grid. 
         Duplication of the forward method to maintain consistency with the IonCastConvLSTM interface.
@@ -304,44 +304,59 @@ class IonCastGNN(nn.Module):
             - H is the height of the grid (n_lat),
             - W is the width of the grid (n_lon).
 
-        prediction_window : int, optional
-            Number of time steps to predict autoregressively. Default is 4.
+        context window : int
+            Number of time steps to pass into the model for each autoregressive step.
         """
-        
-        # Create a masked grid and fill in :context_window with the context data
-        B, T, C, H, W = data_context.shape
-        masked_grid = torch.zeros(B, T + prediction_window, C, H, W).to(data_context.device) # [B, T + prediction_window, C, H, W]
-        masked_grid[:, :T, :, :, :] = data_context
-    
+
+        B, T, C, H, W = input_grid.shape
+        prediction_window = T - context_window
+        if forcing_channels is None:
+            forcing_channels = torch.zeros(C, dtype=torch.bool).to(input_grid.device) # [C] if no forcing channels are passed in, all channels are predicted autoregressively
+
+        # if forcing_channels.max() > 1 or len(forcing_channels) != C:  # NOTE: not the biggest fan of this check, specifically the max check but idea is to check if forcing_channels is a list of indices or a boolean mask
+        if not isinstance(forcing_channels, torch.Tensor) or forcing_channels.dtype != torch.bool or len(forcing_channels) != C:  
+            # If forcing_channels is a list of indices, convert it to a boolean mask
+            forcing_mask = torch.zeros(C, dtype=torch.bool).to(input_grid.device) # [C]
+            forcing_mask[forcing_channels] = True
+            forcing_channels = forcing_mask # convert forcing_channels to bool mask
+
+        data_context = input_grid[:, :context_window, :, :, :] # [B, context_window, C, H, W]
+        forcing_context = input_grid[:, :, forcing_channels, :, :] # [B, T, len(forcing_channels), H, W]
+        masked_grid = torch.zeros_like(input_grid).to(data_context.device)
+        masked_grid[:, :context_window, :, :, :] = data_context
+        masked_grid[:, :, forcing_channels, :, :] = forcing_context # the ground truth forcing channels will be available for all time
+                                                                    # steps as these are assumed to have an analytical solution so they are not masked out
+
         for step in range(prediction_window): 
             # Pass context data through the model
-            input_grid = masked_grid[:, step:T+step, :, :, :] # [B, T, C, H, W]
+            # The reason to detach / clone these is to avoid feeding into the model tensors that were altered in-place 
+            input_grid = masked_grid[:, step:context_window+step, :, :, :].detach().clone() # [B, context_window, C, H, W]
             step_output = self(input_grid) # [B, 1*C, H, W]
-                
-            # Fill the masked grid with the output of the model
-            masked_grid[:, T+step, :, :, :] = step_output # [B, C, H, W]
+            
+            # only fill in the non-forcing channels, if no forcing channels are passed in, all channels are filled with model output autoregressively
+            masked_grid[:, context_window+step, ~forcing_channels, :, :] = step_output[:, ~forcing_channels, :, :] 
 
-        return masked_grid
+        return masked_grid 
     
     # def predict(self, data_context, prediction_window=4):
-        B, T, C, H, W = data_context.shape
-        device = data_context.device
+    #     B, T, C, H, W = data_context.shape
+    #     device = data_context.device
 
-        # We'll collect predictions here
-        predictions = []
+    #     # We'll collect predictions here
+    #     predictions = []
 
-        # Initialize the masked grid with the context
-        masked_grid = data_context.clone()  # shape (B, T, C, H, W)
+    #     # Initialize the masked grid with the context
+    #     masked_grid = data_context.clone()  # shape (B, T, C, H, W)
 
-        for step in range(prediction_window): 
-            input_grid = masked_grid[:, -T:, :, :, :]  # Last T steps as context
-            step_output = self(input_grid)  # shape (B, C, H, W)
-            predictions.append(step_output.unsqueeze(1))  # shape (B, 1, C, H, W)
+    #     for step in range(prediction_window): 
+    #         input_grid = masked_grid[:, -T:, :, :, :]  # Last T steps as context
+    #         step_output = self(input_grid)  # shape (B, C, H, W)
+    #         predictions.append(step_output.unsqueeze(1))  # shape (B, 1, C, H, W)
 
-            # Avoid in-place: update masked_grid with new time step
-            masked_grid = torch.cat([masked_grid, step_output.unsqueeze(1)], dim=1)  # Append along time
+    #         # Avoid in-place: update masked_grid with new time step
+    #         masked_grid = torch.cat([masked_grid, step_output.unsqueeze(1)], dim=1)  # Append along time
 
-        return torch.cat([data_context, *predictions], dim=1)
+    #     return torch.cat([data_context, *predictions], dim=1)
                          
     # def predict(self, data_context, prediction_window=4):
     #     """ Forecasts the next time step given the context window. """
@@ -376,9 +391,7 @@ class IonCastGNN(nn.Module):
             If provided, the model will use the context window idx as the target for the loss.
         prediction_window : int, optional
         """
-        # if n_steps > 1:
-        #     raise NotImplementedError("Multi step forcasting loss not supported yet")
-        
+
         B, T, C, H, W = grid_features.shape
         if context_window is None:
             context_window = T - 1

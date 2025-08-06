@@ -4,6 +4,7 @@ import datetime
 import numpy as np
 import skyfield.api
 
+from util import stack_as_channels
 
 class SunMoonGeometry(Dataset):
     """
@@ -17,10 +18,6 @@ class SunMoonGeometry(Dataset):
 
     The dataset can be indexed by an integer, a datetime object, or an
     ISO-formatted date string.
-    
-    retunr_k_future_timesteps: 
-        Number of future timesteps to return in the dataset. This means that 
-
 
     The output tensor for each item is a stack of the following channels:
     - Channel 0: Cosine of the Sun's zenith angle map.
@@ -33,16 +30,21 @@ class SunMoonGeometry(Dataset):
     - Channel 15: Earth-Moon distance (in Lunar Distances, LD).
     - Channels 16-17: Cyclical features for the day of the year (sin, cos).
 
+    If extra_time_steps is specified, for each time step, the dataset will return another set of 
+    the same features computed for the next time step(s). Each time step is delta_minutes apart.
+    In other words, the number of features returned will be multiplied by (1 + extra_time_steps).
+    
     Note: The scalar values (coordinates, distances, day of year) are broadcast
     to the same spatial dimensions as the zenith angle maps.
     """
-    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, return_k_future_timesteps=0):
+    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0):
         self.date_start = date_start
         self.date_end = date_end
         self.delta_minutes = delta_minutes
         self.image_size = image_size
         self.normalize = normalize
-        self.optional_shift_minutes = internal_shift_minutes # Optional internal shift in minutes; allows inclusion of calculated features 1 step ahead
+        self.combined = combined
+        self.extra_time_steps = extra_time_steps
 
         if self.date_start is None:
             self.date_start = datetime.datetime(2010, 5, 13, 0, 0, 0)
@@ -63,6 +65,7 @@ class SunMoonGeometry(Dataset):
         print('End date                : {}'.format(self.date_end))
         print('Delta                   : {} minutes'.format(self.delta_minutes))
         print('Image size              : {}'.format(self.image_size))
+        print('Extra time steps        : {}'.format(self.extra_time_steps))
 
         # Don't initialize Skyfield objects here
         self._ts = None
@@ -101,48 +104,59 @@ class SunMoonGeometry(Dataset):
         if date.tzinfo is None:
             date = date.replace(tzinfo=datetime.timezone.utc)
 
-        # Internally shift the date if optional_shift_minutes is set
-        if self.internal_shift_minutes:
-            i = date + datetime.timedelta(minutes=self.internal_shift_minutes)
-
-        # get the sun data and the moon data and concat everything in the channel dimension
-        sun_data = self.generate_solar_data(date, normalized=self.normalize)
-        moon_data = self.generate_lunar_data(date, normalized=self.normalize)
-
+        if self.extra_time_steps == 0:
+            return self.get_data(date)
+        else:
+            data = []
+            for i in range(self.extra_time_steps+1):
+                date = date + datetime.timedelta(minutes=i * self.delta_minutes)
+                data.append(self.get_data(date))
+            if self.combined:
+                combined_data = torch.cat([d[0] for d in data], dim=0)
+                date = data[0][1]  # Use the date of the first item
+                return combined_data, date
+            else:
+                combined_maps = torch.cat([d[0] for d in data], dim=0)
+                combined_features = torch.cat([d[1] for d in data], dim=0)
+                date = data[0][2]  # Use the date of the first item
+                return combined_maps, combined_features, date
+        
+    def get_data(self, date):
+        sun_data = self.generate_data(date, 'sun')
+        moon_data = self.generate_data(date, 'moon')
         sun_zenith_angle_map, sun_subsolar_coords, sun_antipode_coords, sun_distance = sun_data
         moon_zenith_angle_map, moon_sublunar_coords, moon_antipode_coords, moon_distance = moon_data
 
-        sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
-        sun_data = torch.tensor(sun_subsolar_coords + sun_antipode_coords + (sun_distance,), dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
-        moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
-        moon_data = torch.tensor(moon_sublunar_coords + moon_antipode_coords + (moon_distance,), dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
+        day_of_year = self.day_of_year(date)
+        solar_features = sun_subsolar_coords + sun_antipode_coords + (sun_distance, )
+        lunar_features = moon_sublunar_coords + moon_antipode_coords + (moon_distance, )
+        all_features = solar_features + lunar_features + (day_of_year, )
 
-        # Add timestamp feature
-        day_of_year_sin, day_of_year_cos = self._get_day_of_year_features(date)
-        time_of_day_sin, time_of_day_cos = self._get_day_of_year_features(date)
-        time_data = torch.tensor([day_of_year_sin, day_of_year_cos, time_of_day_sin, time_of_day_cos], dtype=torch.float32).view(-1, 1, 1).expand(-1, self.image_size[0], self.image_size[1])
+        if self.combined:
+            sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
+            moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
+            combined_features = stack_as_channels(all_features, image_size=self.image_size)
+            combined_data = torch.cat([sun_zenith_angle_map.unsqueeze(0), moon_zenith_angle_map.unsqueeze(0), combined_features], dim=0)
 
-        # Concatenate the maps and data along the channel dimension
-        combined_data = torch.cat((sun_zenith_angle_map.unsqueeze(0), sun_data,
-                                   moon_zenith_angle_map.unsqueeze(0), moon_data,
-                                   time_data), dim=0)
-        
-        return combined_data, date.isoformat()
+            return combined_data, date.isoformat()
+        else:
+            sun_zenith_angle_map = torch.tensor(sun_zenith_angle_map, dtype=torch.float32)
+            moon_zenith_angle_map = torch.tensor(moon_zenith_angle_map, dtype=torch.float32)
+            combined_maps = torch.stack([sun_zenith_angle_map, moon_zenith_angle_map], dim=0)
+            combined_features = torch.tensor(all_features, dtype=torch.float32)
 
-    def _get_day_of_year_features(self, date):
+            return combined_maps, combined_features, date.isoformat()
+
+    def day_of_year(self, date):
         """Calculates the cyclical day-of-year features."""
         day_of_year = date.timetuple().tm_yday
-        days_in_year = 366 if (date.year % 4 == 0 and date.year % 100 != 0) or (date.year % 400 == 0) else 365
-        day_of_year_sin = np.sin(2 * np.pi * (day_of_year - 1) / days_in_year)
-        day_of_year_cos = np.cos(2 * np.pi * (day_of_year - 1) / days_in_year)
-        return day_of_year_sin, day_of_year_cos
-    
-    def _get_time_of_day_features(self, date):
-        """Calculates the cyclical day-of-year features."""
-        time_of_day = date.hour + date.minute / 60.0 + date.second / 3600.0
-        time_of_day_sin = np.sin(2 * np.pi * time_of_day / 24)
-        time_of_day_cos = np.cos(2 * np.pi * time_of_day / 24)
-        return time_of_day_sin, time_of_day_cos
+        if self.normalize:
+            days_in_year = 366 if (date.year % 4 == 0 and date.year % 100 != 0) or (date.year % 400 == 0) else 365
+            day_of_year_sin = np.sin(2 * np.pi * (day_of_year - 1) / days_in_year)
+            day_of_year_cos = np.cos(2 * np.pi * (day_of_year - 1) / days_in_year)
+            return day_of_year_sin, day_of_year_cos
+        else:
+            return day_of_year
 
     def _normalize_coords(self, lat, lon):
         """Normalizes geographic coordinates into a 3D vector suitable for ML.
@@ -163,41 +177,7 @@ class SunMoonGeometry(Dataset):
         lon_y = np.sin(lon_rad)
         return (lat_norm, lon_x, lon_y)
 
-    def generate_solar_data(self, utc_dt, normalized=True):
-        """Generates the Sun's zenith angle map and related geometric data.
-
-        Args:
-            utc_dt (datetime): The timezone-aware datetime for the calculation (must be UTC).
-            normalized (bool): If True (default), all outputs are normalized for ML.
-                If False, outputs are in degrees and kilometers.
-
-        Returns:
-            tuple: A tuple containing four items: (map_array, subsolar_coords,
-                antipode_coords, distance). The format of the coordinates and
-                distance depends on the 'normalized' flag.
-                - If normalized, coords are a 3D vector and distance is in AU.
-                - If not, coords are (lat, lon) degrees and distance is in km.
-        """
-        return self._generate_map_data(utc_dt, 'sun', normalized=normalized)
-
-    def generate_lunar_data(self, utc_dt, normalized=True):
-        """Generates the Moon's zenith angle map and related geometric data.
-
-        Args:
-            utc_dt (datetime): The timezone-aware datetime for the calculation (must be UTC).
-            normalized (bool): If True (default), all outputs are normalized for ML.
-                If False, outputs are in degrees and kilometers.
-
-        Returns:
-            tuple: A tuple containing four items: (map_array, sublunar_coords,
-                antipode_coords, distance). The format of the coordinates and
-                distance depends on the 'normalized' flag.
-                - If normalized, coords are a 3D vector and distance is in LD.
-                - If not, coords are (lat, lon) degrees and distance is in km.
-        """
-        return self._generate_map_data(utc_dt, 'moon', normalized=normalized)
-
-    def _generate_map_data(self, utc_dt, body_name, normalized):
+    def generate_data(self, utc_dt, body_name):
         """
         Helper function to generate a zenith angle map and data for a celestial body.
 
@@ -241,7 +221,7 @@ class SunMoonGeometry(Dataset):
                 np.cos(lat_rad) * np.cos(sub_lat_rad) * np.cos(hour_angle_rad))
         cos_z = np.clip(cos_z, -1.0, 1.0)
 
-        if normalized:
+        if self.normalize:
             distance = astrometric.distance().au if body_name == 'sun' else astrometric.distance().km / AVG_LUNAR_DISTANCE_KM
             sub_coords = self._normalize_coords(sub_lat, sub_lon)
             antipode_coords = self._normalize_coords(antipode_lat, antipode_lon)
