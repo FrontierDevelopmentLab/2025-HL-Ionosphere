@@ -29,6 +29,7 @@ from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
+from dataset_cached import CachedDataset
 from events import EventCatalog
 
 matplotlib.use('Agg')
@@ -228,6 +229,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
     sequence_forecast = sequence[sequence_forecast_start_index:]
 
+    if isinstance(dataset, CachedDataset):
+        dataset = dataset.dataset
     sequence_data = dataset.get_sequence_data(sequence)
     jpld_seq = sequence_data[0]  # Original data
     sunmoon_seq = sequence_data[1]  # Sun and Moon geometry data
@@ -444,6 +447,7 @@ def main():
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
+    parser.add_argument('--cache_datasets', action='store_true', help='If set, pre-load and cache datasets in memory to speed up training')
 
     args = parser.parse_args()
 
@@ -518,6 +522,11 @@ def main():
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
+            
+            if args.cache_datasets:
+                print('Caching datasets in memory')
+                dataset_train = CachedDataset(dataset_train)
+                dataset_valid = CachedDataset(dataset_valid)
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
