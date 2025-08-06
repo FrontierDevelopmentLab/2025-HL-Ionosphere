@@ -95,43 +95,51 @@ omniweb_std_after_yeojohnson = {'omniweb__ae_index__[nT]': 0.599638789174,
                        'omniweb__vy_velocity__[km/s]': 24.061675738624,
                        'omniweb__vz_velocity__[km/s]': 21.392025871686}
 
-omniweb_all_columns_yeojohnson_lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in omniweb_all_columns], dtype=np.float32)
-omniweb_all_columns_mean_of_yeojohnson = np.array([omniweb_mean_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=np.float32)
-omniweb_all_columns_std_of_yeojohnson = np.array([omniweb_std_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=np.float32)
+omniweb_all_columns_yeojohnson_lambdas = torch.tensor([omniweb_yeojohnson_lambdas[col] for col in omniweb_all_columns], dtype=torch.float32)
+omniweb_all_columns_mean_of_yeojohnson = torch.tensor([omniweb_mean_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=torch.float32)
+omniweb_all_columns_std_of_yeojohnson = torch.tensor([omniweb_std_after_yeojohnson[col] for col in omniweb_yeojohnson_lambdas.keys()], dtype=torch.float32)
 
 # Yeo-Johnson transformation
 # Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3480
 def yeojohnson(X, lambdas):
-    out = np.zeros_like(X)
+    if X.shape != lambdas.shape:
+        raise ValueError("X and lambdas must have the same shape.")
+    if X.ndim != 1:
+        raise ValueError("X must be a 1D tensor.")
+    
+    # Ensure that no lambdas are 0 or 2 to avoid division by zero
+    if torch.isclose(lambdas, torch.zeros_like(lambdas), atol=1e-8).any() or torch.isclose(lambdas, torch.tensor(2.0, dtype=lambdas.dtype, device=lambdas.device), atol=1e-8).any():
+        raise ValueError("Lambdas must not contain 0 or 2 to avoid division by zero.")
+
+    out = torch.zeros_like(X)
     pos = X >= 0  # binary mask
 
-    # when x >= 0
-    if abs(lambdas) < np.spacing(1.0):
-        out[pos] = np.log1p(X[pos])
-    else:  # lambdas != 0
-        out[pos] = (np.power(X[pos] + 1, lambdas) - 1) / lambdas
-
-    # when x < 0
-    if abs(lambdas - 2) > np.spacing(1.0):
-        out[~pos] = -(np.power(-X[~pos] + 1, 2 - lambdas) - 1) / (2 - lambdas)
-    else:  # lambdas == 2
-        out[~pos] = -np.log1p(-X[~pos])
+    # CAUTION: this assumes a lambda will never be 0 or 2
+    out[pos] = (torch.pow(X[pos] + 1, lambdas[pos]) - 1) / lambdas[pos]
+    out[~pos] = -(torch.pow(-X[~pos] + 1, 2 - lambdas[~pos]) - 1) / (2 - lambdas[~pos])
     return out
 
 
 # Yeo-Johnson inverse transformation
 # Based on https://github.com/scikit-learn/scikit-learn/blob/c5497b7f7eacfaff061cf68e09bcd48aa93d4d6b/sklearn/preprocessing/_data.py#L3424C1-L3431C41
 def yeojhonson_inverse(X, lambdas):
-    if X >= 0 and lambdas == 0:
-        X_original = np.exp(X) - 1
-    elif X >= 0 and lambdas != 0:
-        X_original = (X * lambdas + 1) ** (1 / lambdas) - 1
-    elif X < 0 and lambdas != 2:
-        X_original = 1 - (-(2 - lambdas) * X + 1) ** (1 / (2 - lambdas))
-    elif X < 0 and lambdas == 2:
-        X_original = 1 - np.exp(-X)
-    return X_original
+    if X.shape != lambdas.shape:
+        raise ValueError("X and lambdas must have the same shape.")
+    if X.ndim != 1:
+        raise ValueError("X must be a 1D tensor.")
+    X_original = torch.zeros_like(X)
+    pos = X >= 0
 
+    # Ensure that no lambdas are 0 or 2 to avoid division by zero
+    if torch.isclose(lambdas, torch.zeros_like(lambdas), atol=1e-8).any() or torch.isclose(lambdas, torch.tensor(2.0, dtype=lambdas.dtype, device=lambdas.device), atol=1e-8).any():
+        raise ValueError("Lambdas must not contain 0 or 2 to avoid division by zero.")
+
+
+    # CAUTION: this assumes a lambda will never be 0 or 2
+    X_original[pos] = (X[pos] * lambdas[pos] + 1) ** (1 / lambdas[pos]) - 1
+    X_original[~pos] = 1 - (-(2 - lambdas[~pos]) * X[~pos] + 1) ** (1 / (2 - lambdas[~pos]))
+
+    return X_original
 
 
 # ionosphere-data/omniweb_karman_2025
@@ -172,29 +180,25 @@ class OMNIWeb(PandasDataset):
         super().__init__('OMNIWeb', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
     def normalize_data(self, data): 
-        data = data.detach().cpu().numpy()
         if self.column == omniweb_all_columns:
             data = yeojohnson(data, omniweb_all_columns_yeojohnson_lambdas)
             data = (data - omniweb_all_columns_mean_of_yeojohnson) / omniweb_all_columns_std_of_yeojohnson
         else:
-            lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=np.float32)
-            means = np.array([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=np.float32)
-            stds = np.array([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=np.float32)
+            lambdas = torch.tensor([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
+            means = torch.tensor([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=torch.float32)
             data = yeojohnson(data, lambdas)
             data = (data - means) / stds
-        data = torch.from_numpy(data)
         return data
 
     def unnormalize_data(self, data):
-        data = data.detach().cpu().numpy()
         if self.column == omniweb_all_columns:
             data = data * omniweb_all_columns_std_of_yeojohnson + omniweb_all_columns_mean_of_yeojohnson
             data = yeojhonson_inverse(data, omniweb_all_columns_yeojohnson_lambdas)
         else:
-            lambdas = np.array([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=np.float32)
-            means = np.array([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=np.float32)
-            stds = np.array([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=np.float32)
+            lambdas = torch.tensor([omniweb_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
+            means = torch.tensor([omniweb_mean_after_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([omniweb_std_after_yeojohnson[col] for col in self.column], dtype=torch.float32)
             data = data * stds + means
             data = yeojhonson_inverse(data, lambdas)
-        data = torch.from_numpy(data)
         return data
