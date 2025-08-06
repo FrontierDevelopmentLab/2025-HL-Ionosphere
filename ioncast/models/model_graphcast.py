@@ -193,6 +193,7 @@ class IonCastGNN(nn.Module):
             produce_aggregated_output_on_all_ranks=produce_aggregated_output_on_all_ranks,
         )
 
+        # Other passed model parameters
         self.input_dim_grid_nodes = input_dim_grid_nodes
         self.output_dim_grid_nodes = output_dim_grid_nodes
         self.hidden_dim = hidden_dim
@@ -200,6 +201,17 @@ class IonCastGNN(nn.Module):
         self.processor_layers = processor_layers
         self.mesh_level = mesh_level
         self.processor_type = processor_type
+        self.num_attention_heads = num_attention_heads
+        self.khop_neighbors = khop_neighbors
+        self.input_dim_mesh_nodes = input_dim_mesh_nodes
+        self.input_dim_edges = input_dim_edges
+        self.aggregation = aggregation
+        self.activation_fn = activation_fn
+        self.norm_type = norm_type
+        self.input_res = input_res  # Input resolution (height, width)
+        
+        # Our parameters
+        self.device = device
         self.context_window = context_window
         self.forcing_channels = forcing_channels  # Store the forcing channels if provided
         
@@ -391,8 +403,6 @@ class IonCastGNN(nn.Module):
         masked_grid = torch.zeros(B, T+1, C, H, W).to(data_context.device)
         masked_grid[:, :context_window, :, :, :] = data_context
         masked_grid[:, :T, forcing_channels, :, :] = forcing_context
-
-        print(f"Masked grid shape: {masked_grid.shape}, forcing context: {forcing_context.shape}, data_context: {data_context.shape}") # Debugging line to check shapes
         
         # If in train mode, only keep forcing channels up to context_window + 1, so the rest are autoregressively predicted 
         # keeping 1 extra channel of the forcing as context means including f_t+1 as context 
@@ -400,7 +410,7 @@ class IonCastGNN(nn.Module):
         if train:
             masked_grid[:, context_window+1:, forcing_channels, :, :] = 0
         
-        # For each autoregressive prediction, get the context, 
+        # For each autoregressive prediction, get the context,
         for step in range(prediction_window): 
             # Pass context data through the model
             # The reason to detach / clone these is to avoid feeding into the model tensors that were altered in-place 
@@ -408,18 +418,11 @@ class IonCastGNN(nn.Module):
             context_window_grid = masked_grid[:, step:context_window+step, :, :, :].detach().clone() # [B, context_window, C, H, W]
             context_window_grid = context_window_grid.permute(0, 2, 1, 3, 4).reshape(B, context_window * C, H, W) # [B, context_window*C, H, W]
 
-
-            print(f"Context window grid shape: {context_window_grid.shape}") # Debugging line to check shapes
-
             # Get the relevant forcing channel context (up through step + 1) and concatenate with the flattened context grid
             future_forcing_context = masked_grid[:, context_window+step, forcing_channels, :, :].detach().clone() # [B, len(forcing_channels), H, W]
             model_input = torch.cat([context_window_grid, future_forcing_context], dim=1) # [B, C * context_window + len(forcing_channels), H, W]
-
-            print(f"Model input shape: {model_input.shape}") # Debugging line to check shapes
  
             step_output = self(model_input) # [B, C, H, W]
-
-            print(f"Step output shape: {step_output.shape}") # Debugging line to check shapes
             
             # only fill in the non-forcing channels, if no forcing channels are passed in, all channels are filled with model output autoregressively
             # Update masked_grid with the step output
@@ -431,10 +434,10 @@ class IonCastGNN(nn.Module):
 
             # Remove last timestep: output from (B, T+1, C, H, W) -> (B, T, C, H, W)
 
-            masked_grid = masked_grid[:, :-1, :, :, :]  # Remove the last time step, we are removing the forcing predictions that are generated for
-                                                        # time T+1 in train mode. This is fine as we never make use of f_T+1 and the only reason we 
-                                                        # added the extra dimension to masked_grid was to allow for f_t+1 to be included as context 
-                                                        # when predicting x_t+1 but not hit an out of bounds error when we reached index T in the loop
+        masked_grid = masked_grid[:, :-1, :, :, :]  # Remove the last time step, we are removing the forcing predictions that are generated for
+                                                    # time T+1 in train mode. This is fine as we never make use of f_T+1 and the only reason we 
+                                                    # added the extra dimension to masked_grid was to allow for f_t+1 to be included as context 
+                                                    # when predicting x_t+1 but not hit an out of bounds error when we reached index T in the loop
 
         return masked_grid 
 
@@ -565,7 +568,6 @@ class IonCastGNN(nn.Module):
             If True, the model will be trained to predict the forcing channels autoregressively.
             If False, the forcing channels will be provided as context for all time steps.
         """
-
         context_window = self.context_window
 
         # Check if grid_features is at least context_window + prediction_window long
@@ -582,7 +584,7 @@ class IonCastGNN(nn.Module):
         forcing_targets = grid_features[:, (context_window)+1:T+1, forcing_channels, :, :] # shape (B, T - context_window - 1, n_forcing_channels, H, W)
 
         # pass in the mask list to predict from loss so that entries not used in the loss will be included in forcings
-        output_grid = self.predict(grid_features, context_window=context_window, forcing_channels=forcing_channels, train=train_on_predicted_forcings) # shape (B, T, C, H, W) 
+        output_grid = self.predict(grid_features, context_window=context_window, train=train_on_predicted_forcings) # shape (B, T, C, H, W) 
 
         # for the forcing_preds, since we use f_t+1 as context at time t, at time t, we compute the loss between the prediction of f_t+2 and the target of f_t+2,
         autoreg_preds = output_grid[:, context_window:T+1, ~forcing_channels, :, :] # the reason to go from context_window to T+1 is that the first prediction is for time context_window, and the last prediction is for time T so this cuts out the extra T+1 output
@@ -601,8 +603,8 @@ class IonCastGNN(nn.Module):
 
         autoreg_recon_loss = nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='sum') # Sum over all pixels and channels
         forcing_recon_loss = nn.functional.mse_loss(forcing_preds, forcing_targets, reduction='sum') # Sum over all pixels and channels
-        autoreg_recon_loss = autoreg_recon_loss / (autoreg_recon_loss.shape[0] * autoreg_recon_loss.shape[1] * autoreg_recon_loss.shape[2]) # Average over batch size, channels, and time steps
-        forcing_recon_loss = forcing_recon_loss / (forcing_recon_loss.shape[0] * forcing_recon_loss.shape[1] * forcing_recon_loss.shape[2]) # Average over batch size, channels, and time steps
+        autoreg_recon_loss = autoreg_recon_loss / (autoreg_preds.shape[0] * autoreg_preds.shape[1] * autoreg_preds.shape[2]) # Average over batch size, channels, and time steps
+        forcing_recon_loss = forcing_recon_loss / (forcing_preds.shape[0] * forcing_preds.shape[1] * forcing_preds.shape[2]) # Average over batch size, channels, and time steps
 
         if train_on_predicted_forcings:
             recon_loss = autoreg_recon_loss + forcing_recon_loss # Combine the losses, could also weight them differently if needed

@@ -24,9 +24,6 @@ def stack_features(
     assert n_img_datasets > 0, f"n_img_datasets {n_img_datasets} must be greater than 0"
     assert len(sequence_batch) > 0, f"sequence_batch of length {len(sequence_batch)} must not be empty"
 
-
-    # elapsed_time = timer("process dataset features")
-
     # List to hold all features stacked in shape [B, T, C, H, W]
     features_list = []
     
@@ -62,3 +59,49 @@ def stack_features(
     return stacked_features  # [B, T, C_total, H, W]
 
 
+def calc_shapes_for_stack_features(seq_dataset_batch, aux_datasets, context_window, batched=True):
+# Calculate the number of image-like features and make sure image-like datasets are before non-image-like datasets in the dataset list
+    img_tensor_ndim = 4
+    channel_idx = 1
+
+    if batched: # this accounts for the offset caused by the inclusion of the batch dimension
+        img_tensor_ndim += 1
+        channel_idx += 1
+
+    n_img_datasets = 0
+    non_img_encountered_flag = False
+    len_forcing_channel = 0
+    forcing_channels = None
+
+    # if 'sunmoon' is in the aux_datasets, we need to find the channel index it begins at
+    if 'sunmoon' in aux_datasets: 
+        sunmoon_idx = aux_datasets.index('sunmoon') + 1 # Add 1 to account for the JPLD dataset at index 0
+        sunmoon_channel_idx = 0
+
+    for idx, T in enumerate(seq_dataset_batch):
+        if isinstance(T, torch.Tensor):
+            # Check if the dataset is image-like (5D tensor) or non-image-like (3D tensor): [B, T, C, H, W] vs. [B, T, C]
+            if len(T.shape) == img_tensor_ndim:
+                if non_img_encountered_flag:
+                    raise ValueError('All image-like datasets must be before non-image-like datasets in the dataset list')
+                n_img_datasets += 1
+            else:
+                non_img_encountered_flag = True
+
+            if 'sunmoon' in aux_datasets:
+                # Get the index of the final channel before the sunmoon dataset
+                if idx < sunmoon_idx:
+                    sunmoon_channel_idx += T.shape[channel_idx] 
+
+                # If we are at the sunmoon dataset, we need to get the number of channels in the sunmoon dataset
+                elif idx == sunmoon_idx:
+                    len_forcing_channel = T.shape[channel_idx] # Get the number of channels in the sunmoon dataset
+                    forcing_channels = range(sunmoon_channel_idx, sunmoon_channel_idx + len_forcing_channel) # Get the channel indices for the forcing channels
+
+    # Get the number of channels in the input and compute the number of features
+    dummy_batch = stack_features(seq_dataset_batch, n_img_datasets=n_img_datasets)
+    _, _, C, _, _ = dummy_batch.shape # B, T, C, H, W
+
+    n_feats = context_window * C + len_forcing_channel
+
+    return n_feats, C, forcing_channels, n_img_datasets

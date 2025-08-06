@@ -4,7 +4,8 @@ import datetime
 import numpy as np
 import skyfield.api
 
-from util import stack_as_channels
+# from util import stack_as_channels
+from ioncast.utils.util import stack_as_channels
 
 class SunMoonGeometry(Dataset):
     """
