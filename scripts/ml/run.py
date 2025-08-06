@@ -15,6 +15,7 @@ import matplotlib.animation as animation
 import cartopy.crs as ccrs
 import glob
 import imageio
+import shutil
 
 from util import Tee
 from util import set_random_seed
@@ -296,7 +297,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
             print(f'Saved channel {i} forecast video to {file_name_channel}')
 
 
-def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, file_name):
+def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -324,6 +325,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'valid_rmse_losses': valid_rmse_losses,
             'train_jpld_rmse_losses': train_jpld_rmse_losses,
             'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
             'model_hidden_dim': model.hidden_dim,
@@ -346,6 +348,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'valid_rmse_losses': valid_rmse_losses,
             'train_jpld_rmse_losses': train_jpld_rmse_losses,
             'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
             'model_hidden_dim': model.hidden_dim,
@@ -399,14 +402,13 @@ def load_model(file_name, device):
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
     scheduler_state_dict = checkpoint['scheduler_state_dict']
-    
-    # Add new lists, with .get for backward compatibility
-    train_rmse_losses = checkpoint.get('train_rmse_losses', [])
-    valid_rmse_losses = checkpoint.get('valid_rmse_losses', [])
-    train_jpld_rmse_losses = checkpoint.get('train_jpld_rmse_losses', [])
-    valid_jpld_rmse_losses = checkpoint.get('valid_jpld_rmse_losses', [])
+    train_rmse_losses = checkpoint['train_rmse_losses']
+    valid_rmse_losses = checkpoint['valid_rmse_losses']
+    train_jpld_rmse_losses = checkpoint['train_jpld_rmse_losses']
+    valid_jpld_rmse_losses = checkpoint['valid_jpld_rmse_losses']
+    best_valid_rmse = checkpoint['best_valid_rmse']
 
-    return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses
+    return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse
 
 
 
@@ -549,7 +551,7 @@ def main():
                 model_files.sort()
                 model_file = model_files[-1]
                 print('Resuming training from model file: {}'.format(model_file))
-                model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses = load_model(model_file, device)
+                model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse = load_model(model_file, device)
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
@@ -578,6 +580,7 @@ def main():
                 valid_rmse_losses = []
                 train_jpld_rmse_losses = []
                 valid_jpld_rmse_losses = []
+                best_valid_rmse = float('inf')
 
                 model = model.to(device)
 
@@ -666,13 +669,13 @@ def main():
                     valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
                     print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
 
-                    # scheduler.step(valid_loss)
+                    scheduler.step(valid_rmse_loss)
 
                     file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
                     # Save model
                     model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                    save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, model_file)
+                    save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file)
                     if not args.save_all_models:
                         # Remove previous model files if not saving all models
                         previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
@@ -799,6 +802,20 @@ def main():
                                     title = f'Event: {event_id}, Kp={max_kp}'
                                     run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
+                    # --- Best Model Checkpointing Logic ---
+                    if valid_rmse_loss < best_valid_rmse:
+                        best_valid_rmse = valid_rmse_loss
+                        print(f'\n*** New best validation RMSE: {best_valid_rmse:.4f}***\n')
+                        # copy model checkpoint and all plots/videos to the best model directory
+                        best_model_dir = os.path.join(args.target_dir, 'best_model')
+                        print(f'Saving best model to {best_model_dir}')
+                        # delete the previous best model directory if it exists
+                        if os.path.exists(best_model_dir):
+                            shutil.rmtree(best_model_dir)
+                        os.makedirs(best_model_dir, exist_ok=True)
+                        for file in os.listdir(args.target_dir):
+                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.mp4') or file.endswith('.pth')):
+                                shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
 
