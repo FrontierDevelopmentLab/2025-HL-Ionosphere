@@ -263,7 +263,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     )
 
 
-def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, file_name):
+def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -272,6 +272,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
             'model_z_dim': model.z_dim,
@@ -283,6 +284,7 @@ def save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, f
             'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
             'model_input_channels': model.input_channels,
@@ -323,7 +325,8 @@ def load_model(file_name, device):
     iteration = checkpoint['iteration']
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
-    return model, optimizer, epoch, iteration, train_losses, valid_losses
+    scheduler_state_dict = checkpoint['scheduler_state_dict']
+    return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict
 
 
 
@@ -339,20 +342,20 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-03-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=3e-4, help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')    
+    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=8, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
@@ -455,9 +458,11 @@ def main():
                 model_files.sort()
                 model_file = model_files[-1]
                 print('Resuming training from model file: {}'.format(model_file))
-                model, optimizer, epoch, iteration, train_losses, valid_losses = load_model(model_file, device)
+                model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict = load_model(model_file, device)
                 epoch_start = epoch + 1
                 iteration = iteration + 1
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
+                scheduler.load_state_dict(scheduler_state_dict)
                 print('Next epoch    : {:,}'.format(epoch_start+1))
                 print('Next iteration: {:,}'.format(iteration+1))
             else:
@@ -470,6 +475,7 @@ def main():
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
                 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
                 iteration = 0
                 epoch_start = 0
                 train_losses = []
@@ -513,6 +519,7 @@ def main():
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
                         loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         optimizer.step()
                         iteration += 1
 
@@ -550,11 +557,13 @@ def main():
                 valid_losses.append((iteration, valid_loss))
                 print(f'Validation Loss: {valid_loss:.4f}')
 
+                scheduler.step(valid_loss)
+
                 file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
                 # Save model
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                save_model(model, optimizer, epoch, iteration, train_losses, valid_losses, model_file)
+                save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, model_file)
 
                 # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')

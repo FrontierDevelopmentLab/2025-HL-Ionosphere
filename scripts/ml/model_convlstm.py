@@ -61,14 +61,19 @@ class ConvLSTM(nn.Module):
         self.batch_first = batch_first
         self.num_layers = num_layers
         
-        # Create a list of ConvLSTM cells
+        # Create a list of ConvLSTM cells and LayerNorm layers
         self.cell_list = nn.ModuleList()
+        self.norm_list = nn.ModuleList()
         for i in range(self.num_layers):
             cur_input_dim = input_dim if i == 0 else hidden_dim
             self.cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
                                                hidden_dim=hidden_dim,
                                                kernel_size=kernel_size,
                                                bias=bias))
+            # Add LayerNorm for all but the last layer's output
+            if i < self.num_layers - 1:
+                self.norm_list.append(nn.LayerNorm([hidden_dim, 180, 360]))
+
 
     def forward(self, x, hidden_state=None):
         if not self.batch_first:
@@ -92,6 +97,9 @@ class ConvLSTM(nn.Module):
             output_inner = []
             for t in range(seq_len):
                 h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h, c])
+                # Apply LayerNorm to the hidden state before passing to the next layer
+                if layer_idx < self.num_layers - 1:
+                    h = self.norm_list[layer_idx](h)
                 output_inner.append(h)
 
             layer_output = torch.stack(output_inner, dim=1)
@@ -112,7 +120,7 @@ class ConvLSTM(nn.Module):
 
 class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-one prediction."""
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=64, num_layers=4, context_window=4, prediction_window=4):
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -164,16 +172,23 @@ class IonCastConvLSTM(nn.Module):
         prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
         return prediction
 
-    def loss(self, data, context_window=4):
-        """ Computes the loss for the IonCastConvLSTM model. """
-        # data shape: (batch_size, time_steps, channels=1, height, width)
-        # time steps = context_window + prediction_window
-
-        data_context = data[:, :context_window, :, :, :] # shape (batch_size, context_window, channels, height, width)
-        data_target = data[:, context_window, :, :, :] # shape (batch_size, channels, height, width)
+    def loss(self, data, context_window=4, jpld_channel_index=0, jpld_weight=1.0):
+        """ Computes a weighted MSE loss for the IonCastConvLSTM model. """
+        # data shape: (batch_size, time_steps, channels, height, width)
+        data_context = data[:, :context_window, :, :, :]
+        data_target = data[:, context_window, :, :, :]
 
         # Forward pass
-        data_predict, _ = self(data_context) # shape (batch_size, channels, height, width)
-        recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')  # Sum over all pixels and channels
-        recon_loss = recon_loss / (data_target.shape[0] * data_target.shape[1]) # Average over batch size and channels
-        return recon_loss
+        data_predict, _ = self(data_context)
+
+        # Create a weight tensor for the channels, shape (1, C, 1, 1) for broadcasting
+        weights = torch.ones(1, data_target.shape[1], 1, 1, device=data.device)
+        
+        if jpld_weight != 1.0:
+            weights[:, jpld_channel_index, :, :] = jpld_weight
+
+        # Calculate weighted mean squared error
+        # Using reduction='none' allows us to apply weights before averaging.
+        loss = torch.mean(weights * nn.functional.mse_loss(data_predict, data_target, reduction='none'))
+        
+        return loss
