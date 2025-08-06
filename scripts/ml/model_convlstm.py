@@ -61,7 +61,7 @@ class ConvLSTM(nn.Module):
         self.batch_first = batch_first
         self.num_layers = num_layers
         
-        # Create a list of ConvLSTM cells and LayerNorm layers
+        # Create a list of ConvLSTM cells and GroupNorm layers
         self.cell_list = nn.ModuleList()
         self.norm_list = nn.ModuleList()
         for i in range(self.num_layers):
@@ -70,9 +70,10 @@ class ConvLSTM(nn.Module):
                                                hidden_dim=hidden_dim,
                                                kernel_size=kernel_size,
                                                bias=bias))
-            # Add LayerNorm for all but the last layer's output
+            # Add GroupNorm for all but the last layer's output
             if i < self.num_layers - 1:
-                self.norm_list.append(nn.LayerNorm([hidden_dim, 180, 360]))
+                # Use GroupNorm with 1 group, which is equivalent to LayerNorm over channels
+                self.norm_list.append(nn.GroupNorm(num_groups=1, num_channels=hidden_dim))
 
 
     def forward(self, x, hidden_state=None):
@@ -97,7 +98,7 @@ class ConvLSTM(nn.Module):
             output_inner = []
             for t in range(seq_len):
                 h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h, c])
-                # Apply LayerNorm to the hidden state before passing to the next layer
+                # Apply GroupNorm to the hidden state before passing to the next layer
                 if layer_idx < self.num_layers - 1:
                     h = self.norm_list[layer_idx](h)
                 output_inner.append(h)
