@@ -32,8 +32,8 @@ def get_decoder(out_channels=1, hidden_dim=16):
         nn.BatchNorm2d(hidden_dim),
         nn.LeakyReLU(),
         nn.ConvTranspose2d(hidden_dim, out_channels, 3, stride=2, padding=1, output_padding=1),
-        nn.BatchNorm2d(out_channels),
-        nn.LeakyReLU(),
+        # nn.BatchNorm2d(out_channels),
+        # nn.LeakyReLU(),
         )
 
 

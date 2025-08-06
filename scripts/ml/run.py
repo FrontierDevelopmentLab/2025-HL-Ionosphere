@@ -124,7 +124,7 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
 
 
 def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
-                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None):
+                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None, cbar_label='TEC (TECU)'):
     """
     Pre-render all frames to avoid memory accumulation during animation.
     Now includes colorbars in each frame.
@@ -161,19 +161,24 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
         cbar_ax_top = fig_temp.add_subplot(gs[0, 1])
         cbar_ax_bottom = fig_temp.add_subplot(gs[1, 1])
         
-        # Create the maps and get the image objects for colorbars
+        # Create the top map and get its image object. This will use the function's vmin/vmax or auto-scale.
         im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
                                            title=titles_top[i] if titles_top else None)
-        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
+        
+        # Get the effective color limits from the top plot to ensure the bottom plot uses the exact same scale.
+        vmin_actual, vmax_actual = im_top.get_clim()
+        
+        # Create the bottom map using the same color limits as the top map.
+        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin_actual, vmax=vmax_actual,
                                               title=titles_bottom[i] if titles_bottom else None)
         
-        # Add colorbars
+        # Add colorbars. They will now be identical.
         cbar_top = fig_temp.colorbar(im_top, cax=cbar_ax_top)
-        cbar_top.set_label("TEC (TECU)")
-        
+        cbar_top.set_label(cbar_label)
+
         cbar_bottom = fig_temp.colorbar(im_bottom, cax=cbar_ax_bottom)
-        cbar_bottom.set_label("TEC (TECU)")
-        
+        cbar_bottom.set_label(cbar_label)
+
         # Convert to array - fix deprecation warning
         fig_temp.canvas.draw()
         frame_array = np.frombuffer(fig_temp.canvas.buffer_rgba(), dtype=np.uint8)
@@ -242,10 +247,11 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=1)  # Combine along the channel dimension
 
     combined_seq_context = combined_seq[:sequence_forecast_start_index]  # Context data for forecast
+    combined_seq_original = combined_seq[sequence_forecast_start_index:]  # Original data for forecast
     combined_seq_forecast = model.predict(combined_seq_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
     jpld_forecast = combined_seq_forecast[:, 0]  # Extract JPLD channels from the forecast
-    jpld_original = jpld_seq[sequence_forecast_start_index:]
+    jpld_original = combined_seq_original[:, 0]
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
@@ -258,10 +264,33 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
         file_name=file_name,
-        vmin=0, vmax=100,
+        vmin=0, vmax=120,
         titles_top=titles_original,
         titles_bottom=titles_forecast
     )
+
+    if args.save_all_channels:
+        num_channels = combined_seq.shape[1]
+        for i in range(num_channels):
+            channel_original = combined_seq_original[:, i]
+            channel_forecast = combined_seq_forecast[:, i]
+            channel_original_unnormalized = channel_original
+            channel_forecast_unnormalized = channel_forecast
+
+            titles_channel_original = [f'Channel {i} Original: {d} - {title}' for d in sequence_forecast]
+            titles_channel_forecast = [f'Channel {i} Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast)]
+
+            file_name_channel = os.path.join(os.path.dirname(file_name), os.path.basename(file_name).replace('.mp4', f'_channel_{i:02d}.mp4'))
+            save_gim_video_comparison(
+                gim_sequence_top=channel_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+                gim_sequence_bottom=channel_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+                file_name=file_name_channel,
+                # vmin=0, vmax=100,
+                titles_top=titles_channel_original,
+                titles_bottom=titles_channel_forecast,
+                cbar_label=''
+            )
+            print(f'Saved channel {i} forecast video to {file_name_channel}')
 
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, file_name):
@@ -414,6 +443,7 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.25, help='Dropout rate for the model')
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
+    parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
 
     args = parser.parse_args()
 
@@ -662,7 +692,7 @@ def main():
                 plt.close()
 
                 # Plot RMSE losses
-                plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}rmse-loss.pdf')
+                plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.pdf')
                 print(f'Saving RMSE plot to {plot_rmse_file}')
                 plt.figure(figsize=(10, 5))
                 if train_rmse_losses:
@@ -674,7 +704,7 @@ def main():
                 if valid_jpld_rmse_losses:
                     plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation RMSE (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
                 plt.xlabel('Iteration')
-                plt.ylabel('RMSE Loss')
+                plt.ylabel('RMSE')
                 plt.yscale('log')
                 plt.grid(True)
                 plt.legend()
