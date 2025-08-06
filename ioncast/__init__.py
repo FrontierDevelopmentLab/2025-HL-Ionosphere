@@ -17,7 +17,7 @@ from .datasets.dataset_webdataset import *
 
 # Import utility functions
 from .utils.subsolar_functions import compute_sublunar_point, compute_subsolar_point
-from .utils.events import *
+from .utils.events import EventCatalog 
 from .utils.util import *
 from .utils.plot_functions import *
 

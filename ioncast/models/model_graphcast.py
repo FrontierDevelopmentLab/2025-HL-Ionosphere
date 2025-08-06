@@ -550,7 +550,7 @@ class IonCastGNN(nn.Module):
     #     prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
     #     return prediction
 
-    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
+    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
         """ 
         Computes the loss for the IonCastGraph model. 
         In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
@@ -577,6 +577,7 @@ class IonCastGNN(nn.Module):
 
         # Convert forcing_channels to a boolean mask
         forcing_channels = self._get_forcing_mask(self.forcing_channels, C, grid_features.device)
+        # print(f"DEBUG:\n forcing_channels: {forcing_channels},\n self.forcing_channels: {self.forcing_channels},\n C: {C},\n grid_features.device: {grid_features.device}")
         
         # Separate out the autoregressive targets and forcing targets
         # input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
@@ -601,15 +602,28 @@ class IonCastGNN(nn.Module):
         #     autoreg_preds = autoreg_preds[:, :, channel_list, :, :]
         #     all_targets = all_targets[:, :, channel_list, :, :]
 
-        autoreg_recon_loss = nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='sum') # Sum over all pixels and channels
-        forcing_recon_loss = nn.functional.mse_loss(forcing_preds, forcing_targets, reduction='sum') # Sum over all pixels and channels
-        autoreg_recon_loss = autoreg_recon_loss / (autoreg_preds.shape[0] * autoreg_preds.shape[1] * autoreg_preds.shape[2]) # Average over batch size, channels, and time steps
-        forcing_recon_loss = forcing_recon_loss / (forcing_preds.shape[0] * forcing_preds.shape[1] * forcing_preds.shape[2]) # Average over batch size, channels, and time steps
+        JPLD_preds = autoreg_preds[:,:, 0:1, :, :] # JPLD is the first channel in the autoregressive predictions
+        JPLD_targets = autoreg_targets[:,:,0:1, :, :] # JPLD is the first channel in the autoregressive targets
+        B_jpld, T_jpld, C_jpld, H_jpld, W_jpld = JPLD_preds.shape
 
-        if train_on_predicted_forcings:
-            recon_loss = autoreg_recon_loss + forcing_recon_loss # Combine the losses, could also weight them differently if needed
+        aux_preds = autoreg_preds[:,:, 1:, :, :] # aux is all other non-forcing channels in the autoregressive predictions
+        aux_targets = autoreg_targets[:,:, 1:, :, :] # aux is all other non-forcing channels in the autoregressive targets
+        B_aux, T_aux, C_aux, H_aux, W_aux = aux_preds.shape
+
+        jpld_recon_loss = nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='sum') # Sum over all pixels and channels
+        jpld_recon_loss = jpld_recon_loss / (B_jpld * T_jpld * C_jpld * H_jpld * W_jpld) # Average over batch size, channels, and time steps
+
+        aux_recon_loss = nn.functional.mse_loss(aux_preds, aux_targets, reduction='sum') # Sum over all pixels and channels
+        aux_recon_loss = aux_recon_loss / (B_aux * T_aux * C_aux * H_aux * W_aux) # Average over batch size, channels, and time steps
+
+        forcing_recon_loss = nn.functional.mse_loss(forcing_preds, forcing_targets, reduction='sum') # Sum over all pixels and channels
+        forcing_recon_loss = forcing_recon_loss / (forcing_preds.shape[0] * forcing_preds.shape[1] * forcing_preds.shape[2]) # Average over batch size, channels, and time steps
+        # print(f"DEBUG Loss:\n autoreg_recon_loss: {autoreg_recon_loss},\n forcing_reconn_loss: {forcing_recon_loss},\n autoreg_preds.shape: {autoreg_preds.shape},\n autoreg_targets.shape: {autoreg_targets.shape},\n forcing_preds.shape: {forcing_preds.shape},\n forcing_targets.shape: {forcing_targets.shape}")
+     
+        if train_on_predicted_forcings and forcing_preds.shape[1] != 0:
+            recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss + forcing_recon_loss # Combine the losses, could also weight them differently if needed
         else: # Note I suspect this else is redundant as if train_on_predicted_forcings is false, forcing_recon_loss should be 0
-            recon_loss = autoreg_recon_loss
+            recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss 
         # For simplicity, we ca  return just the reconstruction loss
         return recon_loss
 

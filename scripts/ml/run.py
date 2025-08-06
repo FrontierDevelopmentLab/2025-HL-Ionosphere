@@ -1,4 +1,5 @@
 from ioncast import * 
+from ioncast import EventCatalog
 # from model_convlstm import IonCastConvLSTM
 # from model_graphcast import IonCastGNN
 # from graphcast_utils import stack_features
@@ -10,8 +11,6 @@ from ioncast import *
 # from dataset_union import UnionDataset, Union
 # from dataset_sequences import Sequences
 # from event_catalog import EventCatalog
-
-
 
 import argparse
 import datetime
@@ -359,14 +358,22 @@ def main():
             date_exclusions = []
             aux_datasets_valid_dict = {}
 
-            # Process excluded dates
             print('Processing excluded dates')
             if args.test_event_id:
                 for event_id in args.test_event_id:
                     print('Excluding event ID: {}'.format(event_id))
+
                     if event_id not in EventCatalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    _, _, exclusion_start, exclusion_end, _, _, _ = EventCatalog[event_id]
+                    # 'date_start': date_start,
+                    # 'date_end': date_end,
+                    # 'duration': duration,
+                    # 'max_kp': max_kp,
+                    # 'time_steps': time_steps
+                    exclusion_start, exclusion_end, _, _, _ = EventCatalog[event_id].values()
+                    # exclusion_start = EventCatalog
+                    print(EventCatalog[event_id])
+                    print('Exclusion start: {}, end: {}'.format(exclusion_start, exclusion_end))
                     exclusion_start = datetime.datetime.fromisoformat(exclusion_start)
                     exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
                     date_exclusions.append((exclusion_start, exclusion_end))
@@ -706,8 +713,9 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
+                                date_start, date_end, _, max_kp, _ = event.values()
                                 print('* Testing event ID: {}'.format(event_id))
+                                date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
                                 file_name = os.path.join(args.target_dir, f'{file_name_prefix}test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
@@ -720,14 +728,15 @@ def main():
                                 if event_id not in EventCatalog:
                                     raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                                 event = EventCatalog[event_id]
-                                _, _, date_start, date_end, _, max_kp, _ = event
+                                date_start, date_end, _, max_kp, _ = event.values()
                                 print('* Testing seen event ID: {}'.format(event_id))
                                 date_start = datetime.datetime.fromisoformat(date_start)
                                 date_end = datetime.datetime.fromisoformat(date_end)
 
                                 # Check if the event is in the training dataset range
+                                # print()
                                 if date_start < dataset_train.date_start or date_end > dataset_train.date_end:
-                                    print(f'Event {event_id} is not in the training dataset range ({dataset_train.date_start} - {dataset_train.date_end}), skipping.')
+                                    print(f'Event {event_id} is not in the training dataset range ({dataset_train.date_start} - {dataset_train.date_end}), got instead ({date_start}) - ({date_end}). skipping.')
                                     continue
 
                                 date_forecast_start = date_start + datetime.timedelta(minutes=model.context_window * args.delta_minutes)
@@ -750,7 +759,7 @@ def main():
                         if event_id not in EventCatalog:
                             raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
                         event = EventCatalog[event_id]
-                        _, _, date_start, date_end, _, max_kp, _ = event
+                        date_start, date_end, _, max_kp, _ = event.values()
                         print('* Testing event ID: {}'.format(event_id))
                         date_start = datetime.datetime.fromisoformat(date_start)
                         date_end = datetime.datetime.fromisoformat(date_end)
@@ -801,8 +810,11 @@ if __name__ == '__main__':
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
 # GraphCast example
-# With more aux datasets
+# With more aux datasets                           
 # python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-sunmoon-celestrak --num_workers 4 --batch_size 1 --model_type IonCastGNN --epochs 1 --learning_rate 1e-3 --weight_decay 0.0 --context_window 2 --prediction_window 1 --num_evals 1 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --mesh_level 4 --device cuda:0
 
-# Baseline without auxiliary datasets
-# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-debug-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --date_start 2022-07-01T00:00:00 --date_end 2022-07-01T05:00:00 --mesh_level 4 --device cuda:0 --train_on_predicted_forcings
+# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-debug-5 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --date_start 2015-10-07T00:00:00 --date_end 2015-10-10T00:00:00 --mesh_level 4 --device cuda:0 --test_event_seen_id G0H9-201510081500 --test_event_id G0H9-201509100000
+
+
+
+# python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-debug-6 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 6 --device cuda:0 --test_event_seen_id G0H3-201505130900 --test_event_id G1H3-201506080600
