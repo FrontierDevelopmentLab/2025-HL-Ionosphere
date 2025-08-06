@@ -628,7 +628,7 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                if epoch % args.valid_every_nth_epoch == 0:
+                if (epoch+1) % args.valid_every_nth_epoch == 0:
                     print('*** Validation')
                     model.eval()
                     valid_loss = 0.0
