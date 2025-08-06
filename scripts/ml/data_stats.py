@@ -73,6 +73,7 @@ def main():
                 for column in ['Kp', 'Ap']:
                     runs.append((f'normalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=True, column=[column]), f'CELESTRAK {column} (normalized)'))
                     runs.append((f'unnormalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=False, column=[column]), f'CELESTRAK {column} (unnormalized)'))
+                    runs.append((f'normalized_unnormalized_{column}', CelesTrak(dataset_celestrak_file_name, normalize=True, column=[column]), f'CELESTRAK {column} (normalized and unnormalized)'))
             elif instrument == 'omniweb':
                 runs = []
                 for column in omniweb_all_columns:
@@ -84,6 +85,7 @@ def main():
                 for column in set_all_columns:
                     runs.append((f'normalized_{column}', SET(dataset_set_file_name, normalize=True, column=[column]), f'SET {column} (normalized)'))
                     runs.append((f'unnormalized_{column}', SET(dataset_set_file_name, normalize=False, column=[column]), f'SET {column} (unnormalized)'))
+                    runs.append((f'normalized_unnormalized_{column}', SET(dataset_set_file_name, normalize=True, column=[column]), f'SET {column} (normalized and unnormalized)'))
             else:
                 print(f"Instrument '{instrument}' not recognized. Skipping.")
                 continue
