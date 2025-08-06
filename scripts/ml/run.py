@@ -448,6 +448,7 @@ def main():
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
     parser.add_argument('--cache_datasets', action='store_true', help='If set, pre-load and cache datasets in memory to speed up training')
+    parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
 
     args = parser.parse_args()
 
@@ -627,175 +628,176 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                print('*** Validation')
-                model.eval()
-                valid_loss = 0.0
-                valid_rmse_loss = 0.0
-                valid_jpld_rmse_loss = 0.0
-                with torch.no_grad():
-                    for batch in valid_loader:
+                if epoch % args.valid_every_nth_epoch == 0:
+                    print('*** Validation')
+                    model.eval()
+                    valid_loss = 0.0
+                    valid_rmse_loss = 0.0
+                    valid_jpld_rmse_loss = 0.0
+                    with torch.no_grad():
+                        for batch in valid_loader:
+                            if args.model_type == 'VAE1':
+                                jpld, _ = batch
+                                jpld = jpld.to(device)
+                                loss = model.loss(jpld)
+                            elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                                jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
+                                jpld_seq = jpld_seq.to(device)
+                                sunmoon_seq = sunmoon_seq.to(device)
+                                celestrak_seq = celestrak_seq.to(device)
+                                celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
+                                omniweb_seq = omniweb_seq.to(device)
+                                omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
+                                set_seq = set_seq.to(device)
+                                set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
+
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
+                                loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                            else:
+                                raise ValueError('Unknown model type: {}'.format(args.model_type))
+                            valid_loss += loss.item()
+                            valid_rmse_loss += rmse.item()
+                            valid_jpld_rmse_loss += jpld_rmse.item()
+                    valid_loss /= len(valid_loader)
+                    valid_rmse_loss /= len(valid_loader)
+                    valid_jpld_rmse_loss /= len(valid_loader)
+                    valid_losses.append((iteration, valid_loss))
+                    valid_rmse_losses.append((iteration, valid_rmse_loss))
+                    valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
+                    print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
+
+                    # scheduler.step(valid_loss)
+
+                    file_name_prefix = f'epoch-{epoch + 1:02d}-'
+
+                    # Save model
+                    model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
+                    save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, model_file)
+                    if not args.save_all_models:
+                        # Remove previous model files if not saving all models
+                        previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
+                        for previous_model_file in previous_model_files:
+                            if previous_model_file != model_file:
+                                print(f'Removing previous model file: {previous_model_file}')
+                                os.remove(previous_model_file)
+
+                    # Define consistent colors for plotting
+                    color_loss = 'tab:blue'
+                    color_rmse_all = 'tab:blue'  # Use blue for All Channels RMSE as requested
+                    color_rmse_jpld = 'tab:green'
+
+                    # Plot losses
+                    plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
+                    print(f'Saving loss plot to {plot_file}')
+                    plt.figure(figsize=(10, 5))
+                    if train_losses:
+                        plt.plot(*zip(*train_losses), label='Training', color=color_loss, alpha=0.5)
+                    if valid_losses:
+                        plt.plot(*zip(*valid_losses), label='Validation', color=color_loss, linestyle='--', marker='o')
+                    plt.xlabel('Iteration')
+                    plt.ylabel('MSE Loss')
+                    plt.yscale('log')
+                    plt.grid(True)
+                    plt.legend()
+                    plt.savefig(plot_file)
+                    plt.close()
+
+                    # Plot RMSE losses
+                    plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.pdf')
+                    print(f'Saving RMSE plot to {plot_rmse_file}')
+                    plt.figure(figsize=(10, 5))
+                    if train_rmse_losses:
+                        plt.plot(*zip(*train_rmse_losses), label='Training (All Channels)', color=color_rmse_all, alpha=0.5)
+                    if valid_rmse_losses:
+                        plt.plot(*zip(*valid_rmse_losses), label='Validation (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
+                    if train_jpld_rmse_losses:
+                        plt.plot(*zip(*train_jpld_rmse_losses), label='Training (JPLD)', color=color_rmse_jpld, alpha=0.5)
+                    if valid_jpld_rmse_losses:
+                        plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
+                    plt.xlabel('Iteration')
+                    plt.ylabel('RMSE')
+                    plt.yscale('log')
+                    plt.grid(True)
+                    plt.legend()
+                    plt.savefig(plot_rmse_file)
+                    plt.close()
+
+                    # Plot model eval results
+                    model.eval()
+                    with torch.no_grad():
+                        num_evals = args.num_evals
+
                         if args.model_type == 'VAE1':
-                            jpld, _ = batch
-                            jpld = jpld.to(device)
-                            loss = model.loss(jpld)
+                            # Set random seed for reproducibility of evaluation samples across epochs
+                            rng_state = torch.get_rng_state()
+                            torch.manual_seed(args.seed)
+
+                            # Reconstruct a batch from the validation set
+                            jpld_orig, jpld_orig_dates = next(iter(valid_loader))
+                            jpld_orig = jpld_orig[:num_evals]
+                            jpld_orig_dates = jpld_orig_dates[:num_evals]
+
+                            jpld_orig = jpld_orig.to(device)
+                            jpld_recon, _, _ = model.forward(jpld_orig)
+                            jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
+                            jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
+
+                            # Sample a batch from the model
+                            jpld_sample = model.sample(n=num_evals)
+                            jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
+                            jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 140)
+                            torch.set_rng_state(rng_state)
+                            # Resume with the original random state
+
+                            # Save plots
+                            for i in range(num_evals):
+                                date = jpld_orig_dates[i]
+                                date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
+
+                                recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
+                                save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
+
+                                recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
+                                save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
+
+                                sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
+                                save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
+
+
                         elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
-                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
-                            jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
-                            celestrak_seq = celestrak_seq.to(device)
-                            celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
-                            omniweb_seq = omniweb_seq.to(device)
-                            omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
-                            set_seq = set_seq.to(device)
-                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
+                            if args.valid_event_id:
+                                for event_id in args.valid_event_id:
+                                    if event_id not in EventCatalog:
+                                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                    event = EventCatalog[event_id]
+                                    event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
+                                    event_start = datetime.datetime.fromisoformat(event_start)
+                                    event_end = datetime.datetime.fromisoformat(event_end)
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
-                        else:
-                            raise ValueError('Unknown model type: {}'.format(args.model_type))
-                        valid_loss += loss.item()
-                        valid_rmse_loss += rmse.item()
-                        valid_jpld_rmse_loss += jpld_rmse.item()
-                valid_loss /= len(valid_loader)
-                valid_rmse_loss /= len(valid_loader)
-                valid_jpld_rmse_loss /= len(valid_loader)
-                valid_losses.append((iteration, valid_loss))
-                valid_rmse_losses.append((iteration, valid_rmse_loss))
-                valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
-                print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
+                                    print('* Validating event ID: {}'.format(event_id))
+                                    date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                    date_forecast_start = event_start
+                                    date_end = event_end
+                                    file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                    title = f'Event: {event_id}, Kp={max_kp}'
+                                    run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
-                # scheduler.step(valid_loss)
+                            if args.valid_event_seen_id:
+                                for event_id in args.valid_event_seen_id:
+                                    if event_id not in EventCatalog:
+                                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+                                    event = EventCatalog[event_id]
+                                    event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
+                                    event_start = datetime.datetime.fromisoformat(event_start)
+                                    event_end = datetime.datetime.fromisoformat(event_end)
 
-                file_name_prefix = f'epoch-{epoch + 1:02d}-'
-
-                # Save model
-                model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, model_file)
-                if not args.save_all_models:
-                    # Remove previous model files if not saving all models
-                    previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
-                    for previous_model_file in previous_model_files:
-                        if previous_model_file != model_file:
-                            print(f'Removing previous model file: {previous_model_file}')
-                            os.remove(previous_model_file)
-
-                # Define consistent colors for plotting
-                color_loss = 'tab:blue'
-                color_rmse_all = 'tab:blue'  # Use blue for All Channels RMSE as requested
-                color_rmse_jpld = 'tab:green'
-
-                # Plot losses
-                plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
-                print(f'Saving loss plot to {plot_file}')
-                plt.figure(figsize=(10, 5))
-                if train_losses:
-                    plt.plot(*zip(*train_losses), label='Training', color=color_loss, alpha=0.5)
-                if valid_losses:
-                    plt.plot(*zip(*valid_losses), label='Validation', color=color_loss, linestyle='--', marker='o')
-                plt.xlabel('Iteration')
-                plt.ylabel('MSE Loss')
-                plt.yscale('log')
-                plt.grid(True)
-                plt.legend()
-                plt.savefig(plot_file)
-                plt.close()
-
-                # Plot RMSE losses
-                plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.pdf')
-                print(f'Saving RMSE plot to {plot_rmse_file}')
-                plt.figure(figsize=(10, 5))
-                if train_rmse_losses:
-                    plt.plot(*zip(*train_rmse_losses), label='Training (All Channels)', color=color_rmse_all, alpha=0.5)
-                if valid_rmse_losses:
-                    plt.plot(*zip(*valid_rmse_losses), label='Validation (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
-                if train_jpld_rmse_losses:
-                    plt.plot(*zip(*train_jpld_rmse_losses), label='Training (JPLD)', color=color_rmse_jpld, alpha=0.5)
-                if valid_jpld_rmse_losses:
-                    plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
-                plt.xlabel('Iteration')
-                plt.ylabel('RMSE')
-                plt.yscale('log')
-                plt.grid(True)
-                plt.legend()
-                plt.savefig(plot_rmse_file)
-                plt.close()
-
-                # Plot model eval results
-                model.eval()
-                with torch.no_grad():
-                    num_evals = args.num_evals
-
-                    if args.model_type == 'VAE1':
-                        # Set random seed for reproducibility of evaluation samples across epochs
-                        rng_state = torch.get_rng_state()
-                        torch.manual_seed(args.seed)
-
-                        # Reconstruct a batch from the validation set
-                        jpld_orig, jpld_orig_dates = next(iter(valid_loader))
-                        jpld_orig = jpld_orig[:num_evals]
-                        jpld_orig_dates = jpld_orig_dates[:num_evals]
-
-                        jpld_orig = jpld_orig.to(device)
-                        jpld_recon, _, _ = model.forward(jpld_orig)
-                        jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
-                        jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
-
-                        # Sample a batch from the model
-                        jpld_sample = model.sample(n=num_evals)
-                        jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
-                        jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 140)
-                        torch.set_rng_state(rng_state)
-                        # Resume with the original random state
-
-                        # Save plots
-                        for i in range(num_evals):
-                            date = jpld_orig_dates[i]
-                            date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
-
-                            recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
-
-                            recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
-
-                            sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
-                            save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
-
-
-                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
-                        if args.valid_event_id:
-                            for event_id in args.valid_event_id:
-                                if event_id not in EventCatalog:
-                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                event = EventCatalog[event_id]
-                                event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
-                                event_start = datetime.datetime.fromisoformat(event_start)
-                                event_end = datetime.datetime.fromisoformat(event_end)
-
-                                print('* Validating event ID: {}'.format(event_id))
-                                date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-                                date_forecast_start = event_start
-                                date_end = event_end
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
-
-                        if args.valid_event_seen_id:
-                            for event_id in args.valid_event_seen_id:
-                                if event_id not in EventCatalog:
-                                    raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                event = EventCatalog[event_id]
-                                event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
-                                event_start = datetime.datetime.fromisoformat(event_start)
-                                event_end = datetime.datetime.fromisoformat(event_end)
-
-                                print('* Validating seen event ID: {}'.format(event_id))
-                                date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-                                date_forecast_start = event_start
-                                date_end = event_end
-                                file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                title = f'Event: {event_id}, Kp={max_kp}'
-                                run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    print('* Validating seen event ID: {}'.format(event_id))
+                                    date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                                    date_forecast_start = event_start
+                                    date_end = event_end
+                                    file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+                                    title = f'Event: {event_id}, Kp={max_kp}'
+                                    run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
 
         elif args.mode == 'test':
