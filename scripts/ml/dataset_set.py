@@ -20,7 +20,7 @@ set_all_columns = ['space_environment_technologies__f107_obs__',
                     'space_environment_technologies__y107_average__',
                     'JB08__d_st_dt__[K]']
 
-set_column_yeojohnson_lambdas = {'space_environment_technologies__f107_obs__': -0.763051477303,
+set_yeojohnson_lambdas = {'space_environment_technologies__f107_obs__': -0.763051477303,
                                  'space_environment_technologies__f107_average__': -0.551868341046,
                                  'space_environment_technologies__s107_obs__': 0.751363821795,
                                  'space_environment_technologies__s107_average__': 0.830731313661,
@@ -30,7 +30,7 @@ set_column_yeojohnson_lambdas = {'space_environment_technologies__f107_obs__': -
                                  'space_environment_technologies__y107_average__': 0.409993940749,
                                  'JB08__d_st_dt__[K]': 0.484842249526}
 
-set_column_mean_after_yeojohnson = {'space_environment_technologies__f107_obs__': 1.272172135660,
+set_mean_of_yeojohnson = {'space_environment_technologies__f107_obs__': 1.272172135660,
                                       'space_environment_technologies__f107_average__': 1.672840949524,
                                       'space_environment_technologies__s107_obs__': 42.899690917474,
                                       'space_environment_technologies__s107_average__': 56.218558006899,
@@ -40,7 +40,7 @@ set_column_mean_after_yeojohnson = {'space_environment_technologies__f107_obs__'
                                       'space_environment_technologies__y107_average__': 14.416800581748,
                                       'JB08__d_st_dt__[K]': 11.168264154109}
 
-set_column_std_after_yeojohnson = {'space_environment_technologies__f107_obs__': 0.009865107914,
+set_std_of_yeojohnson = {'space_environment_technologies__f107_obs__': 0.009865107914,
                                     'space_environment_technologies__f107_average__': 0.025485688944,
                                     'space_environment_technologies__s107_obs__': 14.521479851065,
                                     'space_environment_technologies__s107_average__': 21.361781197713,
@@ -50,9 +50,9 @@ set_column_std_after_yeojohnson = {'space_environment_technologies__f107_obs__':
                                     'space_environment_technologies__y107_average__': 2.403143006206,
                                     'JB08__d_st_dt__[K]': 5.629712229161}
 
-set_all_columns_yeojohnson_lambdas = torch.tensor([set_column_yeojohnson_lambdas[col] for col in set_all_columns], dtype=torch.float32)
-set_all_columns_mean_of_yeojohnson = torch.tensor([set_column_mean_after_yeojohnson[col] for col in set_all_columns], dtype=torch.float32)
-set_all_columns_std_of_yeojohnson = torch.tensor([set_column_std_after_yeojohnson[col] for col in set_all_columns], dtype=torch.float32)
+set_all_columns_yeojohnson_lambdas = torch.tensor([set_yeojohnson_lambdas[col] for col in set_all_columns], dtype=torch.float32)
+set_all_columns_mean_of_yeojohnson = torch.tensor([set_mean_of_yeojohnson[col] for col in set_all_columns], dtype=torch.float32)
+set_all_columns_std_of_yeojohnson = torch.tensor([set_std_of_yeojohnson[col] for col in set_all_columns], dtype=torch.float32)
 
 # ionosphere-data/set/karman-2025_data_sw_data_set_sw.csv
 class SET(PandasDataset):
@@ -87,9 +87,9 @@ class SET(PandasDataset):
             data = yeojohnson(data, set_all_columns_yeojohnson_lambdas)
             data = (data - set_all_columns_mean_of_yeojohnson) / set_all_columns_std_of_yeojohnson
         else:
-            lambdas = torch.tensor([set_all_columns_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
-            means = torch.tensor([set_all_columns_mean_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
-            stds = torch.tensor([set_all_columns_std_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            lambdas = torch.tensor([set_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
+            means = torch.tensor([set_mean_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([set_std_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
             data = yeojohnson(data, lambdas)
             data = (data - means) / stds
         return data
@@ -99,9 +99,9 @@ class SET(PandasDataset):
             data = data * set_all_columns_std_of_yeojohnson + set_all_columns_mean_of_yeojohnson
             data = yeojhonson_inverse(data, set_all_columns_yeojohnson_lambdas)
         else:
-            lambdas = torch.tensor([set_all_columns_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
-            means = torch.tensor([set_all_columns_mean_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
-            stds = torch.tensor([set_all_columns_std_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            lambdas = torch.tensor([set_yeojohnson_lambdas[col] for col in self.column], dtype=torch.float32)
+            means = torch.tensor([set_mean_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
+            stds = torch.tensor([set_std_of_yeojohnson[col] for col in self.column], dtype=torch.float32)
             data = data * stds + means
             data = yeojhonson_inverse(data, lambdas)
         return data
