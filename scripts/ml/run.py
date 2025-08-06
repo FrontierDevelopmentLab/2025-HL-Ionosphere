@@ -680,9 +680,9 @@ def main():
                 print(f'Saving loss plot to {plot_file}')
                 plt.figure(figsize=(10, 5))
                 if train_losses:
-                    plt.plot(*zip(*train_losses), label='Training Loss', color=color_loss, alpha=0.5)
+                    plt.plot(*zip(*train_losses), label='Training', color=color_loss, alpha=0.5)
                 if valid_losses:
-                    plt.plot(*zip(*valid_losses), label='Validation Loss', color=color_loss, linestyle='--', marker='o')
+                    plt.plot(*zip(*valid_losses), label='Validation', color=color_loss, linestyle='--', marker='o')
                 plt.xlabel('Iteration')
                 plt.ylabel('MSE Loss')
                 plt.yscale('log')
@@ -696,13 +696,13 @@ def main():
                 print(f'Saving RMSE plot to {plot_rmse_file}')
                 plt.figure(figsize=(10, 5))
                 if train_rmse_losses:
-                    plt.plot(*zip(*train_rmse_losses), label='Training RMSE (All Channels)', color=color_rmse_all, alpha=0.5)
+                    plt.plot(*zip(*train_rmse_losses), label='Training (All Channels)', color=color_rmse_all, alpha=0.5)
                 if valid_rmse_losses:
-                    plt.plot(*zip(*valid_rmse_losses), label='Validation RMSE (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
+                    plt.plot(*zip(*valid_rmse_losses), label='Validation (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
                 if train_jpld_rmse_losses:
-                    plt.plot(*zip(*train_jpld_rmse_losses), label='Training RMSE (JPLD)', color=color_rmse_jpld, alpha=0.5)
+                    plt.plot(*zip(*train_jpld_rmse_losses), label='Training (JPLD)', color=color_rmse_jpld, alpha=0.5)
                 if valid_jpld_rmse_losses:
-                    plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation RMSE (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
+                    plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
                 plt.xlabel('Iteration')
                 plt.ylabel('RMSE')
                 plt.yscale('log')

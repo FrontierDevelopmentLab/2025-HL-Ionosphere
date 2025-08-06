@@ -38,7 +38,7 @@ def get_decoder(out_channels=1, hidden_dim=16):
 
 
 class IonCastLSTM(nn.Module):
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=64, lstm_dim=1024, num_layers=6, context_window=4, dropout=0.25):
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=64, lstm_dim=1024, num_layers=2, context_window=4, dropout=0.25):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
