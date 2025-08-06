@@ -263,7 +263,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     )
 
 
-def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, file_name):
+def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, file_name):
     print('Saving model to {}'.format(file_name))
     if isinstance(model, VAE1):
         checkpoint = {
@@ -287,12 +287,17 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'scheduler_state_dict': scheduler.state_dict(),
             'train_losses': train_losses,
             'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
             'model_hidden_dim': model.hidden_dim,
             'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
+            'model_dropout': model.dropout,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -311,9 +316,11 @@ def load_model(file_name, device):
         model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
+        model_dropout = checkpoint['model_dropout']
         model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                                 hidden_dim=model_hidden_dim, num_layers=model_num_layers,
-                                context_window=model_context_window, prediction_window=model_prediction_window)
+                                context_window=model_context_window, prediction_window=model_prediction_window,
+                                dropout=model_dropout)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -326,7 +333,14 @@ def load_model(file_name, device):
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
     scheduler_state_dict = checkpoint['scheduler_state_dict']
-    return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict
+    
+    # Add new lists, with .get for backward compatibility
+    train_rmse_losses = checkpoint.get('train_rmse_losses', [])
+    valid_rmse_losses = checkpoint.get('valid_rmse_losses', [])
+    train_jpld_rmse_losses = checkpoint.get('train_jpld_rmse_losses', [])
+    valid_jpld_rmse_losses = checkpoint.get('valid_jpld_rmse_losses', [])
+
+    return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses
 
 
 
@@ -342,7 +356,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-18T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -355,7 +369,7 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=8, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=2, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
@@ -363,6 +377,7 @@ def main():
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
+    parser.add_argument('--dropout', type=float, default=0.25, help='Dropout rate for the model')
 
     args = parser.parse_args()
 
@@ -458,7 +473,7 @@ def main():
                 model_files.sort()
                 model_file = model_files[-1]
                 print('Resuming training from model file: {}'.format(model_file))
-                model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict = load_model(model_file, device)
+                model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses = load_model(model_file, device)
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
@@ -470,7 +485,7 @@ def main():
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=58, output_channels=58, context_window=args.context_window, prediction_window=args.prediction_window)
+                    model = IonCastConvLSTM(input_channels=58, output_channels=58, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -480,6 +495,10 @@ def main():
                 epoch_start = 0
                 train_losses = []
                 valid_losses = []
+                train_rmse_losses = []
+                valid_rmse_losses = []
+                train_jpld_rmse_losses = []
+                valid_jpld_rmse_losses = []
 
                 model = model.to(device)
 
@@ -514,7 +533,7 @@ def main():
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
-                            loss = model.loss(combined_seq, context_window=args.context_window)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
@@ -524,13 +543,17 @@ def main():
                         iteration += 1
 
                         train_losses.append((iteration, float(loss)))
-                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, Loss: {loss.item():.4f}')
+                        train_rmse_losses.append((iteration, float(rmse)))
+                        train_jpld_rmse_losses.append((iteration, float(jpld_rmse)))
+                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss.item():.4f}, RMSE: {rmse.item():.4f}, JPLD RMSE: {jpld_rmse.item():.4f}')
                         pbar.update(1)
 
                 # Validation
                 print('*** Validation')
                 model.eval()
                 valid_loss = 0.0
+                valid_rmse_loss = 0.0
+                valid_jpld_rmse_loss = 0.0
                 with torch.no_grad():
                     for batch in valid_loader:
                         if args.model_type == 'VAE1':
@@ -549,34 +572,67 @@ def main():
                             set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
-                            loss = model.loss(combined_seq, context_window=args.context_window)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         valid_loss += loss.item()
+                        valid_rmse_loss += rmse.item()
+                        valid_jpld_rmse_loss += jpld_rmse.item()
                 valid_loss /= len(valid_loader)
+                valid_rmse_loss /= len(valid_loader)
+                valid_jpld_rmse_loss /= len(valid_loader)
                 valid_losses.append((iteration, valid_loss))
-                print(f'Validation Loss: {valid_loss:.4f}')
+                valid_rmse_losses.append((iteration, valid_rmse_loss))
+                valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
+                print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
 
-                scheduler.step(valid_loss)
+                # scheduler.step(valid_loss)
 
                 file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
                 # Save model
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, model_file)
+                save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, model_file)
+
+                # Define consistent colors for plotting
+                color_loss = 'tab:blue'
+                color_rmse_all = 'tab:blue'  # Use blue for All Channels RMSE as requested
+                color_rmse_jpld = 'tab:green'
 
                 # Plot losses
                 plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
-                print(f'Saving plot to {plot_file}')
+                print(f'Saving loss plot to {plot_file}')
                 plt.figure(figsize=(10, 5))
-                plt.plot(*zip(*train_losses), label='Training')
-                plt.plot(*zip(*valid_losses), label='Validation')
+                if train_losses:
+                    plt.plot(*zip(*train_losses), label='Training Loss', color=color_loss, alpha=0.5)
+                if valid_losses:
+                    plt.plot(*zip(*valid_losses), label='Validation Loss', color=color_loss, linestyle='--', marker='o')
                 plt.xlabel('Iteration')
-                plt.ylabel('Loss')
+                plt.ylabel('MSE Loss')
                 plt.yscale('log')
                 plt.grid(True)
                 plt.legend()
                 plt.savefig(plot_file)
+                plt.close()
+
+                # Plot RMSE losses
+                plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}rmse-loss.pdf')
+                print(f'Saving RMSE plot to {plot_rmse_file}')
+                plt.figure(figsize=(10, 5))
+                if train_rmse_losses:
+                    plt.plot(*zip(*train_rmse_losses), label='Training RMSE (All Channels)', color=color_rmse_all, alpha=0.5)
+                if valid_rmse_losses:
+                    plt.plot(*zip(*valid_rmse_losses), label='Validation RMSE (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
+                if train_jpld_rmse_losses:
+                    plt.plot(*zip(*train_jpld_rmse_losses), label='Training RMSE (JPLD)', color=color_rmse_jpld, alpha=0.5)
+                if valid_jpld_rmse_losses:
+                    plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation RMSE (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
+                plt.xlabel('Iteration')
+                plt.ylabel('RMSE Loss')
+                plt.yscale('log')
+                plt.grid(True)
+                plt.legend()
+                plt.savefig(plot_rmse_file)
                 plt.close()
 
                 # Plot model eval results

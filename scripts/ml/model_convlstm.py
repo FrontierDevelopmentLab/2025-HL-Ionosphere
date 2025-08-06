@@ -4,7 +4,7 @@ import torch.nn as nn
 
 class ConvLSTMCell(nn.Module):
     """The core ConvLSTM cell."""
-    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True, dropout=0.0):
         super(ConvLSTMCell, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -19,6 +19,9 @@ class ConvLSTMCell(nn.Module):
                               padding=self.padding,
                               padding_mode='circular',  # Use circular padding
                               bias=self.bias)
+        
+        # Add dropout layer
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, input_tensor, cur_state):
         h_cur, c_cur = cur_state
@@ -34,6 +37,9 @@ class ConvLSTMCell(nn.Module):
 
         c_next = f * c_cur + i * g
         h_next = o * torch.tanh(c_next)
+
+        # Apply dropout to the output hidden state
+        h_next = self.dropout(h_next)
 
         return h_next, c_next
 
@@ -56,7 +62,7 @@ class ConvLSTM(nn.Module):
         num_layers (int): Number of ConvLSTM layers.
         batch_first (bool): If True, input and output tensors are provided as (B, T, C, H, W).
     """
-    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, batch_first=True, bias=True):
+    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, batch_first=True, bias=True, dropout=0.0):
         super(ConvLSTM, self).__init__()
         self.batch_first = batch_first
         self.num_layers = num_layers
@@ -69,7 +75,8 @@ class ConvLSTM(nn.Module):
             self.cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
                                                hidden_dim=hidden_dim,
                                                kernel_size=kernel_size,
-                                               bias=bias))
+                                               bias=bias,
+                                               dropout=dropout if i < self.num_layers - 1 else 0.0))
             # Add GroupNorm for all but the last layer's output
             if i < self.num_layers - 1:
                 # Use GroupNorm with 1 group, which is equivalent to LayerNorm over channels
@@ -121,7 +128,7 @@ class ConvLSTM(nn.Module):
 
 class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-one prediction."""
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4):
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4, dropout=0.25):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -129,13 +136,15 @@ class IonCastConvLSTM(nn.Module):
         self.num_layers = num_layers
         self.context_window = context_window  # Number of time steps in the input sequence during training
         self.prediction_window = prediction_window  # Number of time steps to predict during training
+        self.dropout = dropout
 
         # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
                                   hidden_dim=hidden_dim, 
                                   kernel_size=(5, 5), 
                                   num_layers=num_layers, # Number of stacked layers
-                                  batch_first=True)
+                                  batch_first=True,
+                                  dropout=dropout)
         
         # Final 1x1 convolution to get the desired number of output channels
         self.final_conv = nn.Conv2d(in_channels=hidden_dim, 
@@ -191,5 +200,12 @@ class IonCastConvLSTM(nn.Module):
         # Calculate weighted mean squared error
         # Using reduction='none' allows us to apply weights before averaging.
         loss = torch.mean(weights * nn.functional.mse_loss(data_predict, data_target, reduction='none'))
-        
-        return loss
+
+        # report also the rmse
+        rmse = torch.sqrt(loss)
+
+        # report also the rmse for the JPLD channel
+        jpld_rmse = torch.sqrt(nn.functional.mse_loss(data_predict[:, jpld_channel_index, :, :], 
+                                                      data_target[:, jpld_channel_index, :, :], reduction='mean'))        
+
+        return loss, rmse, jpld_rmse
