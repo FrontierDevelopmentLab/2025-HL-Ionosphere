@@ -4,7 +4,7 @@ import torch.nn as nn
 
 class ConvLSTMCell(nn.Module):
     """The core ConvLSTM cell."""
-    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True, dropout=0.0):
         super(ConvLSTMCell, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -19,6 +19,9 @@ class ConvLSTMCell(nn.Module):
                               padding=self.padding,
                               padding_mode='circular',  # Use circular padding
                               bias=self.bias)
+        
+        # Add dropout layer
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, input_tensor, cur_state):
         h_cur, c_cur = cur_state
@@ -34,6 +37,9 @@ class ConvLSTMCell(nn.Module):
 
         c_next = f * c_cur + i * g
         h_next = o * torch.tanh(c_next)
+
+        # Apply dropout to the output hidden state
+        h_next = self.dropout(h_next)
 
         return h_next, c_next
 
@@ -56,19 +62,26 @@ class ConvLSTM(nn.Module):
         num_layers (int): Number of ConvLSTM layers.
         batch_first (bool): If True, input and output tensors are provided as (B, T, C, H, W).
     """
-    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, batch_first=True, bias=True):
+    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, batch_first=True, bias=True, dropout=0.0):
         super(ConvLSTM, self).__init__()
         self.batch_first = batch_first
         self.num_layers = num_layers
         
-        # Create a list of ConvLSTM cells
+        # Create a list of ConvLSTM cells and GroupNorm layers
         self.cell_list = nn.ModuleList()
+        self.norm_list = nn.ModuleList()
         for i in range(self.num_layers):
             cur_input_dim = input_dim if i == 0 else hidden_dim
             self.cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
                                                hidden_dim=hidden_dim,
                                                kernel_size=kernel_size,
-                                               bias=bias))
+                                               bias=bias,
+                                               dropout=dropout if i < self.num_layers - 1 else 0.0))
+            # Add GroupNorm for all but the last layer's output
+            if i < self.num_layers - 1:
+                # Use GroupNorm with 1 group, which is equivalent to LayerNorm over channels
+                self.norm_list.append(nn.GroupNorm(num_groups=1, num_channels=hidden_dim))
+
 
     def forward(self, x, hidden_state=None):
         if not self.batch_first:
@@ -92,6 +105,9 @@ class ConvLSTM(nn.Module):
             output_inner = []
             for t in range(seq_len):
                 h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h, c])
+                # Apply GroupNorm to the hidden state before passing to the next layer
+                if layer_idx < self.num_layers - 1:
+                    h = self.norm_list[layer_idx](h)
                 output_inner.append(h)
 
             layer_output = torch.stack(output_inner, dim=1)
@@ -111,69 +127,96 @@ class ConvLSTM(nn.Module):
 
 
 class IonCastConvLSTM(nn.Module):
-    """The final model for sequence-to-one prediction."""
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=4, context_window=4, prediction_window=4):
+    """The final model for sequence-to-sequence prediction."""
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4, dropout=0.25):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.context_window = context_window  # Number of time steps in the input sequence during training
-        self.prediction_window = prediction_window  # Number of time steps to predict during training
+        self.context_window = context_window
+        self.prediction_window = prediction_window
+        self.dropout = dropout
 
         # A stack of ConvLSTM layers
         self.conv_lstm = ConvLSTM(input_dim=input_channels, 
                                   hidden_dim=hidden_dim, 
-                                  kernel_size=(3, 3), 
-                                  num_layers=num_layers, # Number of stacked layers
-                                  batch_first=True)
+                                  kernel_size=(5, 5), 
+                                  num_layers=num_layers,
+                                  batch_first=True,
+                                  dropout=dropout)
         
         # Final 1x1 convolution to get the desired number of output channels
         self.final_conv = nn.Conv2d(in_channels=hidden_dim, 
-                                    out_channels=output_channels, 
-                                    kernel_size=(1, 1))
-        
+                                  out_channels=output_channels, 
+                                  kernel_size=(1, 1))
 
     def forward(self, x, hidden_state=None):
         # x shape: (B, T, C, H, W)
         
-        # Pass through ConvLSTM
-        # We only need the last hidden state to make the prediction
-        _, hidden_state = self.conv_lstm(x, hidden_state=hidden_state)
+        # Pass through ConvLSTM. layer_output is a sequence of hidden states from the last layer.
+        layer_output, hidden_state = self.conv_lstm(x, hidden_state)
+        # layer_output shape: (B, T, hidden_dim, H, W)
         
-        # Get the last hidden state of the last layer
-        last_hidden_state = hidden_state[-1][0] # h_n of the last layer
+        # To apply the final 2D convolution, we need to reshape the output.
+        # We treat the batch and time dimensions as one.
+        B, T, C, H, W = layer_output.shape
+        layer_output_flat = layer_output.view(B * T, C, H, W)
         
-        # Pass through the final convolution
-        output = self.final_conv(last_hidden_state)
+        # Pass each time step's hidden state through the final convolution
+        output_flat = self.final_conv(layer_output_flat)
+        
+        # Reshape back to the sequence format
+        output = output_flat.view(B, T, self.output_channels, H, W)
         
         return output, hidden_state
-    
-    def predict(self, data_context, prediction_window=4):
-        """ Forecasts the next time step given the context window. """
-        # data_context shape: (batch_size, time_steps, channels, height, width)
-        # time steps = context_window
-        x, hidden_state = self(data_context) # inits hidden state
-        x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-        prediction = [x]
-        for _ in range(prediction_window - 1):
-            # Prepare the next input by appending the last prediction
-            x, hidden_state = self(x, hidden_state=hidden_state)
-            x = x.unsqueeze(1)  # shape (batch_size, time_steps=1, channels, height, width)
-            prediction.append(x)
-        prediction = torch.cat(prediction, dim=1)  # shape (batch_size, prediction_window, channels, height, width)
-        return prediction
 
-    def loss(self, data, context_window=4):
-        """ Computes the loss for the IonCastConvLSTM model. """
-        # data shape: (batch_size, time_steps, channels=1, height, width)
-        # time steps = context_window + prediction_window
-
-        data_context = data[:, :context_window, :, :, :] # shape (batch_size, context_window, channels=1, height, width)
-        data_target = data[:, context_window, :, :, :] # shape (batch_size, channels, height, width)
+    def loss(self, data, jpld_channel_index=0, jpld_weight=1.0):
+        """ Computes a weighted MSE loss for the IonCastConvLSTM model. """
+        # data shape: (B, T_total, C, H, W)
+        # For seq-to-seq, input is steps 0 to T-1, target is steps 1 to T
+        data_input = data[:, :-1, :, :, :]
+        data_target = data[:, 1:, :, :, :]
 
         # Forward pass
-        data_predict, _ = self(data_context) # shape (batch_size, channels=1, height, width)
-        recon_loss = nn.functional.mse_loss(data_predict, data_target, reduction='sum')  # Sum over all pixels and channels
-        recon_loss = recon_loss / (data_target.shape[0] * data_target.shape[1]) # Average over batch size and channels
-        return recon_loss
+        data_predict, _ = self(data_input)
+
+        # Calculate per-element squared error
+        elementwise_loss = nn.functional.mse_loss(data_predict, data_target, reduction='none')
+
+        # Create a weight tensor for the channels
+        weights = torch.ones_like(data_target[0, 0, :, :, :]).unsqueeze(0).unsqueeze(0) # Shape (1, 1, C, H, W)
+        weights[:, :, jpld_channel_index, :, :] = jpld_weight
+
+        # Apply weights and calculate the mean
+        loss = torch.mean(weights * elementwise_loss)
+        
+        # Calculate RMSE for diagnostics (unweighted)
+        with torch.no_grad():
+            rmse = torch.sqrt(nn.functional.mse_loss(data_predict, data_target, reduction='mean'))
+            jpld_rmse = torch.sqrt(nn.functional.mse_loss(data_predict[:, :, jpld_channel_index, :, :], 
+                                                          data_target[:, :, jpld_channel_index, :, :], reduction='mean'))
+        
+        return loss, rmse, jpld_rmse
+
+    def predict(self, data_context, prediction_window=4):
+        """ Forecasts the next time steps given the context window. """
+        # data_context shape: (B, T_context, C, H, W)
+        
+        # First, process the context to get the initial hidden state
+        _, hidden_state = self(data_context)
+        
+        # Get the last frame of the context as the first input for prediction
+        next_input = data_context[:, -1:, :, :, :]
+        
+        prediction = []
+        for _ in range(prediction_window):
+            # Predict one step ahead
+            output, hidden_state = self(next_input, hidden_state=hidden_state)
+            
+            # The output is the prediction, use it as the next input
+            next_input = output
+            prediction.append(output)
+            
+        prediction = torch.cat(prediction, dim=1)
+        return prediction

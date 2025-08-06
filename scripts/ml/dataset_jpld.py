@@ -3,13 +3,14 @@ from torch.utils.data import Dataset
 import os
 import datetime
 from functools import lru_cache
-import glob
+from glob import glob
 from tqdm import tqdm
+from glob import glob
 import gzip
 import xarray as xr
 import pickle
 
-from ioncast.datasets.dataset_webdataset import WebDataset
+from dataset_webdataset import WebDataset
 
 
 JPLD_mean = 14.796479225158691
@@ -58,13 +59,13 @@ class JPLDRaw(Dataset):
         print('Number of days in dataset   : {:,}'.format(self.num_days))
         print('Number of samples in dataset: {:,}'.format(self.num_samples))
         # size on disk
-        size_on_disk = sum(os.path.getsize(f) for f in glob.glob(f"{data_dir}/*/*.nc.gz"))
+        size_on_disk = sum(os.path.getsize(f) for f in glob(f"{data_dir}/*/*.nc.gz"))
         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
 
     @staticmethod
     def find_date_range(directory):
         # print("Checking date range of data in directory: {}".format(directory))
-        days = sorted(glob.glob(f"{directory}/*/*.nc.gz"))
+        days = sorted(glob(f"{directory}/*/*.nc.gz"))
         if len(days) == 0:
             return None
 
@@ -120,7 +121,7 @@ class JPLDRaw(Dataset):
 
         return data, date.isoformat()  # Return the data and the date as a string
 
-
+# ionosphere-data/jpld/webdataset
 class JPLD(Dataset):
     def __init__(self, data_dir, date_start=None, date_end=None, date_exclusions=None, normalize=True):
         self.data_dir = data_dir

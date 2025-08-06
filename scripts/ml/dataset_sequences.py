@@ -64,12 +64,6 @@ class Sequences(Dataset):
         sequence_data.append([date.isoformat() for date in sequence])
         return tuple(sequence_data)
 
-# Output of DataLoader with Sequences dataset is a tuple of:
-# (Dset1_batch, Dset2_batch, ..., timestamps_batch)
-# Each Dset_batch is a tensor of shape [B, T, F] where F are the features for each dataset
-# timestamps_batch is a list of timestamps for each sequence step, btached- i.e. [(timestamp0_batch0, timestamp0_batch1, ...), (timestamp1_batch0, timestamp1_batch1, ...), ...]
-# [[B, T, C, H, W], [B, T, F], [(B)] - where B is batch size, T is sequence length, C is number of channels, H is height, W is width, F is number of features]
-
     def find_sequences(self):
         sequences = []
         sequence_start = self.date_start

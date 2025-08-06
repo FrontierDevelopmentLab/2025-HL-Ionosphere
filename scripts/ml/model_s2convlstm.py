@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-# from s2cnn import S2Conv # Temporarily commented out due to environment issues
+from s2cnn import S2Conv
 
 class S2ConvLSTMCell(nn.Module):
     """The core S2ConvLSTM cell."""
