@@ -21,6 +21,7 @@ from util import set_random_seed
 from util import stack_as_channels
 from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
+from model_lstm import IonCastLSTM
 from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
@@ -190,8 +191,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
-    if not isinstance(model, (IonCastConvLSTM)):
-        raise ValueError('Model must be an instance of IonCastConvLSTM')
+    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
+        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -299,6 +300,28 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_prediction_window': model.prediction_window,
             'model_dropout': model.dropout,
         }
+    elif isinstance(model, IonCastLSTM):
+        checkpoint = {
+            'model': 'IonCastLSTM',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_hidden_dim': model.hidden_dim,
+            'model_lstm_dim': model.lstm_dim,
+            'model_num_layers': model.num_layers,
+            'model_context_window': model.context_window,
+            'model_dropout': model.dropout,
+        }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
@@ -321,6 +344,17 @@ def load_model(file_name, device):
                                 hidden_dim=model_hidden_dim, num_layers=model_num_layers,
                                 context_window=model_context_window, prediction_window=model_prediction_window,
                                 dropout=model_dropout)
+    elif checkpoint['model'] == 'IonCastLSTM':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_hidden_dim = checkpoint['model_hidden_dim']
+        model_lstm_dim = checkpoint['model_lstm_dim']
+        model_num_layers = checkpoint['model_num_layers']
+        model_context_window = checkpoint['model_context_window']
+        model_dropout = checkpoint['model_dropout']
+        model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
+                            hidden_dim=model_hidden_dim, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
+                            context_window=model_context_window, dropout=model_dropout)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -356,7 +390,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-04-18T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -365,11 +399,11 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
-    parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM'], default='VAE1', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['VAE1', 'IonCastConvLSTM', 'IonCastLSTM'], default='VAE1', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
-    parser.add_argument('--context_window', type=int, default=8, help='Context window size for the model')
+    parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
@@ -379,6 +413,7 @@ def main():
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
     parser.add_argument('--dropout', type=float, default=0.25, help='Dropout rate for the model')
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
+    parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
 
     args = parser.parse_args()
 
@@ -439,7 +474,7 @@ def main():
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = dataset_jpld_train
                 dataset_valid = dataset_jpld_valid
-            elif args.model_type == 'IonCastConvLSTM':
+            elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
@@ -483,10 +518,13 @@ def main():
                 print('Next iteration: {:,}'.format(iteration+1))
             else:
                 print('Creating new model')
+                total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                 if args.model_type == 'VAE1':
                     model = VAE1(z_dim=512, sigma_vae=False)
                 elif args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=58, output_channels=58, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout)
+                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout)
+                elif args.model_type == 'IonCastLSTM':
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -521,7 +559,7 @@ def main():
                             jpld = jpld.to(device)
 
                             loss = model.loss(jpld)
-                        elif args.model_type == 'IonCastConvLSTM':
+                        elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                             jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
@@ -534,7 +572,7 @@ def main():
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window, jpld_weight=args.jpld_weight)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
@@ -561,7 +599,7 @@ def main():
                             jpld, _ = batch
                             jpld = jpld.to(device)
                             loss = model.loss(jpld)
-                        elif args.model_type == 'IonCastConvLSTM':
+                        elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                             jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
@@ -573,7 +611,7 @@ def main():
                             set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, context_window=args.context_window, jpld_weight=args.jpld_weight)
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         valid_loss += loss.item()
@@ -594,6 +632,13 @@ def main():
                 # Save model
                 model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
                 save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, model_file)
+                if not args.save_all_models:
+                    # Remove previous model files if not saving all models
+                    previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
+                    for previous_model_file in previous_model_files:
+                        if previous_model_file != model_file:
+                            print(f'Removing previous model file: {previous_model_file}')
+                            os.remove(previous_model_file)
 
                 # Define consistent colors for plotting
                 color_loss = 'tab:blue'
@@ -678,7 +723,7 @@ def main():
                             save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
 
 
-                    elif args.model_type == 'IonCastConvLSTM':
+                    elif args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                         if args.valid_event_id:
                             for event_id in args.valid_event_id:
                                 if event_id not in EventCatalog:

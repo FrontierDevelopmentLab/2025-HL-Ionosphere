@@ -171,7 +171,7 @@ class IonCastConvLSTM(nn.Module):
         
         return output, hidden_state
 
-    def loss(self, data, context_window=4, jpld_channel_index=0, jpld_weight=1.0):
+    def loss(self, data, jpld_channel_index=0, jpld_weight=1.0):
         """ Computes a weighted MSE loss for the IonCastConvLSTM model. """
         # data shape: (B, T_total, C, H, W)
         # For seq-to-seq, input is steps 0 to T-1, target is steps 1 to T
