@@ -223,7 +223,6 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_start = date_start
     sequence_end = date_end
     sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
-    print('Sequence length    : {}'.format(sequence_length))
     sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
     # find the index of the date_forecast_start in the list sequence
     if date_forecast_start not in sequence:
@@ -231,6 +230,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_forecast_start_index = sequence.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
     sequence_forecast = sequence[sequence_forecast_start_index:]
+    print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     if isinstance(dataset, CachedDataset):
         dataset = dataset.dataset
@@ -263,9 +263,12 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
 
     # rmse between original and forecast
-    jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt()
-    print('\033[92mRMSE TECU          : {}\033[0m'.format(jpld_rmse.item()))
-    fig_title = title + f' - RMSE: {jpld_rmse.item():.2f} TECU'
+    jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt().item()
+    print('\033[92mRMSE (TECU)        : {}\033[0m'.format(jpld_rmse))
+    jpld_mae = torch.nn.functional.l1_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').item()
+    print('\033[96mMAE (TECU)         : {}\033[0m'.format(jpld_mae))
+
+    fig_title = title + f' - RMSE: {jpld_rmse:.2f} TECU - MAE: {jpld_mae:.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast]
     titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast)]
@@ -678,6 +681,8 @@ def main():
                     print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
 
                     scheduler.step(valid_rmse_loss)
+                    current_lr = optimizer.param_groups[0]['lr']
+                    print(f'Current learning rate: {current_lr:.6f}')
 
                     file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
