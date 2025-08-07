@@ -177,6 +177,7 @@ def train():
     madrigal_dataset._set_indices(test_month_idx=[test_month_idx], validation_month_idx=[validation_month_idx],custom={ 2012: {"validation":8, "test":9},
                                                                                                                         2013: {"validation":4, "test":5},
                                                                                                                         2015: {"validation":2, "test":3},#geomag storm
+                                                                                                                        2019: {"validation":6, "test":10},#quiet period
                                                                                                                         2022: {"validation":0, "test":1},
                                                                                                                         2024: {"validation":4,"test":5}})
     train_dataset = madrigal_dataset.train_dataset()
