@@ -167,3 +167,20 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
                        output_params=['-pix_fmt', 'yuv420p', '-loglevel', 'error']) as writer:
         for frame in tqdm(frames, desc="Writing video   "):
             writer.append_data(frame)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

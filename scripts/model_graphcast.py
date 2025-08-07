@@ -434,8 +434,14 @@ class IonCastGNN(nn.Module):
             recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss + forcing_recon_loss # Combine the losses, could also weight them differently if needed
         else: # Note I suspect this else is redundant as if train_on_predicted_forcings is false, forcing_recon_loss should be 0
             recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss 
-        # For simplicity, we ca  return just the reconstruction loss
-        return recon_loss
+
+        # Calculate RMSE and jpld_rmse
+        with torch.no_grad():
+            rmse = torch.sqrt(nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='mean'))
+            jpld_rmse = torch.sqrt(nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='mean'))
+
+        # For simplicity, we can return just the reconstruction loss
+        return recon_loss, rmse, jpld_rmse
 
     @staticmethod
     def _get_forcing_mask(forcing_channels, n_channels, device="cpu"):
