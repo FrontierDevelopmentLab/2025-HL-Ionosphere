@@ -33,6 +33,8 @@ from dataset_set import SET
 from dataset_cached import CachedDataset
 from events import EventCatalog
 
+event_catalog = EventCatalog()
+
 matplotlib.use('Agg')
 
 def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
@@ -199,7 +201,7 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
             writer.append_data(frame)
 
 
-def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args):
     if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
         raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
     if date_start > date_end:
@@ -220,47 +222,53 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         date_end = date_forecast_start + datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes)
         print('Adjusted end date  : {} ({} time steps after forecast start)'.format(date_end, args.forecast_max_time_steps))
 
-    sequence_start = date_start
-    sequence_end = date_end
-    sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
-    sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
+    sequence_start_date = date_start
+    sequence_end_date = date_end
+    sequence_length = int((sequence_end_date - sequence_start_date).total_seconds() / 60 / args.delta_minutes)
+    sequence_dates = [sequence_start_date + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
     # find the index of the date_forecast_start in the list sequence
-    if date_forecast_start not in sequence:
+    if date_forecast_start not in sequence_dates:
         raise ValueError('date_forecast_start must be in the sequence')
-    sequence_forecast_start_index = sequence.index(date_forecast_start)
+    sequence_forecast_start_index = sequence_dates.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
-    sequence_forecast = sequence[sequence_forecast_start_index:]
+    sequence_forecast_dates = sequence_dates[sequence_forecast_start_index:]
     print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     if isinstance(dataset, CachedDataset):
         dataset = dataset.dataset
-    sequence_data = dataset.get_sequence_data(sequence)
-    jpld_seq = sequence_data[0]  # Original data
-    sunmoon_seq = sequence_data[1]  # Sun and Moon geometry data
-    celestrak_seq = sequence_data[2]  # CelesTrak data
+    sequence_data = dataset.get_sequence_data(sequence_dates)
+    jpld_seq_data = sequence_data[0]  # Original data
+    sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+    celestrak_seq_data = sequence_data[2]  # CelesTrak data
     device = next(model.parameters()).device
-    jpld_seq = jpld_seq.to(device) # sequence_length, channels, 180, 360
-    sunmoon_seq = sunmoon_seq.to(device) # sequence_length, channels, 180, 360
-    celestrak_seq = celestrak_seq.to(device) # sequence_length, channels, 180, 360
-    celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, 2, 180, 360)
-    omniweb_seq = sequence_data[3]  # OMNIWeb data
-    omniweb_seq = omniweb_seq.to(device)  # sequence_length, channels, 180, 360
-    omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, 10, 180, 360)
-    set_seq = sequence_data[4]  # SET data
-    set_seq = set_seq.to(device)  # sequence_length, channels, 180, 360
-    set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, 9, 180, 360)
+    jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+    sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+    celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
+    celestrak_seq_data = celestrak_seq_data.view(celestrak_seq_data.shape + (1, 1)).expand(-1, 2, 180, 360)
+    omniweb_seq_data = sequence_data[3]  # OMNIWeb data
+    omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
+    omniweb_seq_data = omniweb_seq_data.view(omniweb_seq_data.shape + (1, 1)).expand(-1, 10, 180, 360)
+    set_seq_data = sequence_data[4]  # SET data
+    set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
+    set_seq_data = set_seq_data.view(set_seq_data.shape + (1, 1)).expand(-1, 9, 180, 360)
 
-    combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=1)  # Combine along the channel dimension
+    combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
 
-    combined_seq_context = combined_seq[:sequence_forecast_start_index]  # Context data for forecast
-    combined_seq_original = combined_seq[sequence_forecast_start_index:]  # Original data for forecast
-    combined_seq_forecast = model.predict(combined_seq_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+    combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+    combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-    jpld_forecast = combined_seq_forecast[:, 0]  # Extract JPLD channels from the forecast
-    jpld_original = combined_seq_original[:, 0]
+    jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
+    jpld_original = combined_seq_data_original[:, 0]
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
+
+    return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
+
+
+def save_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+    jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
 
     # rmse between original and forecast
     jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt().item()
@@ -270,8 +278,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     fig_title = title + f' - RMSE: {jpld_rmse:.2f} TECU - MAE: {jpld_mae:.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast]
-    titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast)]
+    titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast_dates]
+    titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start_date} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast_dates)]
 
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
@@ -284,15 +292,15 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     )
 
     if args.save_all_channels:
-        num_channels = combined_seq.shape[1]
+        num_channels = combined_seq_data_original.shape[1]
         for i in range(num_channels):
-            channel_original = combined_seq_original[:, i]
-            channel_forecast = combined_seq_forecast[:, i]
+            channel_original = combined_seq_data_original[:, i]
+            channel_forecast = combined_seq_data_forecast[:, i]
             channel_original_unnormalized = channel_original
             channel_forecast_unnormalized = channel_forecast
 
-            titles_channel_original = [f'Channel {i} Original: {d} - {title}' for d in sequence_forecast]
-            titles_channel_forecast = [f'Channel {i} Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast)]
+            titles_channel_original = [f'Channel {i} Original: {d} - {title}' for d in sequence_forecast_dates]
+            titles_channel_forecast = [f'Channel {i} Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast_dates)]
 
             file_name_channel = os.path.join(os.path.dirname(file_name), os.path.basename(file_name).replace('.mp4', f'_channel_{i:02d}.mp4'))
             save_gim_video_comparison(
@@ -435,7 +443,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2020-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -450,7 +458,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
@@ -506,9 +514,9 @@ def main():
             if args.valid_event_id:
                 for event_id in args.valid_event_id:
                     print('Excluding event ID: {}'.format(event_id))
-                    if event_id not in EventCatalog:
+                    if event_id not in event_catalog:
                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                    event = EventCatalog[event_id]
+                    event = event_catalog[event_id]
                     exclusion_start = datetime.datetime.fromisoformat(event['date_start']) - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                     exclusion_end = datetime.datetime.fromisoformat(event['date_end'])
                     date_exclusions.append((exclusion_start, exclusion_end))
@@ -653,7 +661,7 @@ def main():
                     valid_rmse_loss = 0.0
                     valid_jpld_rmse_loss = 0.0
                     with torch.no_grad():
-                        for batch in valid_loader:
+                        for batch in tqdm(valid_loader, desc='Validation', leave=False):
                             # if args.model_type == 'VAE1':
                             #     jpld, _ = batch
                             #     jpld = jpld.to(device)
@@ -787,9 +795,9 @@ def main():
                         if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                             if args.valid_event_id:
                                 for event_id in args.valid_event_id:
-                                    if event_id not in EventCatalog:
+                                    if event_id not in event_catalog:
                                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                    event = EventCatalog[event_id]
+                                    event = event_catalog[event_id]
                                     event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
                                     event_start = datetime.datetime.fromisoformat(event_start)
                                     event_end = datetime.datetime.fromisoformat(event_end)
@@ -800,13 +808,13 @@ def main():
                                     date_end = event_end
                                     file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                     title = f'Event: {event_id}, Kp={max_kp}'
-                                    run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    save_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
 
                             if args.valid_event_seen_id:
                                 for event_id in args.valid_event_seen_id:
-                                    if event_id not in EventCatalog:
+                                    if event_id not in event_catalog:
                                         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                    event = EventCatalog[event_id]
+                                    event = event_catalog[event_id]
                                     event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
                                     event_start = datetime.datetime.fromisoformat(event_start)
                                     event_end = datetime.datetime.fromisoformat(event_end)
@@ -817,7 +825,7 @@ def main():
                                     date_end = event_end
                                     file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                     title = f'Event: {event_id}, Kp={max_kp}'
-                                    run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    save_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
@@ -846,9 +854,9 @@ def main():
                 tests_to_run = []
                 if args.test_event_id:
                     for event_id in args.test_event_id:
-                        if event_id not in EventCatalog:
+                        if event_id not in event_catalog:
                             raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                        event = EventCatalog[event_id]
+                        event = event_catalog[event_id]
                         date_start, date_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
                         event_start = datetime.datetime.fromisoformat(date_start)
                         event_end = datetime.datetime.fromisoformat(date_end)
@@ -886,7 +894,7 @@ def main():
                     dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
                     dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
                     dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    save_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
                     
                     # Force cleanup
                     del dataset_jpld, dataset
