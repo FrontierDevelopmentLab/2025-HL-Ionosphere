@@ -223,7 +223,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     sequence_start = date_start
     sequence_end = date_end
     sequence_length = int((sequence_end - sequence_start).total_seconds() / 60 / args.delta_minutes)
-    print('Sequence length: {}'.format(sequence_length))
+    print('Sequence length    : {}'.format(sequence_length))
     sequence = [sequence_start + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
     # find the index of the date_forecast_start in the list sequence
     if date_forecast_start not in sequence:
@@ -264,10 +264,10 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
     # rmse between original and forecast
     jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt()
-    print('RMSE TECU          : {}'.format(jpld_rmse.item()))
+    print('\033[92mRMSE TECU          : {}\033[0m'.format(jpld_rmse.item()))
     fig_title = title + f' - RMSE: {jpld_rmse.item():.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'JPLD GIM TEC Original: {d}' for d in sequence_forecast]
+    titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast]
     titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast)]
 
     save_gim_video_comparison(
