@@ -25,7 +25,7 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
 
 TO DO: Add better instructions.
 
-### Training
+### Training example
 
 ```bash
 docker run --rm -it \
