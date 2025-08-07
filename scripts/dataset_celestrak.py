@@ -60,7 +60,7 @@ class CelesTrak(PandasDataset):
             print(f"Using cached file: {cadence_matched_fname}")
             data = pd.read_csv(cadence_matched_fname)
         else:
-            data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_time=rewind_minutes)
+            data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_minutes=rewind_minutes)
             data.to_csv(cadence_matched_fname) # the fill to cadence can take a while, so cache file
 
         super().__init__('CelesTrak', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
