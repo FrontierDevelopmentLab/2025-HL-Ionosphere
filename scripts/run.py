@@ -565,7 +565,7 @@ def main():
                 model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse = load_model(model_file, device)
                 epoch_start = epoch + 1
                 iteration = iteration + 1
-                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
                 scheduler.load_state_dict(scheduler_state_dict)
                 print('Next epoch    : {:,}'.format(epoch_start+1))
                 print('Next iteration: {:,}'.format(iteration+1))
@@ -582,7 +582,7 @@ def main():
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
                 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3, verbose=True)
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
                 iteration = 0
                 epoch_start = 0
                 train_losses = []
