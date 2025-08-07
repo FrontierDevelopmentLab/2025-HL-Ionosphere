@@ -37,9 +37,10 @@ def train():
     parser = argparse.ArgumentParser(description='HL-25 Ionopy Model Training', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--device', type=str, default='', help='Device to use for training')
     parser.add_argument('--torch_type', type=str, default='float32', help='Torch type to use for training')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
+    parser.add_argument('--subset_type', type=int, default=5,  choices=[5, 10, 20, 30, 40], help='Which Madrigal data to use, possible choices are: 5, 10, 20, 30, 40 million points')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
     parser.add_argument('--model_path', type=str, default=None, help='Path to the model to load. If None, a new model is created')
-    parser.add_argument('--lr', type=float, default=0.004, help='Learning rate for the optimizer')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate for the optimizer')
     parser.add_argument('--run_name', default='', help='Run name to be stored in wandb')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train the model')
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for the dataloader')
@@ -48,15 +49,13 @@ def train():
     parser.add_argument('--proxies_resolution', type=int, default=1, help='Resolution in days for the SET and Celestrack proxies')
     parser.add_argument('--lag_minutes_omni', type=int, default=8640, help='Lag in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
     parser.add_argument('--omni_resolution', type=int, default=60, help='Resolution in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
-    parser.add_argument('--lag_minutes_jpld', type=int, default=2160, help='Lag in minutes for the JPLD data')
-    parser.add_argument('--jpld_resolution', type=int, default=15, help='Resolution in minutes for the JPLD data')
+    parser.add_argument('--lag_minutes_jpld', type=int, default=8640, help='Lag in minutes for the JPLD data')
+    parser.add_argument('--jpld_resolution', type=int, default=60, help='Resolution in minutes for the JPLD data')
     # parser.add_argument('--min_date', type=str, default='2000-07-29 00:59:47', help='Min date to consider for the dataset')
     # parser.add_argument('--max_date', type=str, default='2024-05-31 23:59:32', help='Max date to consider for the dataset')
     parser.add_argument('--model_type', type=str, default='tft', choices=['tft'],help='Time series model to be used')
     parser.add_argument('--bucket_dir', type=str, default='/home/ga00693/gcs-bucket', help='Path to the directory where the ionosphere-data bucket is mounted')
-    parser.add_argument('--lag_minutes', type=int, default=500, help='Lag in minutes for the time series datasets, default is 500 minutes')
-    parser.add_argument('--resolution_minutes', type=int, default=10, help='Resolution for the time series datasets, default is 10 minutes')
-    parser.add_argument('--dropout', type=float, default=0.05, help='Dropout rate for the TFT model')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for the TFT model')
     parser.add_argument('--state_size', type=int, default=64, help='State size for the TFT model or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--lstm_layers', type=int, default=2, help='Number of LSTM layers of the TFT or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--attention_heads', type=int, default=4, help='Number of attention heads for the TFT')
@@ -90,7 +89,7 @@ def train():
         device = torch.device(opt.device)
     print("Using: ", device)
 
-    config={'madrigal_path': f'{opt.bucket_dir}/madrigal_data/processed/gps_data_tarr/csv_subsets/subset_tec_10mln.csv',
+    config={'madrigal_path': f'{opt.bucket_dir}/madrigal_data/processed/gps_data_tarr/csv_subsets/subset_tec_{opt.subset_type}mln.csv',
             'set_sw_path': f'{opt.bucket_dir}/karman-2025/data/sw_data/set_sw.csv',
             'celestrack_path': f'{opt.bucket_dir}/karman-2025/data/sw_data/celestrack_sw.csv',
             'omni_indices_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_indices.csv',
@@ -177,9 +176,9 @@ def train():
     print(test_month_idx,validation_month_idx)
     madrigal_dataset._set_indices(test_month_idx=[test_month_idx], validation_month_idx=[validation_month_idx],custom={ 2012: {"validation":8, "test":9},
                                                                                                                         2013: {"validation":4, "test":5},
-                                                                                                                        2015: {"validation":2, "test":3},
+                                                                                                                        2015: {"validation":2, "test":3},#geomag storm
                                                                                                                         2022: {"validation":0, "test":1},
-                                                                                                                        2024: {"validation":5,"test":6}})
+                                                                                                                        2024: {"validation":4,"test":5}})
     train_dataset = madrigal_dataset.train_dataset()
     validation_dataset = madrigal_dataset.validation_dataset()
     test_dataset = madrigal_dataset.test_dataset()
@@ -232,6 +231,7 @@ def train():
     )
     criterion=torch.nn.MSELoss()
     quantiles_tensor= torch.tensor([0.5], dtype=torch_type, device=device)  # For TFT, we use the median quantile
+    best_val_loss = np.inf
     for epoch in range(opt.epochs):
         ts_ionopy_model.train()
         train_loss = 0.0
@@ -261,8 +261,8 @@ def train():
                 predicted_quantiles = batch_out['predicted_quantiles']#it's of shape batch_size x future_steps x num_quantiles
                 target_nn_median=predicted_quantiles[:, :, 0].squeeze()
                 q_loss, q_risk, _ = tft_loss.get_quantiles_loss_and_q_risk(outputs=predicted_quantiles,
-                                                                            targets=minibatch['target'],
-                                                                            desired_quantiles=quantiles_tensor)
+                                                                                targets=minibatch['target'],
+                                                                                desired_quantiles=quantiles_tensor)
             else:
                 raise ValueError('Invalid model type. Only tft is supported')
             loss_nn = criterion(target_nn_median, minibatch['target'])
@@ -281,13 +281,14 @@ def train():
                 wandb.log({
                     'train_loss': loss_nn.item(),
                     'train_loss_unnormalized': loss_nn_unnormalized.item(),
+                    'rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
                     'q_loss': q_loss.item(),
                     'q_risk': q_risk.item(),
-                    'epoch': epoch+1
+                    'minibatch': count
                 })
             #every 100 epochs, print the losses:
             if (count+1) % 100 == 0:
-                print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+                print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
             count+=1
         train_loss /= len(train_loader)
         print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}")
@@ -323,8 +324,8 @@ def train():
                     predicted_quantiles = batch_out['predicted_quantiles']
                     target_nn_median=predicted_quantiles[:, :, 0].squeeze()
                     q_loss, q_risk, _ = tft_loss.get_quantiles_loss_and_q_risk(outputs=target_nn_median,
-                                                                            targets=minibatch['target'],
-                                                                            desired_quantiles=quantiles_tensor)
+                                                                                targets=minibatch['target'],
+                                                                                desired_quantiles=quantiles_tensor)
                 else:
                     raise ValueError('Invalid model type. Only tft is supported')
                 loss_nn = criterion(target_nn_median, minibatch['target'])
@@ -338,18 +339,28 @@ def train():
                     wandb.log({
                         'validation_loss': loss_nn.item(),
                         'validation_loss_unnormalized': loss_nn_unnormalized.item(),
+                        'rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
                         'q_loss': q_loss.item(),
                         'q_risk': q_risk.item(),
-                        'epoch': epoch+1
+                        'minibatch': count
                     })
                 #every 100 epochs, print the losses:
                 if (count+1) % 100 == 0:
-                    print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+                    print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
                 count+=1
         validation_loss /= len(validation_loader)
         print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}")
         if opt.wandb_inactive is False:
             wandb.log({'validation_loss_epoch': validation_loss, 'epoch': epoch+1})
+        
+        #save the model if the validation loss is lower than the best validation loss
+        if validation_loss < best_val_loss:
+            best_val_loss = validation_loss
+            print(f"Validation loss improved from {best_val_loss:.8f} to {validation_loss:.8f}, saving model")
+            if opt.model_path is not None:
+                torch.save(ts_ionopy_model.state_dict(), opt.model_path)
+            else:
+                torch.save(ts_ionopy_model.state_dict(), f"{opt.model_type}_model_best.pth")
 
 if __name__ == "__main__":
     time_start = time.time()
