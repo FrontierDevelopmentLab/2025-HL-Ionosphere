@@ -238,6 +238,7 @@ def train():
     for epoch in range(opt.epochs):
         ts_ionopy_model.train()
         train_loss = 0.0
+        count=0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
             historical_ts_numeric = []
             for key in batch.keys():
@@ -288,8 +289,9 @@ def train():
                     'epoch': epoch+1
                 })
             #every 100 epochs, print the losses:
-            if (epoch) % 100 == 0:
-                print(f"Epoch {epoch}, Train Loss: {loss_nn.item():.6f}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+            if (count+1) % 100 == 0:
+                print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+            count+=1
         train_loss /= len(train_loader)
         print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}")
         if opt.wandb_inactive is False:
@@ -299,6 +301,7 @@ def train():
         ts_ionopy_model.eval()
         validation_loss = 0.0
         with torch.no_grad():
+            count=0
             for batch in tqdm(validation_loader, desc=f"Validation Epoch {epoch+1}/{opt.epochs}"):
                 historical_ts_numeric = []
                 for key in batch.keys():
@@ -343,8 +346,9 @@ def train():
                         'epoch': epoch+1
                     })
                 #every 100 epochs, print the losses:
-                if (epoch+1) % 100 == 0:
-                    print(f"Epoch {epoch+1}, Validation Loss: {loss_nn.item():.6f}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+                if (count+1) % 100 == 0:
+                    print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+                count+=1
         validation_loss /= len(validation_loader)
         print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}")
         if opt.wandb_inactive is False:
