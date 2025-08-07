@@ -82,7 +82,8 @@ class SunMoonGeometry(Dataset):
             if self.ephemeris_dir is None:
                 self._eph = skyfield.api.load('de421.bsp')
             else:
-                self._eph = skyfield.api.load('de421.bsp', directory=self.ephemeris_dir)
+                load = skyfield.api.Loader(path=self.ephemeris_dir)
+                self._eph = load('de421.bsp')
             self._earth_body = self._eph['earth']
             self._sun_body = self._eph['sun']
             self._moon_body = self._eph['moon']
