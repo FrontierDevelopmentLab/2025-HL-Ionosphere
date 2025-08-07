@@ -193,7 +193,7 @@ class PandasDataset(Dataset):
         filled_rows = []
         rewind_minutes = datetime.timedelta(minutes=rewind_minutes)
 
-        for i in tqdm(range(1, len(df))):
+        for i in tqdm(range(1, len(df)), desc='Filling to cadence', unit='row'):
             prev_row = df.iloc[i - 1]
             curr_row = df.iloc[i]
 
