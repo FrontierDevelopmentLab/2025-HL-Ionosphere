@@ -2,6 +2,10 @@
 
 This repository contains the code and resources for the Ionosphere-Thermosphere Twin project, part of the NASA Heliolab 2025 Frontier Development Lab. The project focuses on using machine learning to analyze and predict ionospheric conditions.
 
+__Team:__ Linnea Wolniewicz, Halil Kelebek, Simone Mestici, Michael Vergalla
+
+__Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczencki, James Walsh, Bala Poduval, Umaa Rebbapragada, Olga Verkhoglyadova
+
 ## How to install
 
 ### Pre-requisites
@@ -19,11 +23,6 @@ This repository contains the code and resources for the Ionosphere-Thermosphere 
 ## Usage
 
 TO DO: Add usage instructions here.
-
-## Team Members
-Team: Linnea Wolniewicz, Halil Kelebek, Simone Mestici, Michael Vergalla
-
-Faculty: Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczencki, James Walsh, Bala Poduval, Umaa Rebbapragada, Olga Verkhoglyadova
 
 ## Acknowledgements
 
