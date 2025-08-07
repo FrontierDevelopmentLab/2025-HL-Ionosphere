@@ -210,7 +210,6 @@ def train():
         num_workers=opt.num_workers,
         sampler=train_sampler,
         drop_last=True,
-        worker_init_fn=opt.seed,
         generator=g
     )
     validation_loader = torch.utils.data.DataLoader(
@@ -220,7 +219,6 @@ def train():
         num_workers=opt.num_workers,
         sampler=validation_sampler,
         drop_last=True,
-        worker_init_fn=opt.seed,
         generator=g
     )
     test_loader = torch.utils.data.DataLoader(
@@ -230,7 +228,6 @@ def train():
         num_workers=opt.num_workers,
         sampler=test_sampler,
         drop_last=True,
-        worker_init_fn=opt.seed,
         generator=g
     )
     criterion=torch.nn.MSELoss()
