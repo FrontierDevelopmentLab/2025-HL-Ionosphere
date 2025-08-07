@@ -206,7 +206,7 @@ def train():
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=opt.batch_size,
-        pin_memory=False,
+        pin_memory=True,
         num_workers=opt.num_workers,
         sampler=train_sampler,
         drop_last=True,
@@ -216,7 +216,7 @@ def train():
     validation_loader = torch.utils.data.DataLoader(
         validation_dataset,
         batch_size=opt.batch_size,
-        pin_memory=False,
+        pin_memory=True,
         num_workers=opt.num_workers,
         sampler=validation_sampler,
         drop_last=True,
@@ -226,7 +226,7 @@ def train():
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=opt.batch_size,
-        pin_memory=False,
+        pin_memory=True,
         num_workers=opt.num_workers,
         sampler=test_sampler,
         drop_last=True,
