@@ -22,131 +22,174 @@ import os
 import numpy as np
 import datetime
 import pandas as pd
+from .base_datasets import PandasDataset
 
-class CelestrakDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=15): # default sampled cadence set to candence of JPLD GIM 
-        print('Celestrak Dataset')
+# celestrak_file = "/mnt/ionosphere-data/celestrak/kp_ap_processed_timeseries.csv"
+class CelestrakDataset(PandasDataset):
+    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15): # 180 minutes rewind defualt matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
+        print('\nCelestrak dataset')
+        print('File                 : {}'.format(file_name))
 
-        self.data_file = data_file
-        self.normalize = normalize
-        self.sampled_cadence = cadence  # in minutes
-        true_cadence = 180 # in minutes, this is the cadence of the original data file
+        data = pd.read_csv(file_name)
+        data['Datetime'] = pd.to_datetime(data['Datetime'])
+        # data = data.sort_values(by='Datetime')
+        print('Rows                 : {:,}'.format(len(data)))
 
-        # Load the data file
-        if not os.path.exists(data_file):
-            raise FileNotFoundError(f"Data file not found: {data_file}")
-        df = pd.read_csv(data_file, index_col='Datetime')
+        self.column = ["Kp", "Ap"]
 
-        # Normalize the data if required
-        # Note: if
-        #   celestrak = CelestrakDataset()
-        #   celestrak.normalize // return True
-        #   CelestrakDataset.normalize // function
-        if normalize:
-            self.df = CelestrakDataset.normalize(df)
-        else:
-            self.df = df
+        df_mean = data[self.column].mean()
+        df_std = data[self.column].mean()
+        self.col_means = torch.tensor(np.array(df_mean))
+        self.col_std = torch.tensor(np.array(df_std))
 
-        print(f"Head of data file: \n\n{df.head()}\n")
-
-        # Get the date range from the data file
-        dates_available = self.find_date_range(data_file, self.df)
-        if dates_available is None:
-            raise ValueError("No data found in the specified file.")
-        date_start_on_disk, date_end_on_disk = dates_available
-
-        # If no start or end date is provided, use the dates from the file
-        self.date_start = date_start_on_disk if date_start is None else date_start
-        self.date_end = date_end_on_disk if date_end is None else date_end
-
-        if self.date_start > self.date_end:
-            raise ValueError("Start date cannot be after end date.")
-        if self.date_start < date_start_on_disk or self.date_end > date_end_on_disk:
-            raise ValueError("Specified date range is outside the available data range.")
-
-        # Calculate the number of days and samples in the dataset
-        self.num_days = (self.date_end - self.date_start).days + 1
-        self.num_samples = int(self.num_days * (24 * 60 / true_cadence))
-
-        print('Number of days in dataset   : {:,}'.format(self.num_days))
-        print('Number of samples in dataset: {:,}'.format(self.num_samples))
-
-        # Calculate the size of the dataset on disk
-        size_on_disk = sum(os.path.getsize(f) for f in glob.glob(data_file))
-        print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
+        # Remove outliers based on quantiles, # NOTE: is this something we care about in this dataset? 
+        # q_low = data[self.column].quantile(0.001)
+        # q_hi  = data[self.column].quantile(0.999)
+        # data = data[(data[self.column] < q_hi) & (data[self.column] > q_low)] # quantile stuff breaking code, we can reintroduce later
 
 
-    def get_date_range(self):
-        return self.date_start, self.date_end
+        super().__init__('Celestrak dataset', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
 
-    def set_date_range(self, date_start, date_end):
-        self.date_start, self.date_end = date_start, date_end
-
-    @staticmethod
-    def find_date_range(data_file, df):
-        print("Checking date range of data in file: {}".format(data_file))
-
-        # Get the first and last dates from self.df
-        start_idx = df.index.min()
-        end_idx = df.index.max()
-
-        # Convert to datetime objects
-        date_start = datetime.datetime.strptime(start_idx, '%Y-%m-%d %H:%M:%S')
-        date_end = datetime.datetime.strptime(end_idx, '%Y-%m-%d %H:%M:%S')
-
-        print("Start date : {}".format(date_start.strftime('%Y-%m-%d %H:%M:%S')))
-        print("End date   : {}".format(date_end.strftime('%Y-%m-%d %H:%M:%S')))
-
-        return date_start, date_end
+    # NOTE: what is the reason these methods were kept as instance methods but also passing the data in as an argument in the RSTNRadio dataset (or the other dattasets as well)?
+    def normalize_data(self, data): 
+        # print(data.shape, self.df_mean.shape, self.df_std.shape)
+        # print(data, self.df_mean, self.df_std, self.column)
+        return (data - self.col_means) / self.col_std
+        # for col in self.column:
+        #     data[col] = (data[col] - self.df_mean[col]) / self.df_std[col]
+        # return data
     
-    @staticmethod
-    def normalize(df):
-        for col in df.columns:
-            df[col] = (df[col] - df[col].mean()) / df[col].std()
-        return df
+    def unnormalize_data(self, data):
+        # for col in self.column:
+        #     data[col] = data[col] * self.df_std[col] + self.df_mean[col]
+        return data * self.col_std + self.col_means
+        # return data
+    
 
-    @staticmethod
-    def unnormalize(df):
-        for col in df.columns:
-            df[col] = df[col] * df[col].std() + df[col].mean()
-        return df
+# class CelestrakDataset(torch.utils.data.Dataset):
+#     def __init__(self, data_file, date_start=None, date_end=None, normalize=True, cadence=15): # default sampled cadence set to candence of JPLD GIM 
+#         print('Celestrak Dataset')
 
-    def __len__(self):
-        return self.num_samples
+#         self.data_file = data_file
+#         self.normalize = normalize
+#         self.sampled_cadence = cadence  # in minutes
+#         true_cadence = 180 # in minutes, this is the cadence of the original data file
 
-    def __getitem__(self, index):
-        # If it's a datetime object, convert it to the corresponding index in the df
-        if isinstance(index, datetime.datetime):
-            # Edge case
-            if index < self.date_start or index > self.date_end:
-                raise IndexError(f"Date {index} is outside the dataset range: {self.date_start} to {self.date_end}.")
+#         # Load the data file
+#         if not os.path.exists(data_file):
+#             raise FileNotFoundError(f"Data file not found: {data_file}")
+#         df = pd.read_csv(data_file, index_col='Datetime')
 
-            # Convert datetime to string for indexing
-            date = index
-            date_string = date.strftime('%Y-%m-%d %H:%M:%S')
-            # Handle the case where the date is not exactly in the index, find the index to the left
-            df_index = self.df.index.searchsorted(date_string, side='left')
+#         # Normalize the data if required
+#         # Note: if
+#         #   celestrak = CelestrakDataset()
+#         #   celestrak.normalize // return True
+#         #   CelestrakDataset.normalize // function
+#         if normalize:
+#             self.df = CelestrakDataset.normalize(df)
+#         else:
+#             self.df = df
 
-        # If it is an integer, find the closest date based on the index
-        elif isinstance(index, int):
-            # Edge case
-            if index < 0 or index >= self.num_samples:
-                raise IndexError("Index out of range for the dataset.")
+#         print(f"Head of data file: \n\n{df.head()}\n")
+
+#         # Get the date range from the data file
+#         dates_available = self.find_date_range(data_file, self.df)
+#         if dates_available is None:
+#             raise ValueError("No data found in the specified file.")
+#         date_start_on_disk, date_end_on_disk = dates_available
+
+#         # If no start or end date is provided, use the dates from the file
+#         self.date_start = date_start_on_disk if date_start is None else date_start
+#         self.date_end = date_end_on_disk if date_end is None else date_end
+
+#         if self.date_start > self.date_end:
+#             raise ValueError("Start date cannot be after end date.")
+#         if self.date_start < date_start_on_disk or self.date_end > date_end_on_disk:
+#             raise ValueError("Specified date range is outside the available data range.")
+
+#         # Calculate the number of days and samples in the dataset
+#         self.num_days = (self.date_end - self.date_start).days + 1
+#         self.num_samples = int(self.num_days * (24 * 60 / true_cadence))
+
+#         print('Number of days in dataset   : {:,}'.format(self.num_days))
+#         print('Number of samples in dataset: {:,}'.format(self.num_samples))
+
+#         # Calculate the size of the dataset on disk
+#         size_on_disk = sum(os.path.getsize(f) for f in glob.glob(data_file))
+#         print('Size on disk                : {:.2f} GB'.format(size_on_disk / (1024 ** 3)))
+
+
+#     def get_date_range(self):
+#         return self.date_start, self.date_end
+
+#     def set_date_range(self, date_start, date_end):
+#         self.date_start, self.date_end = date_start, date_end
+
+#     @staticmethod
+#     def find_date_range(data_file, df):
+#         print("Checking date range of data in file: {}".format(data_file))
+
+#         # Get the first and last dates from self.df
+#         start_idx = df.index.min()
+#         end_idx = df.index.max()
+
+#         # Convert to datetime objects
+#         date_start = datetime.datetime.strptime(start_idx, '%Y-%m-%d %H:%M:%S')
+#         date_end = datetime.datetime.strptime(end_idx, '%Y-%m-%d %H:%M:%S')
+
+#         print("Start date : {}".format(date_start.strftime('%Y-%m-%d %H:%M:%S')))
+#         print("End date   : {}".format(date_end.strftime('%Y-%m-%d %H:%M:%S')))
+
+#         return date_start, date_end
+    
+#     @staticmethod
+#     def normalize(df):
+#         for col in df.columns:
+#             df[col] = (df[col] - df[col].mean()) / df[col].std()
+#         return df
+
+#     @staticmethod
+#     def unnormalize(df):
+#         for col in df.columns:
+#             df[col] = df[col] * df[col].std() + df[col].mean()
+#         return df
+
+#     def __len__(self):
+#         return self.num_samples
+
+#     def __getitem__(self, index):
+#         # If it's a datetime object, convert it to the corresponding index in the df
+#         if isinstance(index, datetime.datetime):
+#             # Edge case
+#             if index < self.date_start or index > self.date_end:
+#                 raise IndexError(f"Date {index} is outside the dataset range: {self.date_start} to {self.date_end}.")
+
+#             # Convert datetime to string for indexing
+#             date = index
+#             date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+#             # Handle the case where the date is not exactly in the index, find the index to the left
+#             df_index = self.df.index.searchsorted(date_string, side='left')
+
+#         # If it is an integer, find the closest date based on the index
+#         elif isinstance(index, int):
+#             # Edge case
+#             if index < 0 or index >= self.num_samples:
+#                 raise IndexError("Index out of range for the dataset.")
             
-            # Calculate the date based on the index
-            minutes = index * self.sampled_cadence
-            date = self.date_start + datetime.timedelta(minutes=minutes)
-            date_string = date.strftime('%Y-%m-%d %H:%M:%S')
-            # Handle the case where the date is not exactly in the index, find the index to the left
-            df_index = self.df.index.searchsorted(date_string, side='left')
-        else:
-            raise TypeError("Index must be an integer or a datetime object.")
+#             # Calculate the date based on the index
+#             minutes = index * self.sampled_cadence
+#             date = self.date_start + datetime.timedelta(minutes=minutes)
+#             date_string = date.strftime('%Y-%m-%d %H:%M:%S')
+#             # Handle the case where the date is not exactly in the index, find the index to the left
+#             df_index = self.df.index.searchsorted(date_string, side='left')
+#         else:
+#             raise TypeError("Index must be an integer or a datetime object.")
         
-        # print(f"Index in DataFrame: {df_index}, Date: {date_string}, value: {self.df.iloc[df_index].values}")
+#         # print(f"Index in DataFrame: {df_index}, Date: {date_string}, value: {self.df.iloc[df_index].values}")
 
-        # Create a 1D tensor listing the associated values with date
-        data = self.df.iloc[df_index].values
-        data_tensor = torch.tensor(data, dtype=torch.float32)
+#         # Create a 1D tensor listing the associated values with date
+#         data = self.df.iloc[df_index].values
+#         data_tensor = torch.tensor(data, dtype=torch.float32)
 
-        return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
+#         return data_tensor, date.isoformat() if hasattr(date, 'isoformat') else str(date)
 

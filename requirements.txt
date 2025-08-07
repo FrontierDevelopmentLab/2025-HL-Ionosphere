@@ -1,0 +1,4 @@
+cartopy==0.24.1
+imageio==2.37.0
+xarray==2025.7.1
+skyfield==1.53
