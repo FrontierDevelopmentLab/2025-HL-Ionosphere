@@ -635,10 +635,14 @@ def main():
                         optimizer.step()
                         iteration += 1
 
-                        train_losses.append((iteration, loss.detach().item()))
-                        train_rmse_losses.append((iteration, rmse.detach().item()))
-                        train_jpld_rmse_losses.append((iteration, jpld_rmse.detach().item()))
-                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss.item():.4f}, RMSE: {rmse.item():.4f}, JPLD RMSE: {jpld_rmse.item():.4f}')
+                        loss = loss.detach().item()
+                        rmse = rmse.detach().item()
+                        jpld_rmse = jpld_rmse.detach().item()
+
+                        train_losses.append((iteration, loss))
+                        train_rmse_losses.append((iteration, rmse))
+                        train_jpld_rmse_losses.append((iteration, jpld_rmse))
+                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss:.4f}, RMSE: {rmse:.4f}, JPLD RMSE: {jpld_rmse:.4f}')
                         pbar.update(1)
 
                 # Validation
