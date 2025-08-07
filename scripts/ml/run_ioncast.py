@@ -1,11 +1,21 @@
-from ioncast import * 
-from ioncast import EventCatalog
+"""
+What ive changed in the file since the move to scripts folder:
+
+added existing from run_gunes.py
+TODO: (not urgent) suggest that we update stack_features from graphcast_utils to work more similarly to gunes' stack_as_channels from util, mainly looking to get rid of our reliance on error prone n_img_dataset input + forcing that all image datasets come before global datasets
+TODO: (not urgent) check if the plotting funcs we store in plot_functions have been changed in the run_gunes.py file 
+moved to using the updated JPLD, OMNIWeb, CelesTrak, SET instead of old dataset implementations, (SolarIndexDataset was renamed to SET, all dataset class names have dropped the suffix Dataset)
+switched from UnionDataset to Union (tehre are slight differences between the fiels, mainly seems to be that Union also allows int based indexing wheras UnionDataset didnt)
+
+
+"""
+
+
 # from model_convlstm import IonCastConvLSTM
 # from model_graphcast import IonCastGNN
 # from graphcast_utils import stack_features
-# from dataset_jpld import JPLD as JPLDGIMDataset # NOTE: hacky solution for now, need to rename either the class or all calls to JPLDGIMDataset in this file
 # from dataset_sunmoon import SunMoonGeometry
-# from dataset_omni import OMNIDataset
+# from dataset_omni import OMNIWeb
 # from dataset_celestrak import CelestrakDataset
 # from dataset_solar_indices import SolarIndexDataset
 # from dataset_union import UnionDataset, Union
@@ -27,8 +37,31 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import cartopy.crs as ccrs
-import imageio
 import glob
+import imageio
+
+from graphcast_utils import stack_features, calc_shapes_for_stack_features
+from plot_functions import save_gim_plot, save_gim_video, save_gim_video_comparison
+
+
+import shutil
+
+from util import Tee
+from util import set_random_seed
+from util import stack_as_channels # This is similar to our stack features in graphcast util, i think we should simplify our stack_features to more closely match this, mainly getting rid of the n_img_datasets input
+from model_vae import VAE1
+from model_convlstm import IonCastConvLSTM
+from model_lstm import IonCastLSTM
+from model_graphcast import IonCastGNN
+from dataset_jpld import JPLD
+from dataset_sequences import Sequences
+from dataset_union import Union
+from dataset_sunmoongeometry import SunMoonGeometry
+from dataset_celestrak import CelesTrak
+from dataset_omniweb import OMNIWeb
+from dataset_set import SET
+from dataset_cached import CachedDataset
+from events import EventCatalog
 
 matplotlib.use('Agg')
 
@@ -111,8 +144,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         jpld_forecast_with_context = combined_forecast[0, :, 0, :, :] 
         
     # Unnormalize the JPLD data (reference and context/forecast)
-    jpld_original_unnormalized = JPLDGIMDataset.unnormalize(jpld_original)
-    jpld_forecast_with_context_unnormalized = JPLDGIMDataset.unnormalize(jpld_forecast_with_context)
+    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
+    jpld_forecast_with_context_unnormalized = JPLD.unnormalize(jpld_forecast_with_context)
     jpld_forecast_with_context_unnormalized = jpld_forecast_with_context_unnormalized.clamp(0, 100) # Clamp to valid range for comparison
 
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
@@ -348,9 +381,16 @@ def main():
             # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
             dataset_constructors = {
                 'sunmoon': lambda date_start_, date_end_, date_exclusions_: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sunmoon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
-                'omni': lambda date_start_, date_end_, date_exclusions_: OMNIDataset(file_dir=omni_dir, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
-                'celestrak': lambda date_start_, date_end_, date_exclusions_: CelestrakDataset(file_name=celestrak_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
-                'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, delta_minutes=15, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_),
+                # NOTE: OMNI dataset constructor from Gunes' code as reference
+                #  def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+                'omni': lambda date_start_, date_end_, date_exclusions_: OMNIWeb(data_dir=omni_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
+                # NOTE: Celestrak dataset constructor from Gunes' code as reference
+                #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
+                'celestrak': lambda date_start_, date_end_, date_exclusions_: CelesTrak(file_name=celestrak_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
+                # 'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
+                # NOTE: SET dataset constructor from Gunes' code as reference
+                #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+                'set': lambda date_start_, date_end_, date_exclusions_: SET(file_name=solar_index_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
             }
 
 
@@ -378,7 +418,7 @@ def main():
                     exclusion_end = datetime.datetime.fromisoformat(exclusion_end)
                     date_exclusions.append((exclusion_start, exclusion_end))
 
-                    datasets_jpld_valid.append(JPLDGIMDataset(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
 
                     # datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
                     for name in args.aux_datasets:
@@ -390,19 +430,19 @@ def main():
                 aux_datasets_valid = []
                 dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
                 for name, dataset_list in aux_datasets_valid_dict.items():
-                    aux_datasets_valid.append(UnionDataset(datasets=dataset_list)) # NOTE: the union datasets no longer have the same start dates.
+                    aux_datasets_valid.append(Union(datasets=dataset_list)) # NOTE: the union datasets no longer have the same start dates.
                     print("\nStart and end dates: ", aux_datasets_valid[-1].date_start, aux_datasets_valid[-1].date_end)
 
             # Set up datasets for VAE
             if args.model_type == 'VAE1':
-                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = dataset_jpld_train
                 dataset_valid = dataset_jpld_valid
                 aux_datasets_train = [dataset_constructors[name](date_start_=date_start, date_end_=date_end, date_exclusions_=date_exclusions) for name in args.aux_datasets]
 
             # Set up datasets for IonCastConvLSTM
             elif args.model_type == 'IonCastConvLSTM':
-                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end)
@@ -412,7 +452,7 @@ def main():
 
             # Set up datasets for IonCastGNN
             elif args.model_type == 'IonCastGNN':
-                dataset_jpld_train = JPLDGIMDataset(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
 
                 if 'sunmoon' in args.aux_datasets and args.sunmoon_extra_time_steps > 0:
                     raise ValueError(f'SunMoonGeometry dataset argument sunmoon_extra_time_steps={args.sunmoon_extra_time_steps} is not compatible with IonCastGNN model. Set sunmoon_extra_time_steps=0 for IonCastGNN.')
@@ -662,22 +702,22 @@ def main():
 
                         jpld_orig = jpld_orig.to(device)
                         jpld_recon, _, _ = model.forward(jpld_orig)
-                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
-                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
+                        jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
                         jpld_orig = jpld_orig.to(device)
                         jpld_recon, _, _ = model.forward(jpld_orig)
-                        jpld_orig_unnormalized = JPLDGIMDataset.unnormalize(jpld_orig)
-                        jpld_recon_unnormalized = JPLDGIMDataset.unnormalize(jpld_recon)
+                        jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
+                        jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
 
                         # Sample a batch from the model
                         jpld_sample = model.sample(n=num_evals)
-                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
                         # Sample a batch from the model
                         jpld_sample = model.sample(n=num_evals)
-                        jpld_sample_unnormalized = JPLDGIMDataset.unnormalize(jpld_sample)
+                        jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
                         jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 100)
                         torch.set_rng_state(rng_state)
                         # Resume with the original random state
