@@ -14,7 +14,7 @@ class TarRandomAccess():
         if len(tar_files) == 0:
             raise ValueError('No tar files found in data directory: {}'.format(data_dir))
         self.index = {}
-        index_cache = os.path.join(data_dir, 'tar_files_index')
+        index_cache = os.path.join(data_dir, 'tar_files_index_' + str(hash(data_dir)))
         if os.path.exists(index_cache):
             print('Loading tar files index from cache: {}'.format(index_cache))
             with open(index_cache, 'rb') as file:
