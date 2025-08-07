@@ -254,10 +254,16 @@ class IonCastGNN(nn.Module):
         assert B == 1, "Batch size must be 1"
 
         # Pass through GraphCast
-        output_grid = self.graph_cast(input_grid)
-        
+        output_grid = self.graph_cast(input_grid) # shape of output_grid is [B, C, H, W]
+
+        B, C, H, W = output_grid.shape
+        output_grid = output_grid.permute(0, 2, 3, 1).reshape(-1, C)  # shape: [B*H*W, C] (done to pass through final linnear layer)
+
         # Pass through the final linear layer to allow negative values
-        output_grid = self.final_linear(output_grid)
+        output_grid = self.final_linear(output_grid)  # shape: [B*H*W, C_out]
+
+        # Reshape back to (B, C, H, W)
+        output_grid = output_grid.reshape(B, H, W, C).permute(0, 3, 1, 2)
 
         return output_grid
 

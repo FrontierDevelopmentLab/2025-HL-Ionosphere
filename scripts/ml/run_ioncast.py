@@ -301,10 +301,12 @@ def main():
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the datasets')
     parser.add_argument('--jpld_dir', type=str, default='jpld/webdataset', help='JPLD GIM dataset directory')
-    parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
+    # parser.add_argument('--omni_dir', type=str, default='omniweb/cleaned/', help='OMNIWeb dataset directory')
+    parser.add_argument('--omni_dir', type=str, default='omniweb_karman_2025/', help='OMNIWeb dataset directory')
     parser.add_argument('--celestrak_file', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='Celestrak dataset csv file')
-    parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "solar_inds"], default=["sunmoon", "omni", "celestrak", "solar_inds"], help="additional datasets to include on top of TEC maps")
+    # parser.add_argument('--solar_index_file', type=str, default='solar_env_tech_indices/Indices_F10_processed.csv', help='Solar indices dataset csv file')
+    parser.add_argument('--set_file', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='Solar indices dataset csv file')
+    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set"], default=["sunmoon", "omni", "celestrak", "set"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -376,7 +378,7 @@ def main():
             # gim_webdataset = os.path.join(args.data_dir, args.jpld_dir)
             omni_dir = os.path.join(args.data_dir, args.omni_dir)
             celestrak_file = os.path.join(args.data_dir, args.celestrak_file)
-            solar_index_file = os.path.join(args.data_dir, args.solar_index_file)
+            set_file = os.path.join(args.data_dir, args.set_file)
             
             # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
             dataset_constructors = {
@@ -390,7 +392,7 @@ def main():
                 # 'solar_inds': lambda date_start_, date_end_, date_exclusions_: SolarIndexDataset(file_name=solar_index_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
                 # NOTE: SET dataset constructor from Gunes' code as reference
                 #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
-                'set': lambda date_start_, date_end_, date_exclusions_: SET(file_name=solar_index_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
+                'set': lambda date_start_, date_end_, date_exclusions_: SET(file_name=set_file, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
             }
 
 
@@ -858,3 +860,6 @@ if __name__ == '__main__':
 
 
 # python run.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-debug-6 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 6 --device cuda:0 --test_event_seen_id G0H3-201505130900 --test_event_id G1H3-201506080600
+
+
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-may-2015-sanity-check2 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 100 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 5 --device cuda:1 --test_event_seen_id G0H3-201505130900 --test_event_id G1H3-201506080600
