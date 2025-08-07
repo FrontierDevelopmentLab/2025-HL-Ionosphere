@@ -178,3 +178,5 @@ cython_debug/
 /scripts/ml/train-[0-9]*/
 
 de421.bsp
+
+.vscode
