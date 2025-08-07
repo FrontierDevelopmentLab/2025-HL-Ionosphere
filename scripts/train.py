@@ -85,7 +85,7 @@ def train():
         raise ValueError('Invalid torch type. Only float32 and float64 are supported')
     torch.set_default_dtype(torch_type)
     if opt.device=='':
-        device = torch.device(opt.device if torch.cuda.is_available() else 'cpu')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else:
         device = torch.device(opt.device)
     print("Using: ", device)
