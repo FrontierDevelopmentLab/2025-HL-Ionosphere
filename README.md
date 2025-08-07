@@ -27,6 +27,8 @@ TO DO: Add better instructions.
 
 ### Training example
 
+The following command runs the training script using Docker, mounting the current directory as `/mnt` and a data directory as `/mnt/data` inside the container.
+
 ```bash
 docker run --rm -it \
     --ipc=host \
