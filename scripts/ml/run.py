@@ -126,7 +126,7 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
 
 
 def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
-                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None, cbar_label='TEC (TECU)'):
+                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None, cbar_label='TEC (TECU)', fig_title=None):
     """
     Pre-render all frames to avoid memory accumulation during animation.
     Now includes colorbars in each frame.
@@ -152,8 +152,10 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
         # Create temporary figure for this frame with colorbars
         fig_temp = plt.figure(figsize=(10.88, 10.88))
+        if fig_title:
+            fig_temp.suptitle(fig_title, fontsize=12)
         gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
-                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
+                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.92, bottom=0.05)
         
         # Plot frame - maps
         ax_top = fig_temp.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
@@ -260,9 +262,13 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
 
+    # rmse between original and forecast
+    jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt()
+    print('RMSE TECU          : {}'.format(jpld_rmse.item()))
+    fig_title = title + f' - RMSE: {jpld_rmse.item():.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
-    titles_original = [f'JPLD GIM TEC Original: {d} - {title}' for d in sequence_forecast]
-    titles_forecast = [f'JPLD GIM TEC Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast)]
+    titles_original = [f'JPLD GIM TEC Original: {d}' for d in sequence_forecast]
+    titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast)]
 
     save_gim_video_comparison(
         gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
@@ -270,7 +276,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         file_name=file_name,
         vmin=0, vmax=120,
         titles_top=titles_original,
-        titles_bottom=titles_forecast
+        titles_bottom=titles_forecast,
+        fig_title=fig_title
     )
 
     if args.save_all_channels:
@@ -292,6 +299,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
                 # vmin=0, vmax=100,
                 titles_top=titles_channel_original,
                 titles_bottom=titles_channel_forecast,
+                fig_title=fig_title,
                 cbar_label=''
             )
             print(f'Saved channel {i} forecast video to {file_name_channel}')
