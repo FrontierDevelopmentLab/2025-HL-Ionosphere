@@ -66,8 +66,8 @@ def train():
     timestamp_training = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
     if opt.wandb_inactive is False:
         wandb.init(
-            project="ionopy",
-            entity="ionocast",
+            project="Ionosphere",
+            entity="Ionosphere",
             config=vars(opt),
             name=f"{opt.model_type}_{timestamp_training}",
         )
@@ -288,12 +288,12 @@ def train():
                     'epoch': epoch+1
                 })
             #every 100 epochs, print the losses:
-            if (epoch+1) % 100 == 0:
-                print(f"Epoch {epoch+1}, Train Loss: {loss_nn.item():.6f}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
+            if (epoch) % 100 == 0:
+                print(f"Epoch {epoch}, Train Loss: {loss_nn.item():.6f}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
         train_loss /= len(train_loader)
-        print(f"Epoch {epoch+1}, Average Train Loss: {train_loss:.8f}")
+        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}")
         if opt.wandb_inactive is False:
-            wandb.log({'train_loss_epoch': train_loss, 'epoch': epoch+1})
+            wandb.log({'train_loss_epoch': train_loss, 'epoch': epoch})
         #scheduler.step()
         #validation
         ts_ionopy_model.eval()
