@@ -36,17 +36,34 @@ from dataset_cached import CachedDataset
 from events import EventCatalog
 from plot_functions import save_gim_plot, save_gim_video, save_gim_video_comparison
 
+
 matplotlib.use('Agg')
-def run_n_step_prediction(model, ground_truth_sequence, context_window, n_steps=4):
+def run_n_step_prediction(model, ground_truth_sequence, context_window, n_steps=4, return_init_context=False):
     B, T, C, H, W = ground_truth_sequence.shape
+    all_preds = torch.zeros_like(ground_truth_sequence)
+    if return_init_context:
+        # note that the first context_window+n_steps window wont be usable as to get the first t+n_steps pred need 
+        # to have a) passed in context_window worth of ground truth, then b) compute n_steps autoregressive steps 
+        # to get out your frame, hense the ground truth in-filling up untill [0, context_window+n_steps) (not inclusive)
+        all_preds[:, :context_window+n_steps, :, :, :] = ground_truth_sequence[:, :context_window+n_steps, :, :, :] 
     if isinstance(model, IonCastGNN):
-        for i in range(T-context_window-n_steps):
-            input_grid = ground_truth_sequence[:, i:context_window+n_steps+i, :, :, :]
+        for i in range(T-context_window-n_steps): # There will only be T-context_window-n_steps new frames generated for the same reason as above
+            input_grid = ground_truth_sequence[:, i:context_window+n_steps+i, :, :, :] # note that outside of the context window, predict masks 
+                                                                                       # even though we pass in the full context_window+n_steps 
+                                                                                       # ground truth frames
             output_grid = model.predict(input_grid, context_window, train=False)
-            
+            print(f"output_grid.shape: {output_grid.shape}, context_window: {context_window}, n_steps: {n_steps}")
+            n_step_pred = output_grid[:, -1, :, :] # we only care about the t + n_steps prediction
+            all_preds[:, i+context_window+n_steps] = n_step_pred # NOTE: check if this is an off by one error
+
     else: 
         raise NotImplementedError("currently only IonCastGNN is supported")
-    pass
+    return all_preds
+    # pass
+
+# model = MyModel()
+# model = torch.nn.DataParallel(model)  # Wrap model
+# model = model.to(device)  # usually 'cuda' or 'cuda:0'
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args): 
     # Checks
@@ -144,7 +161,19 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         combined_seq_original = combined_seq_batch[0, sequence_forecast_start_index:, :, :, :]  # Original data for forecast
         combined_seq_forecast = combined_forecast[0, sequence_forecast_start_index:, :, :, :]  # Forecast data for forecast
         combined_seq = combined_seq_batch[0, :, :, :, :]  # All data for the sequence
-    
+
+        N_STEPS = 4
+        n_step_preds = run_n_step_prediction(
+            model=model, 
+            ground_truth_sequence=combined_seq_batch, 
+            context_window=sequence_forecast_start_index, 
+            n_steps=N_STEPS # NOTE: HARDCODED FOR NOW
+            )
+
+        jpld_n_step_preds = n_step_preds[0, sequence_forecast_start_index+N_STEPS:, 0] # take 1st batch (already single batch) and JPLD channel
+        jpld_n_step_preds_unnormalized = JPLD.unnormalize(jpld_n_step_preds).clamp(0, 140)
+
+
     # Extract JPLD & unnormalize
     jpld_forecast = combined_seq_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_original[:, 0]
@@ -174,6 +203,31 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
         titles_bottom=titles_forecast,
         fig_title=fig_title
     )
+
+    if isinstance(model, IonCastGNN): # hacky solution, maybe reformat run_forecast a bit to deal with this a bit better
+
+        print(f"n_step_preds.shape: {n_step_preds.shape}")
+        print(f"combined_seq_batch.shape: {combined_seq_batch.shape}")
+        # print(f"combined_seq_batch.shape: {combined_seq_batch.shape}")
+        print(f"jpld_original_unnormalized.shape: {jpld_original_unnormalized.shape}")
+        print(f"jpld_n_step_preds.shape: {jpld_n_step_preds.shape}")
+
+        # Create title for the video
+        # fig_title = title + f' - RMSE: {jpld_rmse:.2f} TECU - MAE: {jpld_mae:.2f} TECU' 
+        fig_title_n_step = title # NOTE: will need to recalculate RMSE TECU MAE etc for n_step preds
+        titles_n_step = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start} ({N_STEPS * 15} mins)' for i, d in enumerate(sequence_forecast)]
+
+        file_name_no_ext, file_ext = os.path.splitext(file_name)       # e.g., "example.txt"
+
+        save_gim_video_comparison(
+            gim_sequence_top=jpld_original_unnormalized[N_STEPS:].cpu().numpy().reshape(-1, 180, 360),
+            gim_sequence_bottom=jpld_n_step_preds_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+            file_name=file_name_no_ext + f"_{N_STEPS}_step" + file_ext,
+            vmin=0, vmax=120,
+            titles_top=titles_original,
+            titles_bottom=titles_n_step,
+            fig_title=fig_title_n_step
+        )
 
     # If save_all_channels is True, save a video comparison for each channel
     if args.save_all_channels:
@@ -299,6 +353,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
 
 
 def load_model(file_name, device):
+    # old_checkpoint = torch.load("/home/jupyter/halil_debug/ioncastgnn-train-may-2015-sanity-check-new-runpy/epoch-33-model.pth") Temporary to get the chekpoint file for the hacked in 726 epoch model to work nicely with the new run code, note this is ofcourse going to lead to a messed up scheduler and other stuff but was meant more so for testing the n_step videos.
     checkpoint = torch.load(file_name, weights_only=False)
     # if checkpoint['model'] == 'VAE1':
     #     model_z_dim = checkpoint['model_z_dim']
@@ -327,6 +382,7 @@ def load_model(file_name, device):
                             hidden_dim=model_hidden_dim, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
                             context_window=model_context_window, dropout=model_dropout)
     elif checkpoint["model"] == "IonCastGNN": 
+        pprint.pprint(checkpoint.keys())
         mesh_level = checkpoint["mesh_level"]
         input_dim_grid_nodes = checkpoint["input_dim_grid_nodes"]
         output_dim_grid_nodes = checkpoint["output_dim_grid_nodes"] 
@@ -376,7 +432,14 @@ def load_model(file_name, device):
     iteration = checkpoint['iteration']
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
-    scheduler_state_dict = checkpoint['scheduler_state_dict']
+    # scheduler_state_dict = checkpoint['scheduler_state_dict']
+    # scheduler_state_dict = old_checkpoint['scheduler_state_dict'] 
+    # train_rmse_losses = old_checkpoint['train_rmse_losses']
+    # valid_rmse_losses = old_checkpoint['valid_rmse_losses']
+    # train_jpld_rmse_losses = old_checkpoint['train_jpld_rmse_losses']
+    # valid_jpld_rmse_losses = old_checkpoint['valid_jpld_rmse_losses']
+    # best_valid_rmse = old_checkpoint['best_valid_rmse']
+    scheduler_state_dict = checkpoint['scheduler_state_dict'] 
     train_rmse_losses = checkpoint['train_rmse_losses']
     valid_rmse_losses = checkpoint['valid_rmse_losses']
     train_jpld_rmse_losses = checkpoint['train_jpld_rmse_losses']
