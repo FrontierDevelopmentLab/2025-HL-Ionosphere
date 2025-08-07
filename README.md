@@ -10,6 +10,7 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
 
 ### Pre-requisites
 - Install Docker for your platform: [Get Docker](https://docs.docker.com/get-started/get-docker/)
+- Install NVIDIA Container Toolkit for GPU support: [NVIDIA Docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - Clone the repository:
   ```bash
   git clone git@github.com:FrontierDevelopmentLab/2025-HL-Ionosphere.git
@@ -22,7 +23,13 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
 
 ## Usage
 
-TO DO: Add usage instructions here.
+TO DO: Add better instructions.
+
+### Training
+
+```bash
+
+```
 
 ## Acknowledgements
 
