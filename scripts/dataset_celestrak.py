@@ -57,7 +57,7 @@ class CelesTrak(PandasDataset):
         new_stem = f"{stem}_deltamin_{delta_minutes}_rewind_{rewind_minutes}" 
         cadence_matched_fname = Path(file_name).with_stem(new_stem)
         if cadence_matched_fname.exists():
-            print(f"Using cached file: {cadence_matched_fname}")
+            print(f"Using cached file    : {cadence_matched_fname}")
             data = pd.read_csv(cadence_matched_fname)
         else:
             data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_minutes=rewind_minutes)
