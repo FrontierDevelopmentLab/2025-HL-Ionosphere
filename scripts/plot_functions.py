@@ -96,7 +96,7 @@ def save_gim_video(gim_sequence, file_name, cmap='jet', vmin=None, vmax=None, ti
 
 
 def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, cmap='jet', vmin=None, vmax=None, 
-                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None):
+                                       titles_top=None, titles_bottom=None, fps=2, max_frames=None, cbar_label='TEC (TECU)', fig_title=None):
     """
     Pre-render all frames to avoid memory accumulation during animation.
     Now includes colorbars in each frame.
@@ -122,8 +122,10 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
     for i in tqdm(range(len(gim_sequence_top)), desc="Rendering frames"):
         # Create temporary figure for this frame with colorbars
         fig_temp = plt.figure(figsize=(10.88, 10.88))
+        if fig_title:
+            fig_temp.suptitle(fig_title, fontsize=12)
         gs = fig_temp.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 1], 
-                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.95, bottom=0.05)
+                                  wspace=0.05, hspace=0.15, left=0.05, right=0.92, top=0.92, bottom=0.05)
         
         # Plot frame - maps
         ax_top = fig_temp.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
@@ -133,19 +135,24 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
         cbar_ax_top = fig_temp.add_subplot(gs[0, 1])
         cbar_ax_bottom = fig_temp.add_subplot(gs[1, 1])
         
-        # Create the maps and get the image objects for colorbars
+        # Create the top map and get its image object. This will use the function's vmin/vmax or auto-scale.
         im_top = plot_global_ionosphere_map(ax_top, gim_sequence_top[i], cmap=cmap, vmin=vmin, vmax=vmax,
                                            title=titles_top[i] if titles_top else None)
-        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin, vmax=vmax,
+        
+        # Get the effective color limits from the top plot to ensure the bottom plot uses the exact same scale.
+        vmin_actual, vmax_actual = im_top.get_clim()
+        
+        # Create the bottom map using the same color limits as the top map.
+        im_bottom = plot_global_ionosphere_map(ax_bottom, gim_sequence_bottom[i], cmap=cmap, vmin=vmin_actual, vmax=vmax_actual,
                                               title=titles_bottom[i] if titles_bottom else None)
         
-        # Add colorbars
+        # Add colorbars. They will now be identical.
         cbar_top = fig_temp.colorbar(im_top, cax=cbar_ax_top)
-        cbar_top.set_label("TEC (TECU)")
-        
+        cbar_top.set_label(cbar_label)
+
         cbar_bottom = fig_temp.colorbar(im_bottom, cax=cbar_ax_bottom)
-        cbar_bottom.set_label("TEC (TECU)")
-        
+        cbar_bottom.set_label(cbar_label)
+
         # Convert to array - fix deprecation warning
         fig_temp.canvas.draw()
         frame_array = np.frombuffer(fig_temp.canvas.buffer_rgba(), dtype=np.uint8)

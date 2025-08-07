@@ -101,3 +101,4 @@ def yeojhonson_inverse(X, lambdas):
     X_original[~pos] = 1 - (-(2 - lambdas[~pos]) * X[~pos] + 1) ** (1 / (2 - lambdas[~pos]))
 
     return X_original
+

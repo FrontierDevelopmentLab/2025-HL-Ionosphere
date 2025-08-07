@@ -86,3 +86,4 @@ class Sequences(Dataset):
             # Move to next sequence
             sequence_start += datetime.timedelta(minutes=self.delta_minutes)
         return sequences
+

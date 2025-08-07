@@ -37,7 +37,7 @@ class SunMoonGeometry(Dataset):
     Note: The scalar values (coordinates, distances, day of year) are broadcast
     to the same spatial dimensions as the zenith angle maps.
     """
-    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0):
+    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0, ephemeris_dir=None):
         self.date_start = date_start
         self.date_end = date_end
         self.delta_minutes = delta_minutes
@@ -45,6 +45,7 @@ class SunMoonGeometry(Dataset):
         self.normalize = normalize
         self.combined = combined
         self.extra_time_steps = extra_time_steps
+        self.ephemeris_dir = ephemeris_dir
 
         if self.date_start is None:
             self.date_start = datetime.datetime(2010, 5, 13, 0, 0, 0)
@@ -78,7 +79,11 @@ class SunMoonGeometry(Dataset):
         """Initialize Skyfield objects once per worker process."""
         if self._ts is None:
             self._ts = skyfield.api.load.timescale()
-            self._eph = skyfield.api.load('de421.bsp')
+            if self.ephemeris_dir is None:
+                self._eph = skyfield.api.load('de421.bsp')
+            else:
+                load = skyfield.api.Loader(self.ephemeris_dir)
+                self._eph = load('de421.bsp')
             self._earth_body = self._eph['earth']
             self._sun_body = self._eph['sun']
             self._moon_body = self._eph['moon']
