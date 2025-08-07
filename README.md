@@ -20,6 +20,7 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
   ```bash
   docker build -t ioncast .
   ```
+  This command builds a Docker image with the name `ioncast:latest`.
 
 ## Usage
 
