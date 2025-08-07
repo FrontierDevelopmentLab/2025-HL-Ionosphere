@@ -16,6 +16,7 @@ import cartopy.crs as ccrs
 import glob
 import imageio
 import shutil
+import wandb
 
 from util import Tee
 from util import set_random_seed
@@ -306,6 +307,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
                 cbar_label=''
             )
             print(f'Saved channel {i} forecast video to {file_name_channel}')
+    
+    return jpld_rmse, jpld_mae
 
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
@@ -444,7 +447,7 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'VAE'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -462,6 +465,10 @@ def main():
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
     parser.add_argument('--cache_datasets', action='store_true', help='If set, pre-load and cache datasets in memory to speed up training')
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
+    parser.add_argument('--wandb_disabled', action='store_true', help='If set, disable wandb logging')
+    parser.add_argument('--wandb_run_name', type=str, help='Custom run name for wandb (defaults to auto-generated name)')
+    parser.add_argument('--wandb_notes', type=str, help='Notes to add to wandb run')
+    parser.add_argument('--wandb_tags', nargs='*', help='Tags to add to wandb run')
 
     args = parser.parse_args()
 
@@ -480,6 +487,27 @@ def main():
 
         start_time = datetime.datetime.now()
         print('Start time: {}'.format(start_time))
+
+        # Initialize Weights & Biases
+        if not args.wandb_disabled and args.mode == 'train':
+            wandb_config = vars(args).copy()
+            wandb_config['start_time'] = start_time.isoformat()
+            wandb_config['platform'] = os.uname().sysname
+            wandb_config['python_version'] = sys.version
+            wandb_config['torch_version'] = torch.__version__
+            
+            wandb.init(
+                entity="Ionosphere",
+                project="Ionosphere", 
+                name=args.wandb_run_name,
+                notes=args.wandb_notes,
+                tags=args.wandb_tags,
+                config=wandb_config,
+                dir=args.target_dir
+            )
+            print(f'Wandb run: {wandb.run.url}')
+        elif args.wandb_disabled:
+            print('Wandb logging disabled')
 
         if args.mode == 'train':
             print('\n*** Training mode\n')
@@ -598,6 +626,14 @@ def main():
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
+            # Log model parameters to wandb
+            if not args.wandb_disabled:
+                wandb.log({
+                    'model/num_parameters': num_params,
+                    'data/train_size': len(dataset_train),
+                    'data/valid_size': len(dataset_valid)
+                }, step=0)
+            
             for epoch in range(epoch_start, args.epochs):
                 print('\n*** Epoch {:,}/{:,} started'.format(epoch+1, args.epochs))
                 print('*** Training')
@@ -642,6 +678,17 @@ def main():
                         train_losses.append((iteration, loss))
                         train_rmse_losses.append((iteration, rmse))
                         train_jpld_rmse_losses.append((iteration, jpld_rmse))
+                        
+                        # Log training metrics to wandb
+                        if not args.wandb_disabled:
+                            wandb.log({
+                                'train/loss': loss,
+                                'train/rmse': rmse,
+                                'train/jpld_rmse': jpld_rmse,
+                                'train/epoch': epoch + 1,
+                                'train/learning_rate': optimizer.param_groups[0]['lr']
+                            }, step=iteration)
+                        
                         pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss:.4f}, RMSE: {rmse:.4f}, JPLD RMSE: {jpld_rmse:.4f}')
                         pbar.update(1)
 
@@ -687,6 +734,16 @@ def main():
                     scheduler.step(valid_rmse_loss)
                     current_lr = optimizer.param_groups[0]['lr']
                     print(f'Current learning rate: {current_lr:.6f}')
+                    
+                    # Log validation metrics to wandb
+                    if not args.wandb_disabled:
+                        wandb.log({
+                            'valid/loss': valid_loss,
+                            'valid/rmse': valid_rmse_loss,
+                            'valid/jpld_rmse': valid_jpld_rmse_loss,
+                            'valid/learning_rate': current_lr,
+                            'valid/epoch': epoch + 1
+                        }, step=iteration)
 
                     file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
@@ -741,6 +798,13 @@ def main():
                     plt.legend()
                     plt.savefig(plot_rmse_file)
                     plt.close()
+                    
+                    # Log plots to wandb
+                    if not args.wandb_disabled:
+                        wandb.log({
+                            'plots/loss_curves': wandb.Image(plot_file),
+                            'plots/rmse_curves': wandb.Image(plot_rmse_file)
+                        }, step=iteration)
 
                     # Plot model eval results
                     model.eval()
@@ -800,7 +864,17 @@ def main():
                                     date_end = event_end
                                     file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                     title = f'Event: {event_id}, Kp={max_kp}'
-                                    run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    event_rmse, event_mae = run_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    
+                                    # Log validation event metrics to wandb
+                                    if not args.wandb_disabled:
+                                        wandb.log({
+                                            f'valid_events/{event_id}/rmse': event_rmse,
+                                            f'valid_events/{event_id}/mae': event_mae,
+                                            f'valid_events/{event_id}/max_kp': max_kp,
+                                            'valid_events/avg_rmse': event_rmse,
+                                            'valid_events/avg_mae': event_mae
+                                        }, step=iteration)
 
                             if args.valid_event_seen_id:
                                 for event_id in args.valid_event_seen_id:
@@ -817,12 +891,29 @@ def main():
                                     date_end = event_end
                                     file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
                                     title = f'Event: {event_id}, Kp={max_kp}'
-                                    run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    event_rmse, event_mae = run_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    
+                                    # Log validation seen event metrics to wandb
+                                    if not args.wandb_disabled:
+                                        wandb.log({
+                                            f'valid_seen_events/{event_id}/rmse': event_rmse,
+                                            f'valid_seen_events/{event_id}/mae': event_mae,
+                                            f'valid_seen_events/{event_id}/max_kp': max_kp
+                                        }, step=iteration)
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
                         best_valid_rmse = valid_rmse_loss
                         print(f'\n*** New best validation RMSE: {best_valid_rmse:.4f}***\n')
+                        
+                        # Log new best model to wandb
+                        if not args.wandb_disabled:
+                            wandb.log({
+                                'best_model/rmse': best_valid_rmse,
+                                'best_model/epoch': epoch + 1,
+                                'best_model/iteration': iteration
+                            }, step=iteration)
+                        
                         # copy model checkpoint and all plots/videos to the best model directory
                         best_model_dir = os.path.join(args.target_dir, 'best_model')
                         print(f'Saving best model to {best_model_dir}')
@@ -833,10 +924,37 @@ def main():
                         for file in os.listdir(args.target_dir):
                             if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.mp4') or file.endswith('.pth')):
                                 shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
+                        
+                        # Log best model artifact to wandb
+                        if not args.wandb_disabled:
+                            artifact = wandb.Artifact(
+                                name=f"model-epoch-{epoch+1}",
+                                type="model",
+                                description=f"Best model at epoch {epoch+1} with RMSE {best_valid_rmse:.4f}"
+                            )
+                            artifact.add_file(model_file)
+                            wandb.log_artifact(artifact)
 
         elif args.mode == 'test':
 
             print('*** Testing mode\n')
+            
+            # Initialize wandb for test mode if not disabled
+            if not args.wandb_disabled:
+                wandb_config = vars(args).copy()
+                wandb_config['start_time'] = start_time.isoformat()
+                wandb_config['mode'] = 'test'
+                
+                wandb.init(
+                    entity="Ionosphere",
+                    project="Ionosphere", 
+                    name=f"test-{args.wandb_run_name}" if args.wandb_run_name else None,
+                    notes=args.wandb_notes,
+                    tags=(args.wandb_tags or []) + ['test'],
+                    config=wandb_config,
+                    dir=args.target_dir
+                )
+                print(f'Wandb test run: {wandb.run.url}')
 
             model, _, _, _, _, _ = load_model(args.model_file, device)
             model.eval()
@@ -886,7 +1004,16 @@ def main():
                     dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
                     dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
                     dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    test_rmse, test_mae = run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    
+                    # Log test results to wandb
+                    if not args.wandb_disabled:
+                        wandb.log({
+                            f'test/{title.replace(" ", "_").replace(":", "_")}/rmse': test_rmse,
+                            f'test/{title.replace(" ", "_").replace(":", "_")}/mae': test_mae,
+                            'test/avg_rmse': test_rmse,
+                            'test/avg_mae': test_mae
+                        })
                     
                     # Force cleanup
                     del dataset_jpld, dataset
@@ -897,6 +1024,15 @@ def main():
         end_time = datetime.datetime.now()
         print('End time: {}'.format(end_time))
         print('Total duration: {}'.format(end_time - start_time))
+        
+        # Log final metrics to wandb and finish
+        if not args.wandb_disabled:
+            wandb.log({
+                f'{args.mode}/end_time': end_time.isoformat(),
+                f'{args.mode}/total_duration_seconds': (end_time - start_time).total_seconds(),
+                f'{args.mode}/total_duration_hours': (end_time - start_time).total_seconds() / 3600
+            })
+            wandb.finish()
 
 
 if __name__ == '__main__':
