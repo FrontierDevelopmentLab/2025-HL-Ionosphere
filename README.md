@@ -28,7 +28,19 @@ TO DO: Add better instructions.
 ### Training
 
 ```bash
-docker run --rm -it --ipc=host --gpus all -v $PWD:/mnt -v /disk2-ssd-8tb/data/2025-hl-ionosphere:/mnt/data ioncast python run.py --data_dir /mnt/data --mode train --device cuda:0 --target_dir /mnt/experiment-1 --num_workers 12 --batch_size 4 --epochs 10
+docker run --rm -it \
+    --ipc=host \
+    --gpus all \
+    -v $PWD:/mnt \
+    -v /disk2-ssd-8tb/data/2025-hl-ionosphere:/mnt/data \
+    ioncast python run.py \
+        --data_dir /mnt/data \
+        --mode train \
+        --device cuda:0 \
+        --target_dir /mnt/experiment-1 \
+        --num_workers 12 \
+        --batch_size 4 \
+        --epochs 10
 ```
 
 ## Acknowledgements
