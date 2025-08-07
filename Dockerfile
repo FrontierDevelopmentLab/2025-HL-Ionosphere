@@ -8,4 +8,7 @@ WORKDIR /ioncast
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Ephemeris data used by the skyfield dependency of the sunmoongeometry dataset
+RUN wget --show-progress https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/a_old_versions/de421.bsp -O de421.bsp
+
 COPY scripts/*.py .
