@@ -3,8 +3,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 sys.path.append("../")
 import ionopy
-from ionopy import MadrigalDatasetTimeSeries
-from ionopy import weight_init
+from ionopy import MadrigalDatasetTimeSeries, weight_init, mae_loss
 
 import pandas as pd
 import torch
@@ -23,7 +22,6 @@ import time
 from torch import optim
 from torch.utils.data import RandomSampler, SequentialSampler
 import random
-
 
 def train():
     print('Ionopy Model Training -> Forecasting the ionosphere vTEC using Madrigal data as ground truth')
@@ -68,7 +66,7 @@ def train():
             project="Ionosphere",
             entity="Ionosphere",
             config=vars(opt),
-            name=f"{opt.model_type}_{timestamp_training}",
+            name=f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}",
         )
         print("W&B is active")
     
@@ -202,6 +200,12 @@ def train():
     #seed them
     g = torch.Generator()
     g.manual_seed(0)
+    random.seed(opt.seed)
+    np.random.seed(opt.seed)
+    torch.manual_seed(opt.seed)
+    torch.cuda.manual_seed_all(opt.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -233,15 +237,34 @@ def train():
     criterion=torch.nn.MSELoss()
     quantiles_tensor= torch.tensor([0.5], dtype=torch_type, device=device)  # For TFT, we use the median quantile
     best_val_loss = np.inf
+    if opt.wandb_inactive is False:
+        wandb.config.update({
+            'num_historical_numeric': num_historical_numeric,
+            'num_static_numeric': input_dimension,
+            'num_future_numeric': 1,
+            'model_type': opt.model_type,
+            'subset_type': opt.subset_type,
+            'batch_size': opt.batch_size,
+            'learning_rate': opt.lr,
+            'epochs': opt.epochs,
+            'dropout': opt.dropout,
+            'state_size': opt.state_size,
+            'lstm_layers': opt.lstm_layers,
+            'attention_heads': opt.attention_heads
+        })
+        table = wandb.Table(columns=["Epoch", "Validation Loss", "Training Loss", "Validation RMSE", "Training RMSE", "Validation MAE", "Training MAE"])
+    # CosineAnnealingLR scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.epochs, eta_min=1e-6)
     for epoch in range(opt.epochs):
         ts_ionopy_model.train()
-        train_loss = 0.0
         count=0
-        rmse_loss_unnormalized = 0.0
+        train_loss = 0.
+        train_rmse_loss_unnormalized = 0.
+        train_mae_unnormalized = 0.
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
             historical_ts_numeric = []
-            for key in batch.keys():
-                if key not in ['date', 'inputs', 'tec', 'dtec']:    
+            for key in batch:
+                if key not in {'date', 'inputs', 'tec', 'dtec'}:    
                     if key in batch:
                         historical_ts_numeric.append(batch[key][:, :-1, :])
             if historical_ts_numeric:  # Only stack if not empty
@@ -269,7 +292,7 @@ def train():
                 raise ValueError('Invalid model type. Only tft is supported')
             loss_nn = criterion(target_nn_median, minibatch['target'])
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss_nn.backward()
             optimizer.step()
 
@@ -279,38 +302,48 @@ def train():
             loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
             #let's also record it to keep track of the average:
             train_loss += loss_nn.item()
-            rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
+            mae_value=mae_loss(target_nn_median_unnormalized.detach(), tec_madrigal.detach()).item()
+            train_mae_unnormalized += mae_value
+            train_rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
             if opt.wandb_inactive is False:
                 wandb.log({
                     'train_loss': loss_nn.item(),
                     'train_loss_unnormalized': loss_nn_unnormalized.item(),
                     'train_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
-                    'q_loss': q_loss.item(),
-                    'q_risk': q_risk.item(),
-                    'minibatch': count
+                    'train_train_mae_unnormalized': mae_value,
+                    'train_q_loss': q_loss.item(),
+                    'train_q_risk': q_risk.item(),
+                    'train_minibatch': count
                 })
             #every 100 epochs, print the losses:
             if (count+1) % 100 == 0:
                 print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
             count+=1
         train_loss /= len(train_loader)
-        rmse_loss_unnormalized /= len(train_loader)
-        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}, Average Train RMSE Loss: {rmse_loss_unnormalized:.8f}")
+        train_rmse_loss_unnormalized /= len(train_loader)
+        train_mae_unnormalized /= len(train_loader)
+        scheduler.step()
+        curr_lr=scheduler.optimizer.param_groups[0]["lr"]
+        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}, Average Train RMSE Loss: {train_rmse_loss_unnormalized:.8f}")
         if opt.wandb_inactive is False:
             wandb.log({'train_loss_epoch': train_loss, 
-                       'train_rmse_epoch': rmse_loss_unnormalized,
-                       'epoch': epoch})
+                       'train_rmse_epoch': train_rmse_loss_unnormalized,
+                       'train_mae_epoch': train_mae_unnormalized,
+                       'epoch': epoch,
+                       'learning_rate': curr_lr})
         #scheduler.step()
         #validation
         ts_ionopy_model.eval()
         with torch.no_grad():
             validation_loss = 0.0
-            rmse_loss_unnormalized = 0.0
+            validation_rmse_loss_unnormalized = 0.0
+            validation_mae_unnormalized = 0.0
             count=0
+            val_rmses=[]
             for batch in tqdm(validation_loader, desc=f"Validation Epoch {epoch+1}/{opt.epochs}"):
                 historical_ts_numeric = []
-                for key in batch.keys():
-                    if key not in ['date', 'inputs', 'tec', 'dtec']:
+                for key in batch:
+                    if key not in {'date', 'inputs', 'tec', 'dtec'}:    
                         if key in batch:
                             historical_ts_numeric.append(batch[key][:, :-1, :])
                 if historical_ts_numeric:
@@ -342,32 +375,55 @@ def train():
                 loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
                 #let's also record it to keep track of the average:
                 validation_loss += loss_nn.item()
-                rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
+                validation_rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
+                mae_value=mae_loss(target_nn_median_unnormalized.detach(), tec_madrigal.detach()).item()
+                validation_mae_unnormalized += mae_value
+                val_rmses.append(validation_rmse_loss_unnormalized)
                 if opt.wandb_inactive is False:
                     wandb.log({
                         'validation_loss': loss_nn.item(),
                         'validation_loss_unnormalized': loss_nn_unnormalized.item(),
                         'validation_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
-                        'q_loss': q_loss.item(),
-                        'q_risk': q_risk.item(),
-                        'minibatch': count
+                        'validation_validation_mae_unnormalized': mae_value,
+                        'validation_q_loss': q_loss.item(),
+                        'validation_q_risk': q_risk.item(),
+                        'validation_minibatch': count
                     })
                 #every 100 epochs, print the losses:
                 if (count+1) % 100 == 0:
                     print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
                 count+=1
+        #let's create a W&B histogram on the val_losses:
         validation_loss /= len(validation_loader)
-        rmse_loss_unnormalized /= len(validation_loader)
-        print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}, Average Validation RMSE Loss: {rmse_loss_unnormalized:.8f}")
+        validation_rmse_loss_unnormalized /= len(validation_loader)
+        validation_mae_unnormalized /= len(validation_loader)
+        print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}, Average Validation RMSE Loss: {validation_rmse_loss_unnormalized:.8f}")
         if opt.wandb_inactive is False:
+            try:
+                wandb.log({f'validation_rmse_histogram_{epoch+1}': wandb.Histogram(val_rmses, num_bins=100, title='Validation RMSE')})
+            except Exception as e:
+                print(f"Error logging histogram: {e}")
             wandb.log({'validation_loss_epoch': validation_loss, 
-                        'validation_rmse_epoch': rmse_loss_unnormalized,
-                       'epoch': epoch+1})
+                        'validation_rmse_epoch': validation_rmse_loss_unnormalized,
+                        'validation_mae_epoch': validation_mae_unnormalized})
+            try:
+                wandb.log({f'validation_rmse_histogram_{epoch+1}': wandb.Histogram(val_rmses, num_bins=100, title='Validation RMSE')})
+                table.add_data(epoch+1, 
+                               validation_loss, 
+                               train_loss, 
+                               validation_rmse_loss_unnormalized, 
+                               train_rmse_loss_unnormalized, 
+                               validation_mae_unnormalized, 
+                               train_mae_unnormalized)
+            except Exception as e:
+                print(f"Error logging: {e}")
+
 
         #save the model if the validation loss is lower than the best validation loss
         if validation_loss < best_val_loss:
+            old_best = best_val_loss
             best_val_loss = validation_loss
-            print(f"Validation loss improved from {best_val_loss:.8f} to {validation_loss:.8f}, saving model")
+            print(f"Validation loss improved from {old_best:.8f} to {validation_loss:.8f}, saving model")
             if opt.model_path is not None:
                 torch.save(ts_ionopy_model.state_dict(), opt.model_path)
             else:
