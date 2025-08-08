@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from warnings import warn
 
 # SDOML-lite: 2010-05-13T00:00:00 - 2024-07-27T00:00:00
 
@@ -1083,7 +1084,8 @@ class EventCatalog():
     # random subsample, sample without replacement
     def sample(self, n):
         if n > len(self.catalog):
-            raise ValueError("n is larger than the number of events in the catalog")
+            warn(f"Requested sample size {n} is larger than the catalog size {len(self.catalog)}. Returning the full catalog.")
+            return self
         sampled_keys = np.random.choice(list(self.catalog.keys()), size=n, replace=False)
         sampled_catalog = {k: self.catalog[k] for k in sampled_keys}
         return EventCatalog(sampled_catalog)
@@ -1111,6 +1113,14 @@ validation_events_1 = ['G0H3-201804202100',
                        'G0H3-202104162100',
                        'G2H3-201503170300',
                        'G1H3-201510070300',
+                       'G2H9-202405101500',
+                       'G2H9-201709072100',
+                       'G1H3-202302261800']
+
+
+validation_events_2 = ['G0H3-201804202100',
+                       'G0H3-201808272100',
+                       'G0H3-201905110300',
                        'G2H9-202405101500',
                        'G2H9-201709072100',
                        'G1H3-202302261800']

@@ -268,7 +268,21 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
 
-def save_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args):
+def save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, args):
+    if event_id not in event_catalog:
+        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
+    event = event_catalog[event_id]
+    event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
+    event_start = datetime.datetime.fromisoformat(event_start)
+    event_end = datetime.datetime.fromisoformat(event_end)
+
+    print('* Validating event ID: {}'.format(event_id))
+    date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+    date_forecast_start = event_start
+    date_end = event_end
+    file_name = os.path.join(args.target_dir, f'{file_name_prefix}-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+    title = f'Event: {event_id}, Kp={max_kp}'
+
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
 
     # rmse between original and forecast
@@ -528,9 +542,14 @@ def main():
             dataset_omniweb_valid = Union(datasets=datasets_omniweb_valid)
 
             if args.valid_event_seen_id is None:
-                event_catalog_within_training_set = event_catalog.exclude(date_exclusions=date_exclusions)
-                args.valid_event_seen_id = event_catalog_within_training_set.sample(2).ids()
-                print('Using validation events seen during training: {}'.format(args.valid_event_seen_id))
+                num_seen_events = 2
+                event_catalog_within_training_set = event_catalog.filter(date_start=date_start, date_end=date_end).exclude(date_exclusions=date_exclusions)
+                if len(event_catalog_within_training_set) > 0:
+                    args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
+                    print('Using validation events seen during training: {}'.format(args.valid_event_seen_id))
+                else:
+                    print('No validation events seen during training found within the training set. Using empty list.')
+                    args.valid_event_seen_id = []
 
             # if args.model_type == 'VAE1':
             #     dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
@@ -808,37 +827,12 @@ def main():
                         if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                             if args.valid_event_id:
                                 for event_id in args.valid_event_id:
-                                    if event_id not in event_catalog:
-                                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                    event = event_catalog[event_id]
-                                    event_start, event_end, max_kp, = event['date_start'], event['date_end'], event['max_kp']
-                                    event_start = datetime.datetime.fromisoformat(event_start)
-                                    event_end = datetime.datetime.fromisoformat(event_end)
-
-                                    print('* Validating event ID: {}'.format(event_id))
-                                    date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-                                    date_forecast_start = event_start
-                                    date_end = event_end
-                                    file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                    title = f'Event: {event_id}, Kp={max_kp}'
-                                    save_forecast(model, dataset_valid, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    save_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', args)
 
                             if args.valid_event_seen_id:
                                 for event_id in args.valid_event_seen_id:
-                                    if event_id not in event_catalog:
-                                        raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                                    event = event_catalog[event_id]
-                                    event_start, event_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
-                                    event_start = datetime.datetime.fromisoformat(event_start)
-                                    event_end = datetime.datetime.fromisoformat(event_end)
-
-                                    print('* Validating seen event ID: {}'.format(event_id))
-                                    date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-                                    date_forecast_start = event_start
-                                    date_end = event_end
-                                    file_name = os.path.join(args.target_dir, f'{file_name_prefix}valid-event-seen-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                                    title = f'Event: {event_id}, Kp={max_kp}'
-                                    save_forecast(model, dataset_train, date_start, date_end, date_forecast_start, title, file_name, args)
+                                    # produce forecasts for some events in the training set (for debugging purposes)
+                                    save_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', args)
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
@@ -863,8 +857,11 @@ def main():
             model.eval()
             model = model.to(device)
 
+            dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+            dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+            training_sequence_length = args.context_window + args.prediction_window
+
             with torch.no_grad():
-                tests_to_run = []
                 if args.test_event_id:
                     for event_id in args.test_event_id:
                         if event_id not in event_catalog:
@@ -876,42 +873,24 @@ def main():
 
                         print('* Testing event ID: {}'.format(event_id))
                         date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                        date_forecast_start = event_start
+                        # date_forecast_start = event_start
                         date_end = event_end
-                        file_name = os.path.join(args.target_dir, f'test-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
-                        title = f'Event: {event_id}, Kp={max_kp}'
-                        tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
 
-                else:
-                    print('No test events specified, will use date_start and date_end arguments')
-                    event_start = datetime.datetime.fromisoformat(args.date_start)
-                    event_end = datetime.datetime.fromisoformat(args.date_end)
-                    date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                    date_forecast_start = event_start
-                    date_end = event_end
-                    file_name = os.path.join(args.target_dir, f'test-{event_start.strftime("%Y%m%d%H%M")}-{event_end.strftime("%Y%m%d%H%M")}.mp4')
-                    title = f'Test from {event_start.strftime("%Y-%m-%d %H:%M:%S")} to {event_end.strftime("%Y-%m-%d %H:%M:%S")}'
-                    tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
+                        dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
+                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
+                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
 
-                dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-                dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
-                training_sequence_length = args.context_window + args.prediction_window
+                        file_name_prefix = os.path.join(args.target_dir, 'test')
+    
+                        save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, args)
 
-                print('Running tests:')
-                for i, (date_start, date_end, date_forecast_start, title, file_name) in enumerate(tests_to_run):
-                    print(f'\n\n* Testing event {i+1}/{len(tests_to_run)}: {title}')
-                    # Create dataset for each test individually with date filtering
-                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
-                    dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                    dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                    dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
-                    dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
-                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                    save_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
-                    
-                    # Force cleanup
-                    del dataset_jpld, dataset
-                    torch.cuda.empty_cache()
+                        # Force cleanup
+                        del dataset_jpld, dataset
+                        torch.cuda.empty_cache()
+
         else:
             raise ValueError('Unknown mode: {}'.format(args.mode))
 
