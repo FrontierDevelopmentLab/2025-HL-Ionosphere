@@ -246,13 +246,10 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
     sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
     celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
-    celestrak_seq_data = celestrak_seq_data.view(celestrak_seq_data.shape + (1, 1)).expand(-1, 2, 180, 360)
     omniweb_seq_data = sequence_data[3]  # OMNIWeb data
     omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
-    omniweb_seq_data = omniweb_seq_data.view(omniweb_seq_data.shape + (1, 1)).expand(-1, 10, 180, 360)
     set_seq_data = sequence_data[4]  # SET data
     set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
-    set_seq_data = set_seq_data.view(set_seq_data.shape + (1, 1)).expand(-1, 9, 180, 360)
 
     combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
 
@@ -469,7 +466,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2020-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -486,7 +483,7 @@ def main():
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
-    parser.add_argument('--max_valid_samples', type=int, default=None, help='Maximum number of validation samples to use for evaluation')
+    parser.add_argument('--max_valid_samples', type=int, default=100, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -548,7 +545,7 @@ def main():
                     exclusion_end = datetime.datetime.fromisoformat(event['date_end'])
                     date_exclusions.append((exclusion_start, exclusion_end))
 
-                    datasets_omniweb_valid.append(OMNIWeb(dataset_omniweb_dir, date_start=exclusion_start, date_end=exclusion_end, column=args.omniweb_columns))
+                    datasets_omniweb_valid.append(OMNIWeb(dataset_omniweb_dir, date_start=exclusion_start, date_end=exclusion_end, column=args.omniweb_columns, return_as_image_size=(180, 360)))
 
             dataset_omniweb_valid = Union(datasets=datasets_omniweb_valid)
 
@@ -571,12 +568,12 @@ def main():
                 dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
-                dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns)
+                dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
+                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=(180, 360))
+                dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
                 # dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, column=args.omniweb_columns)
-                dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end)
-                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
+                dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
+                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=(180, 360))
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
             else:
@@ -670,11 +667,8 @@ def main():
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
                             celestrak_seq = celestrak_seq.to(device)
-                            celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
                             omniweb_seq = omniweb_seq.to(device)
-                            omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
                             set_seq = set_seq.to(device)
-                            set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
@@ -715,11 +709,8 @@ def main():
                                 jpld_seq = jpld_seq.to(device)
                                 sunmoon_seq = sunmoon_seq.to(device)
                                 celestrak_seq = celestrak_seq.to(device)
-                                celestrak_seq = celestrak_seq.view(celestrak_seq.shape + (1, 1)).expand(-1, -1, 2, 180, 360)
                                 omniweb_seq = omniweb_seq.to(device)
-                                omniweb_seq = omniweb_seq.view(omniweb_seq.shape + (1, 1)).expand(-1, -1, 10, 180, 360)
                                 set_seq = set_seq.to(device)
-                                set_seq = set_seq.view(set_seq.shape + (1, 1)).expand(-1, -1, 9, 180, 360)
 
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                                 loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
@@ -946,9 +937,9 @@ def main():
 
                         dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
                         dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                        dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
-                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
+                        dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
+                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
+                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
                         dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
 
                         file_name_prefix = os.path.join(args.target_dir, 'test')

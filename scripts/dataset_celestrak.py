@@ -42,7 +42,7 @@ CelesTrak_std_of_log1p = torch.tensor([0.4444892108440399, 0.8150267004966736], 
 
 # ionosphere-data/celestrak/kp_ap_processed_timeseries.csv
 class CelesTrak(PandasDataset):
-    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
+    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap'], return_as_image_size=None): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
         print('\nCelesTrak')
         print('File                  : {}'.format(file_name))
 
@@ -63,7 +63,7 @@ class CelesTrak(PandasDataset):
             data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_minutes=rewind_minutes)
             data.to_csv(cadence_matched_fname) # the fill to cadence can take a while, so cache file
 
-        super().__init__('CelesTrak', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
+        super().__init__('CelesTrak', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions, return_as_image_size)
 
     def normalize_data(self, data):
         if self.column == ['Kp', 'Ap']:

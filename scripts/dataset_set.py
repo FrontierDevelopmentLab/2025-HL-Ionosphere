@@ -56,7 +56,7 @@ set_all_columns_std_of_yeojohnson = torch.tensor([set_std_of_yeojohnson[col] for
 
 # ionosphere-data/set/karman-2025_data_sw_data_set_sw.csv
 class SET(PandasDataset):
-    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+    def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15, return_as_image_size=None): # 50 minutes rewind defualt
         print('\nSpace Environment Technologies')
         print('File           : {}'.format(file_name))
 
@@ -80,7 +80,7 @@ class SET(PandasDataset):
             data = PandasDataset.fill_to_cadence(data, delta_minutes=delta_minutes, rewind_minutes=rewind_minutes)
             data.to_csv(cadence_matched_fname) # the fill to cadence can take a while, so cache file
 
-        super().__init__('Space Environment Technologies', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
+        super().__init__('Space Environment Technologies', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions, return_as_image_size)
 
     def normalize_data(self, data): 
         if self.column == set_all_columns:
