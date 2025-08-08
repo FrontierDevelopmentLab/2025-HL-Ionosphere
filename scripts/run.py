@@ -31,7 +31,7 @@ from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
 from dataset_cached import CachedDataset
-from events import EventCatalog
+from events import EventCatalog, validation_events_1
 
 event_catalog = EventCatalog()
 
@@ -458,8 +458,8 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=['G2H3-202303230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
-    parser.add_argument('--valid_event_seen_id', nargs='*', default=['G0H3-202404192100'], help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -525,6 +525,10 @@ def main():
 
             dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
 
+            if args.valid_event_seen_id is None:
+                event_catalog_within_training_set = event_catalog.exclude(date_exclusions=date_exclusions)
+                args.valid_event_seen_id = event_catalog_within_training_set.sample(2).ids()
+                print('Using validation events seen during training: {}'.format(args.valid_event_seen_id))
 
             # if args.model_type == 'VAE1':
             #     dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)

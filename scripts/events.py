@@ -1043,12 +1043,15 @@ class EventCatalog():
     def __getitem__(self, key):
         return self.catalog[key]
     
-    def items(self):
-        return self.catalog.items()
-    
     def __contains__(self, item):
         return item in self.catalog
     
+    def items(self):
+        return self.catalog.items()
+
+    def keys(self):
+        return self.catalog.keys()
+
     def filter(self, prefix=None, date_start=None, date_end=None, max_kp_min=None, max_kp_max=None, time_steps_min=None, time_steps_max=None):
         filtered = self.catalog
         if prefix:
@@ -1084,7 +1087,33 @@ class EventCatalog():
         sampled_keys = np.random.choice(list(self.catalog.keys()), size=n, replace=False)
         sampled_catalog = {k: self.catalog[k] for k in sampled_keys}
         return EventCatalog(sampled_catalog)
+    
+    def exclude(self, date_exclusions):
+        # date_exclusions is a list of (exclusion_start, exclusion_end) tuples where exclusion_start and exclusion_end are datetime objects
+        filtered = self.catalog
+        for exclusion_start, exclusion_end in date_exclusions:
+            filtered = {k: v for k, v in filtered.items() if not (pd.to_datetime(v['date_start']) < exclusion_end and pd.to_datetime(v['date_end']) > exclusion_start)}
+        return EventCatalog(filtered)
+    
+    def ids(self):
+        return list(self.catalog.keys())
 
+
+validation_events_1 = ['G0H3-201804202100',
+                       'G0H3-201808272100',
+                       'G0H3-201905110300',
+                       'G0H3-202311220900',
+                       'G0H3-201610140300',
+                       'G0H3-201506251500',
+                       'G0H3-201509100000',
+                       'G0H3-202305100600',
+                       'G0H3-201604080000',
+                       'G0H3-202104162100',
+                       'G2H3-201503170300',
+                       'G1H3-201510070300',
+                       'G2H9-202405101500',
+                       'G2H9-201709072100',
+                       'G1H3-202302261800']
 
 # Print the event catalog in a readable format
 if __name__ == "__main__":
@@ -1092,16 +1121,13 @@ if __name__ == "__main__":
     # for event, val in event_catalog.items():
     #     print(event, val['date_start'], val['date_end'], val['duration'], val['max_kp'], val['time_steps'])
 
-    # for event_id, details in event_catalog.items():
-    #     print(f"{event_id} {details['date_start']} {details['date_end']} {details['duration']} {details['max_kp']} {details['time_steps']}")
-
-    event_catalog = event_catalog.filter(max_kp_min=6.0, time_steps_min=100).unique()
-
-    print(len(event_catalog))
+    event_catalog = event_catalog.filter(max_kp_min=6.0, time_steps_min=90).unique().sample(5)
     for event_id, details in event_catalog.items():
         print(f"{event_id} {details['date_start']} {details['date_end']} {details['duration']} {details['max_kp']} {details['time_steps']}")
-
     print(len(event_catalog))
+
+    # print(event_catalog.keys())
+    # print(event_catalog.ids())
 
 
 # event_id          date_start          date_end            duration     max_kp time_steps
