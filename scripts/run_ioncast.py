@@ -30,8 +30,8 @@ from dataset_sequences import Sequences
 from dataset_union import Union
 from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
-from dataset_omniweb import OMNIWeb
-from dataset_set import SET
+from dataset_omniweb import OMNIWeb, omniweb_all_columns
+from dataset_set import SET, set_all_columns
 from dataset_cached import CachedDataset
 from events import EventCatalog
 from plot_functions import save_gim_plot, save_gim_video, save_gim_video_comparison
@@ -52,7 +52,6 @@ def run_n_step_prediction(model, ground_truth_sequence, context_window, n_steps=
                                                                                        # even though we pass in the full context_window+n_steps 
                                                                                        # ground truth frames
             output_grid = model.predict(input_grid, context_window, train=False)
-            print(f"output_grid.shape: {output_grid.shape}, context_window: {context_window}, n_steps: {n_steps}")
             n_step_pred = output_grid[:, -1, :, :] # we only care about the t + n_steps prediction
             all_preds[:, i+context_window+n_steps] = n_step_pred # NOTE: check if this is an off by one error
 
@@ -148,8 +147,6 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, titl
 
         combined_seq_batch = combined_seq_batch.to(device)
         combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
-
-        print('combined_seq_batch shape:', combined_seq_batch.shape)
 
         # Output context & forecast for all time steps, shape (B, T, C, H, W)
         combined_forecast = model.predict(
@@ -507,6 +504,19 @@ def main():
     device = torch.device(args.device)
     print('Using device:', device)
 
+    dataset_constructors = {
+        'sunmoon': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=None: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
+        # NOTE: OMNI dataset constructor from Gunes' code as reference
+        #  def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+        'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
+        # NOTE: Celestrak dataset constructor from Gunes' code as reference
+        #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
+        'celestrak': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=['Kp', 'Ap']: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
+        # NOTE: SET dataset constructor from Gunes' code as reference
+        #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+        'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=set_all_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15,column=column_),
+    }
+
     # Set up the log file
     with Tee(log_file):
         print(description)
@@ -541,18 +551,6 @@ def main():
             dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
             
             # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
-            dataset_constructors = {
-                'sunmoon': lambda date_start_, date_end_, date_exclusions_: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
-                # NOTE: OMNI dataset constructor from Gunes' code as reference
-                #  def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
-                'omni': lambda date_start_, date_end_, date_exclusions_: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
-                # NOTE: Celestrak dataset constructor from Gunes' code as reference
-                #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
-                'celestrak': lambda date_start_, date_end_, date_exclusions_: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
-                # NOTE: SET dataset constructor from Gunes' code as reference
-                #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
-                'set': lambda date_start_, date_end_, date_exclusions_: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15),
-            }
 
 
             datasets_jpld_valid = []
@@ -1023,8 +1021,7 @@ def main():
         elif args.mode == 'test':
 
             print('*** Testing mode\n')
-
-            model, _, _, _, _, _ = load_model(args.model_file, device)
+            model, _, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
             model.eval()
             model = model.to(device) #.float()
 
@@ -1058,22 +1055,39 @@ def main():
                     title = f'Test from {event_start.strftime("%Y-%m-%d %H:%M:%S")} to {event_end.strftime("%Y-%m-%d %H:%M:%S")}'
                     tests_to_run.append((date_start, date_end, date_forecast_start, title, file_name))
 
+                # Set up dataset paths
                 dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
                 dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+                dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
+                dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
                 training_sequence_length = args.context_window + args.prediction_window
 
                 print('Running tests:')
                 for i, (date_start, date_end, date_forecast_start, title, file_name) in enumerate(tests_to_run):
                     print(f'\n\n* Testing event {i+1}/{len(tests_to_run)}: {title}')
                     # Create dataset for each test individually with date filtering
-                    dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
-                    dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                    dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                    dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns)
-                    dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end)
-                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
-                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+                    if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                        dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
+                        dataset_omniweb = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns)
+                        dataset_set = SET(dataset_set_file_name, date_start=date_start, date_end=date_end)
+
+                        print('Testing sequence: ')
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+
+                    # Set up datasets for IonCastGNN same as training, but with date filtering
+                    elif args.model_type == 'IonCastGNN':
+                        dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
+                        if 'sunmoon' in args.aux_datasets and args.sun_moon_extra_time_steps > 0:
+                            raise ValueError(f'SunMoonGeometry dataset argument sun_moon_extra_time_steps={args.sun_moon_extra_time_steps} is not compatible with IonCastGNN model. Set sun_moon_extra_time_steps=0 for IonCastGNN.')
+                        aux_datasets = [dataset_constructors[name](date_start_=date_start, date_end_=date_end) for name in args.aux_datasets]
+
+                        print('Testing sequence: ')
+                        dataset = Sequences([dataset_jpld] + aux_datasets, delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
                     
+                    run_forecast(model, dataset, date_start, date_end, date_forecast_start, title, file_name, args)
+
                     # Force cleanup
                     del dataset_jpld, dataset
                     torch.cuda.empty_cache()
@@ -1093,4 +1107,11 @@ if __name__ == '__main__':
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 
 # GraphCast example
-# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-may-2015-sanity-check-new-runpy --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 1e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-05-13T00:00:00 --date_end 2015-05-13T05:00:00 --mesh_level 5 --device cuda:0 --valid_event_seen_id G0H3-201505130900 --valid_event_id G1H3-201506080600
+# Train
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-07-01T00:00:00 --date_end 2016-07-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_event_seen_id G2H3-201509110600 --valid_event_id G1H3-201610261500 --valid_every_nth_epoch 1 --save_all_models
+
+# Test on easy events
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016 --model_file /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016/epoch-01-model.pth --num_workers 12 --batch_size 1 --model_type IonCastGNN --context_window 5 --prediction_window 2 --device cuda:1 --test_event_id G0H3-201804202100 G0H3-201808272100 G0H3-201905110300 G0H3-202311220900 G0H3-201610140300 G0H3-201506251500 G0H3-201509100000 G0H3-202305100600 G0H3-201604080000 G0H3-202104162100
+
+# Test on hard events
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016 --model_file /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016/epoch-01-model.pth --num_workers 12 --batch_size 1 --model_type IonCastGNN --context_window 5 --prediction_window 2 --device cuda:1 --test_event_id G2H3-201503170300 G1H3-201510070300 G2H9-202405101500 G2H9-201709072100 G1H3-202302261800
