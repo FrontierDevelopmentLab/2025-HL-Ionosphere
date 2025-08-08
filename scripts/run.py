@@ -5,7 +5,7 @@ import os
 import sys
 from matplotlib import pyplot as plt
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
@@ -16,6 +16,7 @@ import cartopy.crs as ccrs
 import glob
 import imageio
 import shutil
+import random
 
 from util import Tee
 from util import set_random_seed
@@ -460,6 +461,7 @@ def main():
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
+    parser.add_argument('--max_valid_samples', type=int, default=100, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -548,7 +550,7 @@ def main():
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
-            
+
             if args.cache_datasets:
                 print('Caching datasets in memory')
                 dataset_train = CachedDataset(dataset_train)
@@ -566,7 +568,14 @@ def main():
                 persistent_workers=True,
                 prefetch_factor=4,
             )
-            valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+
+            if len(dataset_valid) > args.max_valid_samples:
+                print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
+                indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
+                sampler = SubsetRandomSampler(indices)
+                valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers)
+            else:
+                valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
@@ -695,7 +704,6 @@ def main():
                     valid_rmse_losses.append((iteration, valid_rmse_loss))
                     valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
                     print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
-
                     scheduler.step(valid_rmse_loss)
                     current_lr = optimizer.param_groups[0]['lr']
                     print(f'Current learning rate: {current_lr:.6f}')
