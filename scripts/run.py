@@ -439,7 +439,7 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2020-04-19T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2021-04-22T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -503,8 +503,10 @@ def main():
                 notes=args.wandb_notes,
                 tags=args.wandb_tags,
                 config=wandb_config,
+                #name=f"{args.model_type}_{start_time.strftime('%Y%m%d_%H%M%S')}",
                 dir=args.target_dir
             )
+
             print(f'Wandb run: {wandb.run.url}')
         elif args.wandb_disabled:
             print('Wandb logging disabled')
@@ -765,6 +767,7 @@ def main():
 
                     # Plot losses
                     plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
+                    plot_file_png = os.path.join(args.target_dir, f'{file_name_prefix}loss.png')
                     print(f'Saving loss plot to {plot_file}')
                     plt.figure(figsize=(10, 5))
                     if train_losses:
@@ -777,10 +780,12 @@ def main():
                     plt.grid(True)
                     plt.legend()
                     plt.savefig(plot_file)
+                    plt.savefig(plot_file_png, dpi=150)  # Save PNG for wandb
                     plt.close()
 
                     # Plot RMSE losses
                     plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.pdf')
+                    plot_rmse_file_png = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.png')
                     print(f'Saving RMSE plot to {plot_rmse_file}')
                     plt.figure(figsize=(10, 5))
                     if train_rmse_losses:
@@ -797,13 +802,14 @@ def main():
                     plt.grid(True)
                     plt.legend()
                     plt.savefig(plot_rmse_file)
+                    plt.savefig(plot_rmse_file_png, dpi=150)  # Save PNG for wandb
                     plt.close()
                     
                     # Log plots to wandb
                     if not args.wandb_disabled:
                         wandb.log({
-                            'plots/loss_curves': wandb.Image(plot_file),
-                            'plots/rmse_curves': wandb.Image(plot_rmse_file)
+                            'plots/loss_curves': wandb.Image(plot_file_png),
+                            'plots/rmse_curves': wandb.Image(plot_rmse_file_png)
                         }, step=iteration)
 
                     # Plot model eval results
