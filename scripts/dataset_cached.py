@@ -4,6 +4,11 @@ from tqdm import tqdm
 import os
 import shutil
 import json
+import io
+try:
+    import lz4.frame
+except ImportError:
+    lz4 = None
 
 from util import format_bytes
 
@@ -38,13 +43,17 @@ class CachedBatchDataset(Dataset):
         collate_fn (callable, optional): The collate function for the internal DataLoader.
         num_workers (int): The number of subprocesses to use for data loading during cache creation. Defaults to 0 (main process).
         force_recache (bool): If True, deletes any existing cache and rebuilds it.
+        compression (str, optional): The compression to use. 'lz4' or None. Defaults to 'lz4'.
     """
-    def __init__(self, source_dataset, cache_dir, batch_size, collate_fn=None, num_workers_to_build_cache=0, force_recache=False):
+    def __init__(self, source_dataset, cache_dir, batch_size, collate_fn=None, num_workers_to_build_cache=0, force_recache=False, compression='lz4'):
         self.source_dataset = source_dataset
         self.cache_dir = cache_dir
         self.batch_size = batch_size
         self.collate_fn = collate_fn
         self.num_workers_to_build_cache = num_workers_to_build_cache
+        self.compression = compression
+        if self.compression == 'lz4' and lz4 is None:
+            raise ImportError("lz4 compression is selected, but the 'lz4' package is not installed. Please run 'pip install lz4'.")
         self.batch_files = []
         self.metadata_path = os.path.join(self.cache_dir, 'metadata.json')
 
@@ -106,7 +115,21 @@ class CachedBatchDataset(Dataset):
 
         for i, batch in enumerate(tqdm(caching_loader, desc="Caching batches")):
             filepath = os.path.join(self.cache_dir, f"batch_{i:0{pad_width}d}.pt")
-            torch.save(batch, filepath)
+            
+            # Serialize to an in-memory buffer
+            buffer = io.BytesIO()
+            torch.save(batch, buffer)
+            buffer.seek(0)
+            data = buffer.read()
+
+            # Compress if enabled
+            if self.compression == 'lz4':
+                data = lz4.frame.compress(data)
+            
+            # Write to disk
+            with open(filepath, 'wb') as f:
+                f.write(data)
+
             self.batch_files.append(filepath)
 
             # After saving the first batch, estimate total size and check disk space.
@@ -149,4 +172,14 @@ class CachedBatchDataset(Dataset):
 
     def __getitem__(self, idx):
         # Fetches a pre-made batch from disk.
-        return torch.load(self.batch_files[idx])
+        filepath = self.batch_files[idx]
+        with open(filepath, 'rb') as f:
+            data = f.read()
+
+        # Decompress if enabled
+        if self.compression == 'lz4':
+            data = lz4.frame.decompress(data)
+        
+        # Load tensor from the in-memory buffer
+        buffer = io.BytesIO(data)
+        return torch.load(buffer)
