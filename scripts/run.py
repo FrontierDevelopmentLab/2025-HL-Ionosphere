@@ -510,7 +510,7 @@ def main():
 
             print('Processing excluded dates')
 
-            datasets_jpld_valid = []
+            datasets_omniweb_valid = []
 
             date_exclusions = []
             if args.valid_event_id:
@@ -523,9 +523,9 @@ def main():
                     exclusion_end = datetime.datetime.fromisoformat(event['date_end'])
                     date_exclusions.append((exclusion_start, exclusion_end))
 
-                    datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    datasets_omniweb_valid.append(OMNIWeb(dataset_omniweb_dir, date_start=exclusion_start, date_end=exclusion_end, column=args.omniweb_columns))
 
-            dataset_jpld_valid = Union(datasets=datasets_jpld_valid)
+            dataset_omniweb_valid = Union(datasets=datasets_omniweb_valid)
 
             if args.valid_event_seen_id is None:
                 event_catalog_within_training_set = event_catalog.exclude(date_exclusions=date_exclusions)
@@ -538,14 +538,15 @@ def main():
             #     dataset_valid = dataset_jpld_valid
             if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end)
-                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
                 dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns)
-                dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end, column=args.omniweb_columns)
+                # dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, column=args.omniweb_columns)
                 dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end)
-                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_jpld_valid.date_start, date_end=dataset_jpld_valid.date_end)
+                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
             else:
@@ -569,7 +570,7 @@ def main():
                 prefetch_factor=4,
             )
 
-            if len(dataset_valid) > args.max_valid_samples:
+            if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
                 print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
                 indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
                 sampler = SubsetRandomSampler(indices)
