@@ -40,10 +40,10 @@ def train():
     parser.add_argument('--subset_type', type=int, default=5,  choices=[5, 10, 20, 30, 40], help='Which Madrigal data to use, possible choices are: 5, 10, 20, 30, 40 million points')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
     parser.add_argument('--model_path', type=str, default=None, help='Path to the model to load. If None, a new model is created')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate for the optimizer')
+    parser.add_argument('--lr', type=float, default=0.0004, help='Learning rate for the optimizer')
     parser.add_argument('--run_name', default='', help='Run name to be stored in wandb')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train the model')
-    parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for the dataloader')
+    parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train the model')
+    parser.add_argument('--num_workers', type=int, default=24, help='Number of workers for the dataloader')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for initialization')
     parser.add_argument('--lag_days_proxies', type=float, default=144, help='Lag in days for the SET and Celestrack proxies')
     parser.add_argument('--proxies_resolution', type=int, default=1, help='Resolution in days for the SET and Celestrack proxies')
@@ -76,9 +76,9 @@ def train():
     print('Config:')
     pprint.pprint(vars(opt), depth=2, width=1)
     print()
-    if 'float32':
+    if opt.torch_type=='float32':
         torch_type=torch.float32
-    elif 'float64':
+    elif opt.torch_type=='float64':
         torch_type=torch.float64
     else:
         raise ValueError('Invalid torch type. Only float32 and float64 are supported')
@@ -237,6 +237,7 @@ def train():
         ts_ionopy_model.train()
         train_loss = 0.0
         count=0
+        rmse_loss_unnormalized = 0.0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
             historical_ts_numeric = []
             for key in batch.keys():
@@ -278,11 +279,12 @@ def train():
             loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
             #let's also record it to keep track of the average:
             train_loss += loss_nn.item()
+            rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
             if opt.wandb_inactive is False:
                 wandb.log({
                     'train_loss': loss_nn.item(),
                     'train_loss_unnormalized': loss_nn_unnormalized.item(),
-                    'rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
+                    'train_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
                     'q_loss': q_loss.item(),
                     'q_risk': q_risk.item(),
                     'minibatch': count
@@ -292,14 +294,18 @@ def train():
                 print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
             count+=1
         train_loss /= len(train_loader)
-        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}")
+        rmse_loss_unnormalized /= len(train_loader)
+        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}, Average Train RMSE Loss: {rmse_loss_unnormalized:.8f}")
         if opt.wandb_inactive is False:
-            wandb.log({'train_loss_epoch': train_loss, 'epoch': epoch})
+            wandb.log({'train_loss_epoch': train_loss, 
+                       'train_rmse_epoch': rmse_loss_unnormalized,
+                       'epoch': epoch})
         #scheduler.step()
         #validation
         ts_ionopy_model.eval()
-        validation_loss = 0.0
         with torch.no_grad():
+            validation_loss = 0.0
+            rmse_loss_unnormalized = 0.0
             count=0
             for batch in tqdm(validation_loader, desc=f"Validation Epoch {epoch+1}/{opt.epochs}"):
                 historical_ts_numeric = []
@@ -336,11 +342,12 @@ def train():
                 loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
                 #let's also record it to keep track of the average:
                 validation_loss += loss_nn.item()
+                rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
                 if opt.wandb_inactive is False:
                     wandb.log({
                         'validation_loss': loss_nn.item(),
                         'validation_loss_unnormalized': loss_nn_unnormalized.item(),
-                        'rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
+                        'validation_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
                         'q_loss': q_loss.item(),
                         'q_risk': q_risk.item(),
                         'minibatch': count
@@ -350,10 +357,13 @@ def train():
                     print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
                 count+=1
         validation_loss /= len(validation_loader)
-        print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}")
+        rmse_loss_unnormalized /= len(validation_loader)
+        print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}, Average Validation RMSE Loss: {rmse_loss_unnormalized:.8f}")
         if opt.wandb_inactive is False:
-            wandb.log({'validation_loss_epoch': validation_loss, 'epoch': epoch+1})
-        
+            wandb.log({'validation_loss_epoch': validation_loss, 
+                        'validation_rmse_epoch': rmse_loss_unnormalized,
+                       'epoch': epoch+1})
+
         #save the model if the validation loss is lower than the best validation loss
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
