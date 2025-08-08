@@ -496,6 +496,26 @@ def main():
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
     
     args = parser.parse_args()
+    args_cache_affecting_keys = {'data_dir', 
+                                 'jpld_dir', 
+                                 'celestrak_file_name', 
+                                 'omniweb_dir', 
+                                 'omniweb_columns', 
+                                 'set_file_name', 
+                                 'date_start', 
+                                 'date_end', 
+                                 'delta_minutes', 
+                                 'batch_size', 
+                                 'model_type', 
+                                 'context_window', 
+                                 'prediction_window', 
+                                 'valid_event_id', 
+                                 'valid_event_seen_id', 
+                                 'forecast_max_time_steps',
+                                 'sun_moon_extra_time_steps',
+                                }
+    args_cache_affecting = {k: v for k, v in vars(args).items() if k in args_cache_affecting_keys}
+    args_cache_affecting_hash = md5_hash_str(str(args_cache_affecting))
 
     os.makedirs(args.target_dir, exist_ok=True)
     log_file = os.path.join(args.target_dir, 'log.txt')
@@ -585,12 +605,12 @@ def main():
             if args.cache_dir:
                 print('On-disk cache for training batches')
                 # use the hash of the entire args object as the directory suffix for the cached dataset
-                dataset_train_cached_dir = os.path.join(args.cache_dir, 'train-' + md5_hash_str(str(vars(args))))
+                dataset_train_cached_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
                 dataset_train_cached = CachedBatchDataset(dataset_train, cache_dir=dataset_train_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
                 train_loader = DataLoader(dataset_train_cached,  batch_size=None,  shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
                 print('On-disk cache for validation batches')
-                dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + md5_hash_str(str(vars(args))))
+                dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
                 dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
                 valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
             else:
