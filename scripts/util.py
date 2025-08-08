@@ -109,3 +109,13 @@ def md5_hash_str(input_str):
     m.update(input_str.encode('utf-8'))
     hash_str = m.hexdigest()
     return hash_str
+
+
+def format_bytes(num_bytes):
+    """Format a number of bytes as a human-readable string (MiB, GiB, TiB, etc)."""
+    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+    size = float(num_bytes)
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0

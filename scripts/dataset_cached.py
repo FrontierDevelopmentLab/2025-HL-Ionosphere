@@ -3,6 +3,9 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import os
 import shutil
+import json
+
+from util import format_bytes
 
 
 class CachedDataset(Dataset):
@@ -18,16 +21,6 @@ class CachedDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
-
-
-def format_bytes(num_bytes):
-    """Format a number of bytes as a human-readable string (MiB, GiB, TiB, etc)."""
-    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
-    size = float(num_bytes)
-    for unit in units:
-        if size < 1024.0 or unit == units[-1]:
-            return f"{size:.2f} {unit}"
-        size /= 1024.0
     
 
 class CachedBatchDataset(Dataset):
@@ -43,44 +36,72 @@ class CachedBatchDataset(Dataset):
         cache_dir (str): The directory to store and read cached batches.
         batch_size (int): The batch size to use when creating batches.
         collate_fn (callable, optional): The collate function for the internal DataLoader.
+        num_workers (int): The number of subprocesses to use for data loading during cache creation. Defaults to 0 (main process).
         force_recache (bool): If True, deletes any existing cache and rebuilds it.
     """
-    def __init__(self, source_dataset, cache_dir, batch_size, collate_fn=None, force_recache=False):
+    def __init__(self, source_dataset, cache_dir, batch_size, collate_fn=None, num_workers_to_build_cache=0, force_recache=False):
         self.source_dataset = source_dataset
         self.cache_dir = cache_dir
         self.batch_size = batch_size
         self.collate_fn = collate_fn
+        self.num_workers_to_build_cache = num_workers_to_build_cache
         self.batch_files = []
+        self.metadata_path = os.path.join(self.cache_dir, 'metadata.json')
 
         if force_recache and os.path.exists(self.cache_dir):
             shutil.rmtree(self.cache_dir)
 
         print('\n***CachedBatchDataset***')
-        # Check if the cache needs to be built.
-        if not os.path.exists(self.cache_dir) or not os.listdir(self.cache_dir):
-            print(f"Cache not found. Building cache: {self.cache_dir}")
-            self._build_cache()
-        else:
-            print(f"Existing cache     : {self.cache_dir}")
+        if self._is_cache_valid():
+            print(f"Valid cache found  : {self.cache_dir}")
             self._load_from_cache()
+        else:
+            if os.path.exists(self.cache_dir):
+                print(f"Incomplete or invalid cache found. Deleting and rebuilding: {self.cache_dir}")
+                shutil.rmtree(self.cache_dir)
+            else:
+                print(f"Cache not found. Building cache: {self.cache_dir}")
+            self._build_cache()
         print()
+
+    def _is_cache_valid(self):
+        """Checks if the cache is complete and valid."""
+        if not os.path.exists(self.metadata_path):
+            return False
+        
+        try:
+            with open(self.metadata_path, 'r') as f:
+                metadata = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return False # Corrupted metadata file
+
+        if 'num_batches' not in metadata:
+            return False
+
+        expected_batches = metadata['num_batches']
+        
+        # Count actual .pt files
+        try:
+            actual_batches = len([f for f in os.listdir(self.cache_dir) if f.endswith(".pt")])
+        except FileNotFoundError:
+            return False
+
+        return actual_batches == expected_batches
 
     def _build_cache(self):
         """Creates batches with an internal DataLoader and saves them to disk."""
         os.makedirs(self.cache_dir, exist_ok=True)
         
-        # Create a temporary, single-worker loader to build the cache safely.
-        # shuffle=False is critical for a deterministic cache.
+        # Create a temporary loader to build the cache.
         caching_loader = DataLoader(
             self.source_dataset,
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
             shuffle=False,  # MUST be False to create a deterministic cache
-            num_workers=0   # MUST be 0 to prevent race conditions while writing files
+            num_workers=self.num_workers_to_build_cache
         )
 
         num_batches = len(caching_loader)
-        # Determine the padding width from the total number of batches
         pad_width = len(str(num_batches - 1))
 
         for i, batch in enumerate(tqdm(caching_loader, desc="Caching batches")):
@@ -99,13 +120,17 @@ class CachedBatchDataset(Dataset):
                 print('Estimated total size of cache:', format_bytes(estimated_total_size))
 
                 if estimated_total_size > free_space:
-                    # Clean up the partially created cache before raising
                     shutil.rmtree(self.cache_dir)
                     raise OSError(
                         f"Insufficient disk space for cache. "
-                        f"Estimated required space: {estimated_total_size / (1024**3):.2f} GB. "
-                        f"Available space: {free_space / (1024**3):.2f} GB."
+                        f"Estimated required space: {format_bytes(estimated_total_size)}. "
+                        f"Available space: {format_bytes(free_space)}."
                     )
+        
+        # Write metadata file only after all batches are successfully saved.
+        metadata = {'num_batches': len(self.batch_files)}
+        with open(self.metadata_path, 'w') as f:
+            json.dump(metadata, f)
 
     def _load_from_cache(self):
         """Loads the list of file paths from the existing cache directory."""

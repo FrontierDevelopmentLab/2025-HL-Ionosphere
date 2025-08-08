@@ -586,12 +586,12 @@ def main():
                 print('On-disk cache for training batches')
                 # use the hash of the entire args object as the directory suffix for the cached dataset
                 dataset_train_cached_dir = os.path.join(args.cache_dir, 'train-' + md5_hash_str(str(vars(args))))
-                dataset_train_cached = CachedBatchDataset(dataset_train, cache_dir=dataset_train_cached_dir, batch_size=args.batch_size)
+                dataset_train_cached = CachedBatchDataset(dataset_train, cache_dir=dataset_train_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
                 train_loader = DataLoader(dataset_train_cached,  batch_size=None,  shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
                 print('On-disk cache for validation batches')
                 dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + md5_hash_str(str(vars(args))))
-                dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size)
+                dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
                 valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers)
             else:
                 # No on-disk caching
