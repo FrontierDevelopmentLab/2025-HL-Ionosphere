@@ -162,9 +162,9 @@ class CachedBatchDataset(Dataset):
             for f in os.listdir(self.cache_dir) if f.endswith(".pt")
         ])
         total_size = sum(os.path.getsize(f) for f in self.batch_files)
+        print(f"Size of each batch : {format_bytes(total_size / len(self.batch_files))}")
         print(f"Number of batches  : {len(self.batch_files):,}")
         print(f"Total size of cache: {format_bytes(total_size)}")
-        print(f"Size of each batch : {format_bytes(total_size / len(self.batch_files))}")
 
     def __len__(self):
         # The length is the number of cached batches.

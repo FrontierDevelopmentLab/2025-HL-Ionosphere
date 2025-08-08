@@ -1125,6 +1125,8 @@ validation_events_2 = ['G0H3-201804202100',
                        'G2H9-201709072100',
                        'G1H3-202302261800']
 
+validation_events_3 = ['G0H3-201804202100',]
+
 # Print the event catalog in a readable format
 if __name__ == "__main__":
     event_catalog = EventCatalog()

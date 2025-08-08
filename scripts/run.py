@@ -33,7 +33,7 @@ from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
 from dataset_cached import CachedDataset, CachedBatchDataset
-from events import EventCatalog, validation_events_1
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
 
 event_catalog = EventCatalog()
 
@@ -481,7 +481,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_3, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=100, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
@@ -592,7 +592,7 @@ def main():
                 print('On-disk cache for validation batches')
                 dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + md5_hash_str(str(vars(args))))
                 dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
-                valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers)
+                valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
             else:
                 # No on-disk caching
                 train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
@@ -601,9 +601,9 @@ def main():
                     print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
                     indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
                     sampler = SubsetRandomSampler(indices)
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers)
+                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
                 else:
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
