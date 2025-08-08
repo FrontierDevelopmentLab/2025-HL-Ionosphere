@@ -4,6 +4,7 @@ import random
 import time
 import numpy as np
 import torch
+import hashlib
 
 
 class Tee(object):
@@ -102,3 +103,9 @@ def yeojhonson_inverse(X, lambdas):
 
     return X_original
 
+
+def md5_hash_str(input_str):
+    m = hashlib.md5()
+    m.update(input_str.encode('utf-8'))
+    hash_str = m.hexdigest()
+    return hash_str

@@ -21,7 +21,7 @@ import csv
 
 from util import Tee
 from util import set_random_seed
-from util import stack_as_channels
+from util import md5_hash_str
 # from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
@@ -32,7 +32,7 @@ from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
-from dataset_cached import CachedDataset
+from dataset_cached import CachedDataset, CachedBatchDataset
 from events import EventCatalog, validation_events_1
 
 event_catalog = EventCatalog()
@@ -467,7 +467,7 @@ def main():
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-04-22T00:00:00', help='End date')
+    parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -492,9 +492,9 @@ def main():
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
-    parser.add_argument('--cache_datasets', action='store_true', help='If set, pre-load and cache datasets in memory to speed up training')
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
-
+    parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
+    
     args = parser.parse_args()
 
     os.makedirs(args.target_dir, exist_ok=True)
@@ -579,31 +579,31 @@ def main():
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
-            if args.cache_datasets:
-                print('Caching datasets in memory')
-                dataset_train = CachedDataset(dataset_train)
-                dataset_valid = CachedDataset(dataset_valid)
-
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
 
-            train_loader = DataLoader(
-                dataset_train, 
-                batch_size=args.batch_size, 
-                shuffle=True,
-                num_workers=args.num_workers,
-                pin_memory=True,
-                persistent_workers=True,
-                prefetch_factor=4,
-            )
+            if args.cache_dir:
+                print('On-disk cache for training batches')
+                # use the hash of the entire args object as the directory suffix for the cached dataset
+                dataset_train_cached_dir = os.path.join(args.cache_dir, 'train-' + md5_hash_str(str(vars(args))))
+                dataset_train_cached = CachedBatchDataset(dataset_train, cache_dir=dataset_train_cached_dir, batch_size=args.batch_size)
+                train_loader = DataLoader(dataset_train_cached,  batch_size=None,  shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
-            if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
-                print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
-                indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
-                sampler = SubsetRandomSampler(indices)
-                valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers)
+                print('On-disk cache for validation batches')
+                dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + md5_hash_str(str(vars(args))))
+                dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size)
+                valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers)
             else:
-                valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+                # No on-disk caching
+                train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+
+                if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
+                    print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
+                    indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
+                    sampler = SubsetRandomSampler(indices)
+                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers)
+                else:
+                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
