@@ -17,6 +17,7 @@ import glob
 import imageio
 import shutil
 import random
+import csv
 
 from util import Tee
 from util import set_random_seed
@@ -268,7 +269,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
 
-def save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, args):
+def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, save_video, args):
     if event_id not in event_catalog:
         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
     event = event_catalog[event_id]
@@ -276,7 +277,8 @@ def save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, arg
     event_start = datetime.datetime.fromisoformat(event_start)
     event_end = datetime.datetime.fromisoformat(event_end)
 
-    print('* Validating event ID: {}'.format(event_id))
+    print('\n* Forecasting')
+    print('Event ID           : {}'.format(event_id))
     date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
     date_forecast_start = event_start
     date_end = event_end
@@ -285,50 +287,59 @@ def save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, arg
 
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
 
-    # rmse between original and forecast
-    jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt().item()
-    print('\033[92mRMSE (TECU)        : {}\033[0m'.format(jpld_rmse))
-    jpld_mae = torch.nn.functional.l1_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').item()
-    print('\033[96mMAE (TECU)         : {}\033[0m'.format(jpld_mae))
+    # rmse between original and forecast for unnormalized JPLD data
+    jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast, jpld_original, reduction='mean').sqrt().item()
+    print('JPLD RMSE          : {}'.format(jpld_rmse))
+    jpld_mae = torch.nn.functional.l1_loss(jpld_forecast, jpld_original, reduction='mean').item()
+    print('JPLD MAE           : {}'.format(jpld_mae))
 
-    fig_title = title + f' - RMSE: {jpld_rmse:.2f} TECU - MAE: {jpld_mae:.2f} TECU'
+    # rmse between original and forecast for unnormalized JPLD data
+    jpld_unnormalized_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt().item()
+    print('\033[92mJPLD RMSE (TECU)   : {}\033[0m'.format(jpld_unnormalized_rmse))
+    jpld_unnormalized_mae = torch.nn.functional.l1_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').item()
+    print('\033[96mJPLD MAE (TECU)    : {}\033[0m'.format(jpld_unnormalized_mae))
+
+    fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast_dates]
     titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start_date} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast_dates)]
 
-    save_gim_video_comparison(
-        gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
-        gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
-        file_name=file_name,
-        vmin=0, vmax=120,
-        titles_top=titles_original,
-        titles_bottom=titles_forecast,
-        fig_title=fig_title
-    )
+    if save_video:
+        save_gim_video_comparison(
+            gim_sequence_top=jpld_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+            gim_sequence_bottom=jpld_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+            file_name=file_name,
+            vmin=0, vmax=120,
+            titles_top=titles_original,
+            titles_bottom=titles_forecast,
+            fig_title=fig_title
+        )
 
-    if args.save_all_channels:
-        num_channels = combined_seq_data_original.shape[1]
-        for i in range(num_channels):
-            channel_original = combined_seq_data_original[:, i]
-            channel_forecast = combined_seq_data_forecast[:, i]
-            channel_original_unnormalized = channel_original
-            channel_forecast_unnormalized = channel_forecast
+        if args.save_all_channels:
+            num_channels = combined_seq_data_original.shape[1]
+            for i in range(num_channels):
+                channel_original = combined_seq_data_original[:, i]
+                channel_forecast = combined_seq_data_forecast[:, i]
+                channel_original_unnormalized = channel_original
+                channel_forecast_unnormalized = channel_forecast
 
-            titles_channel_original = [f'Channel {i} Original: {d} - {title}' for d in sequence_forecast_dates]
-            titles_channel_forecast = [f'Channel {i} Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast_dates)]
+                titles_channel_original = [f'Channel {i} Original: {d} - {title}' for d in sequence_forecast_dates]
+                titles_channel_forecast = [f'Channel {i} Forecast: {d} ({forecast_mins_ahead[i]}) - {title}' for i, d in enumerate(sequence_forecast_dates)]
 
-            file_name_channel = os.path.join(os.path.dirname(file_name), os.path.basename(file_name).replace('.mp4', f'_channel_{i:02d}.mp4'))
-            save_gim_video_comparison(
-                gim_sequence_top=channel_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
-                gim_sequence_bottom=channel_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
-                file_name=file_name_channel,
-                # vmin=0, vmax=100,
-                titles_top=titles_channel_original,
-                titles_bottom=titles_channel_forecast,
-                fig_title=fig_title,
-                cbar_label=''
-            )
-            print(f'Saved channel {i} forecast video to {file_name_channel}')
+                file_name_channel = os.path.join(os.path.dirname(file_name), os.path.basename(file_name).replace('.mp4', f'_channel_{i:02d}.mp4'))
+                save_gim_video_comparison(
+                    gim_sequence_top=channel_original_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+                    gim_sequence_bottom=channel_forecast_unnormalized.cpu().numpy().reshape(-1, 180, 360),
+                    file_name=file_name_channel,
+                    # vmin=0, vmax=100,
+                    titles_top=titles_channel_original,
+                    titles_bottom=titles_channel_forecast,
+                    fig_title=fig_title,
+                    cbar_label=''
+                )
+                print(f'Saved channel {i} forecast video to {file_name_channel}')
+    
+    return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae
 
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
@@ -542,13 +553,13 @@ def main():
             dataset_omniweb_valid = Union(datasets=datasets_omniweb_valid)
 
             if args.valid_event_seen_id is None:
-                num_seen_events = 2
+                num_seen_events = max(2, len(args.valid_event_id))
                 event_catalog_within_training_set = event_catalog.filter(date_start=date_start, date_end=date_end).exclude(date_exclusions=date_exclusions)
                 if len(event_catalog_within_training_set) > 0:
                     args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
-                    print('Using validation events seen during training: {}'.format(args.valid_event_seen_id))
+                    print('\nUsing validation events seen during training: {}\n'.format(args.valid_event_seen_id))
                 else:
-                    print('No validation events seen during training found within the training set. Using empty list.')
+                    print('\nNo validation events seen during training found within the training set. Using empty list.\n')
                     args.valid_event_seen_id = []
 
             # if args.model_type == 'VAE1':
@@ -825,14 +836,71 @@ def main():
 
 
                         if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
-                            if args.valid_event_id:
-                                for event_id in args.valid_event_id:
-                                    save_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', args)
+                            num_videos_to_save = 2
 
+                            metric_event_id = []
+                            metric_jpld_rmse = []
+                            metric_jpld_mae = []
+                            metric_jpld_unnormalized_rmse = []
+                            metric_jpld_unnormalized_mae = []
+                            if args.valid_event_id:
+                                for i, event_id in enumerate(args.valid_event_id):
+                                    save_video = i < num_videos_to_save
+                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
+                                    metric_event_id.append(event_id)
+                                    metric_jpld_rmse.append(jpld_rmse)
+                                    metric_jpld_mae.append(jpld_mae)
+                                    metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
+                                    metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
+
+                            # Save metrics to a CSV file
+                            metrics_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics.csv')
+                            print(f'Saving metrics to {metrics_file}')
+                            with open(metrics_file, 'w', newline='') as csvfile:
+                                fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae']
+                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                writer.writeheader()
+                                for i in range(len(metric_event_id)):
+                                    writer.writerow({
+                                        'event_id': metric_event_id[i],
+                                        'jpld_rmse': metric_jpld_rmse[i],
+                                        'jpld_mae': metric_jpld_mae[i],
+                                        'jpld_unnormalized_rmse': metric_jpld_unnormalized_rmse[i],
+                                        'jpld_unnormalized_mae': metric_jpld_unnormalized_mae[i]
+                                    })
+
+                            metric_seen_event_id = []
+                            metric_seen_jpld_rmse = []
+                            metric_seen_jpld_mae = []
+                            metric_seen_jpld_unnormalized_rmse = []
+                            metric_seen_jpld_unnormalized_mae = []
                             if args.valid_event_seen_id:
-                                for event_id in args.valid_event_seen_id:
+                                for i, event_id in enumerate(args.valid_event_seen_id):
                                     # produce forecasts for some events in the training set (for debugging purposes)
-                                    save_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', args)
+                                    save_video = i < num_videos_to_save
+                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
+                                    metric_seen_event_id.append(event_id)
+                                    metric_seen_jpld_rmse.append(jpld_rmse)
+                                    metric_seen_jpld_mae.append(jpld_mae)
+                                    metric_seen_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
+                                    metric_seen_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
+
+                            # Save metrics to a CSV file
+                            seen_metrics_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-seen.csv')
+                            print(f'Saving seen metrics to {seen_metrics_file}')
+                            with open(seen_metrics_file, 'w', newline='') as csvfile:
+                                fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae']
+                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                writer.writeheader()
+                                for i in range(len(metric_seen_event_id)):
+                                    writer.writerow({
+                                        'event_id': metric_seen_event_id[i],
+                                        'jpld_rmse': metric_seen_jpld_rmse[i],
+                                        'jpld_mae': metric_seen_jpld_mae[i],
+                                        'jpld_unnormalized_rmse': metric_seen_jpld_unnormalized_rmse[i],
+                                        'jpld_unnormalized_mae': metric_seen_jpld_unnormalized_mae[i]
+                                    })
+
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
@@ -846,7 +914,7 @@ def main():
                             shutil.rmtree(best_model_dir)
                         os.makedirs(best_model_dir, exist_ok=True)
                         for file in os.listdir(args.target_dir):
-                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.mp4') or file.endswith('.pth')):
+                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
                                 shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
@@ -885,7 +953,7 @@ def main():
 
                         file_name_prefix = os.path.join(args.target_dir, 'test')
     
-                        save_forecast(model, dataset, event_catalog, event_id, file_name_prefix, args)
+                        eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
 
                         # Force cleanup
                         del dataset_jpld, dataset
