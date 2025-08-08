@@ -836,7 +836,7 @@ def main():
 
 
                         if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
-                            num_videos_to_save = 2
+                            max_videos_to_save = 20
 
                             metric_event_id = []
                             metric_jpld_rmse = []
@@ -845,7 +845,7 @@ def main():
                             metric_jpld_unnormalized_mae = []
                             if args.valid_event_id:
                                 for i, event_id in enumerate(args.valid_event_id):
-                                    save_video = i < num_videos_to_save
+                                    save_video = i < max_videos_to_save
                                     jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
                                     metric_event_id.append(event_id)
                                     metric_jpld_rmse.append(jpld_rmse)
@@ -877,7 +877,7 @@ def main():
                             if args.valid_event_seen_id:
                                 for i, event_id in enumerate(args.valid_event_seen_id):
                                     # produce forecasts for some events in the training set (for debugging purposes)
-                                    save_video = i < num_videos_to_save
+                                    save_video = i < max_videos_to_save
                                     jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
                                     metric_seen_event_id.append(event_id)
                                     metric_seen_jpld_rmse.append(jpld_rmse)
