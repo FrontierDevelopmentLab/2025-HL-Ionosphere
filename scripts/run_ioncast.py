@@ -1,3 +1,12 @@
+"""
+Monday todos:
+- Get wandb logging from Frank
+- Integrate quasi-dipole dataset from Halil
+- Get new cached dataset implementation from Gunes
+- Set large run using these new changes
+- Merge with main branch (our run.py)
+"""
+
 import argparse
 import datetime
 import pprint
@@ -1115,3 +1124,6 @@ if __name__ == '__main__':
 
 # Test on hard events
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016 --model_file /home/jupyter/linnea_results/ioncastgnn-train-july-2015-2016/epoch-01-model.pth --num_workers 12 --batch_size 1 --model_type IonCastGNN --context_window 5 --prediction_window 2 --device cuda:1 --test_event_id G2H3-201503170300 G1H3-201510070300 G2H9-202405101500 G2H9-201709072100 G1H3-202302261800
+
+# For Halil! It is set up to run on cuda:1 (the other is running on cuda:0), save to your directory, and also validate on every event from Gunes' list (aka exclude them and plot each time)
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-july-2015-2016-dipole --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-07-01T00:00:00 --date_end 2016-07-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_every_nth_epoch 1 --save_all_models  --valid_event_seen_id G2H3-201509110600 --valid_event_id G1H3-201610261500 G0H3-201804202100 G0H3-201808272100 G0H3-201905110300 G0H3-202311220900 G0H3-201610140300 G0H3-201506251500 G0H3-201509100000 G0H3-202305100600 G0H3-201604080000 G0H3-202104162100 G2H3-201503170300 G1H3-201510070300 G2H9-202405101500 G2H9-201709072100 G1H3-202302261800
