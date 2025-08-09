@@ -38,7 +38,7 @@ class _CachingIterator:
             persistent_workers=parent_loader.persistent_workers if parent_loader.num_workers > 0 else False,
             prefetch_factor=parent_loader.prefetch_factor if parent_loader.num_workers > 0 else None
         )
-        desc = f"Caching first epoch ({parent_loader.name})" if parent_loader.name else "Caching first epoch"
+        desc = f"Building cache ({parent_loader.name})" if parent_loader.name else "Building cache"
         self.pbar = tqdm(total=len(self.internal_loader), desc=desc)
         self.internal_iter = iter(self.internal_loader)
         self.num_batches_processed = 0

@@ -282,17 +282,42 @@ def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, sav
 
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
 
-    # rmse between original and forecast for unnormalized JPLD data
     jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast, jpld_original, reduction='mean').sqrt().item()
     print('JPLD RMSE          : {}'.format(jpld_rmse))
     jpld_mae = torch.nn.functional.l1_loss(jpld_forecast, jpld_original, reduction='mean').item()
     print('JPLD MAE           : {}'.format(jpld_mae))
 
-    # rmse between original and forecast for unnormalized JPLD data
     jpld_unnormalized_rmse = torch.nn.functional.mse_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').sqrt().item()
-    print('\033[92mJPLD RMSE (TECU)   : {}\033[0m'.format(jpld_unnormalized_rmse))
+    print(f'\033[92mJPLD RMSE (TECU)   : {jpld_unnormalized_rmse}\033[0m')
     jpld_unnormalized_mae = torch.nn.functional.l1_loss(jpld_forecast_unnormalized, jpld_original_unnormalized, reduction='mean').item()
-    print('\033[96mJPLD MAE (TECU)    : {}\033[0m'.format(jpld_unnormalized_mae))
+    print(f'\033[96mJPLD MAE (TECU)    : {jpld_unnormalized_mae}\033[0m')
+
+    # --- Regional Metrics ---
+    latitudes = np.linspace(-90, 90, 180)
+    
+    # Low-latitude mask
+    low_lat_mask = (latitudes >= -20) & (latitudes <= 20)
+    jpld_unnormalized_rmse_low_lat = torch.nn.functional.mse_loss(
+        jpld_forecast_unnormalized[:, low_lat_mask, :],
+        jpld_original_unnormalized[:, low_lat_mask, :]
+    ).sqrt().item()
+    print(f'JPLD Low-Latitude RMSE (TECU) : {jpld_unnormalized_rmse_low_lat:.4f}')
+
+    # Mid-latitude mask
+    mid_lat_mask = ((latitudes > 20) & (latitudes <= 60)) | ((latitudes < -20) & (latitudes >= -60))
+    jpld_unnormalized_rmse_mid_lat = torch.nn.functional.mse_loss(
+        jpld_forecast_unnormalized[:, mid_lat_mask, :],
+        jpld_original_unnormalized[:, mid_lat_mask, :]
+    ).sqrt().item()
+    print(f'JPLD Mid-Latitude RMSE (TECU) : {jpld_unnormalized_rmse_mid_lat:.4f}')
+    
+    # High-latitude mask
+    high_lat_mask = (latitudes > 60) | (latitudes < -60)
+    jpld_unnormalized_rmse_high_lat = torch.nn.functional.mse_loss(
+        jpld_forecast_unnormalized[:, high_lat_mask, :],
+        jpld_original_unnormalized[:, high_lat_mask, :]
+    ).sqrt().item()
+    print(f'JPLD High-Latitude RMSE (TECU): {jpld_unnormalized_rmse_high_lat:.4f}')
 
     fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
@@ -334,7 +359,225 @@ def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, sav
                 )
                 print(f'Saved channel {i} forecast video to {file_name_channel}')
     
-    return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae
+    return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat
+
+def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat, file_name_prefix):
+    # Save metrics to a CSV file
+    num_events = len(event_id)
+    file_name_csv = os.path.join(file_name_prefix + '.csv')
+    print(f'Saving metrics to {file_name_csv}')
+    with open(file_name_csv, 'w', newline='') as csvfile:
+        fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae', 'jpld_unnormalized_rmse_low_lat', 'jpld_unnormalized_rmse_mid_lat', 'jpld_unnormalized_rmse_high_lat']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(num_events):
+            writer.writerow({
+                'event_id': event_id[i],
+                'jpld_rmse': jpld_rmse[i],
+                'jpld_mae': jpld_mae[i],
+                'jpld_unnormalized_rmse': jpld_unnormalized_rmse[i],
+                'jpld_unnormalized_mae': jpld_unnormalized_mae[i],
+                'jpld_unnormalized_rmse_low_lat': jpld_unnormalized_rmse_low_lat[i],
+                'jpld_unnormalized_rmse_mid_lat': jpld_unnormalized_rmse_mid_lat[i],
+                'jpld_unnormalized_rmse_high_lat': jpld_unnormalized_rmse_high_lat[i]
+            })
+
+    jpld_rmse = np.array(jpld_rmse)
+    jpld_mae = np.array(jpld_mae)
+    jpld_unnormalized_rmse = np.array(jpld_unnormalized_rmse)
+    jpld_unnormalized_mae = np.array(jpld_unnormalized_mae)
+    jpld_unnormalized_rmse_low_lat = np.array(jpld_unnormalized_rmse_low_lat)
+    jpld_unnormalized_rmse_mid_lat = np.array(jpld_unnormalized_rmse_mid_lat)
+    jpld_unnormalized_rmse_high_lat = np.array(jpld_unnormalized_rmse_high_lat)
+
+    # add rows with mean, std, min, max of all metrics
+    with open(file_name_csv, 'a', newline='') as csvfile:
+        fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae', 'jpld_unnormalized_rmse_low_lat', 'jpld_unnormalized_rmse_mid_lat', 'jpld_unnormalized_rmse_high_lat']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writerow({
+            'event_id': 'all-mean',
+            'jpld_rmse': np.mean(jpld_rmse),
+            'jpld_mae': np.mean(jpld_mae),
+            'jpld_unnormalized_rmse': np.mean(jpld_unnormalized_rmse),
+            'jpld_unnormalized_mae': np.mean(jpld_unnormalized_mae),
+            'jpld_unnormalized_rmse_low_lat': np.mean(jpld_unnormalized_rmse_low_lat),
+            'jpld_unnormalized_rmse_mid_lat': np.mean(jpld_unnormalized_rmse_mid_lat),
+            'jpld_unnormalized_rmse_high_lat': np.mean(jpld_unnormalized_rmse_high_lat)
+        })
+        writer.writerow({
+            'event_id': 'all-std',
+            'jpld_rmse': np.std(jpld_rmse),
+            'jpld_mae': np.std(jpld_mae),
+            'jpld_unnormalized_rmse': np.std(jpld_unnormalized_rmse),
+            'jpld_unnormalized_mae': np.std(jpld_unnormalized_mae),
+            'jpld_unnormalized_rmse_low_lat': np.std(jpld_unnormalized_rmse_low_lat),
+            'jpld_unnormalized_rmse_mid_lat': np.std(jpld_unnormalized_rmse_mid_lat),
+            'jpld_unnormalized_rmse_high_lat': np.std(jpld_unnormalized_rmse_high_lat)
+        })
+        writer.writerow({
+            'event_id': 'all-min',
+            'jpld_rmse': np.min(jpld_rmse),
+            'jpld_mae': np.min(jpld_mae),
+            'jpld_unnormalized_rmse': np.min(jpld_unnormalized_rmse),
+            'jpld_unnormalized_mae': np.min(jpld_unnormalized_mae),
+            'jpld_unnormalized_rmse_low_lat': np.min(jpld_unnormalized_rmse_low_lat),
+            'jpld_unnormalized_rmse_mid_lat': np.min(jpld_unnormalized_rmse_mid_lat),
+            'jpld_unnormalized_rmse_high_lat': np.min(jpld_unnormalized_rmse_high_lat)
+        })
+        writer.writerow({
+            'event_id': 'all-max',
+            'jpld_rmse': np.max(jpld_rmse),
+            'jpld_mae': np.max(jpld_mae),
+            'jpld_unnormalized_rmse': np.max(jpld_unnormalized_rmse),
+            'jpld_unnormalized_mae': np.max(jpld_unnormalized_mae),
+            'jpld_unnormalized_rmse_low_lat': np.max(jpld_unnormalized_rmse_low_lat),
+            'jpld_unnormalized_rmse_mid_lat': np.max(jpld_unnormalized_rmse_mid_lat),
+            'jpld_unnormalized_rmse_high_lat': np.max(jpld_unnormalized_rmse_high_lat)
+        })
+
+    # add rows with mean, std, min, max of all metrics for subsets of events starting with G0, G1, G2, G3, G4, G5
+    for prefix in ['G0', 'G1', 'G2', 'G3', 'G4', 'G5']:
+        indices = [i for i, event in enumerate(event_id) if event.startswith(prefix)]
+        if len(indices) > 0:
+            jpld_rmse_subset = jpld_rmse[indices]
+            jpld_mae_subset = jpld_mae[indices]
+            jpld_unnormalized_rmse_subset = jpld_unnormalized_rmse[indices]
+            jpld_unnormalized_mae_subset = jpld_unnormalized_mae[indices]
+            with open(file_name_csv, 'a', newline='') as csvfile:
+                fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae', 'jpld_unnormalized_rmse_low_lat', 'jpld_unnormalized_rmse_mid_lat', 'jpld_unnormalized_rmse_high_lat']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writerow({
+                    'event_id': f'{prefix}-mean',
+                    'jpld_rmse': np.mean(jpld_rmse_subset),
+                    'jpld_mae': np.mean(jpld_mae_subset),
+                    'jpld_unnormalized_rmse': np.mean(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_mae': np.mean(jpld_unnormalized_mae_subset),
+                    'jpld_unnormalized_rmse_low_lat': np.mean(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_mid_lat': np.mean(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_high_lat': np.mean(jpld_unnormalized_rmse_subset)
+                })
+                writer.writerow({
+                    'event_id': f'{prefix}-std',
+                    'jpld_rmse': np.std(jpld_rmse_subset),
+                    'jpld_mae': np.std(jpld_mae_subset),
+                    'jpld_unnormalized_rmse': np.std(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_mae': np.std(jpld_unnormalized_mae_subset),
+                    'jpld_unnormalized_rmse_low_lat': np.std(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_mid_lat': np.std(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_high_lat': np.std(jpld_unnormalized_rmse_subset)
+                })
+                writer.writerow({
+                    'event_id': f'{prefix}-min',
+                    'jpld_rmse': np.min(jpld_rmse_subset),
+                    'jpld_mae': np.min(jpld_mae_subset),
+                    'jpld_unnormalized_rmse': np.min(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_mae': np.min(jpld_unnormalized_mae_subset),
+                    'jpld_unnormalized_rmse_low_lat': np.min(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_mid_lat': np.min(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_high_lat': np.min(jpld_unnormalized_rmse_subset)
+                })
+                writer.writerow({
+                    'event_id': f'{prefix}-max',
+                    'jpld_rmse': np.max(jpld_rmse_subset),
+                    'jpld_mae': np.max(jpld_mae_subset),
+                    'jpld_unnormalized_rmse': np.max(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_mae': np.max(jpld_unnormalized_mae_subset),
+                    'jpld_unnormalized_rmse_low_lat': np.max(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_mid_lat': np.max(jpld_unnormalized_rmse_subset),
+                    'jpld_unnormalized_rmse_high_lat': np.max(jpld_unnormalized_rmse_subset)
+                })
+
+    # save a metrics figure (pdf) with four histograms of all metrics for all events
+    file_name_hist = os.path.join(file_name_prefix + '-histograms.pdf')
+    print(f'Saving metrics histograms to {file_name_hist}')
+
+    # Prepare all data for main row and for each G0-G5 subset
+    prefixes = ['all', 'G0', 'G1', 'G2', 'G3', 'G4', 'G5']
+    metrics_dict = {}
+
+    # NOAA color scale for G1-G5, and a custom color for G0
+    prefix_colors = {
+        'all': 'black',
+        'G0': '#bdbdbd',   # Gray for G0 (custom, not in NOAA)
+        'G1': '#ffff00',   # Yellow
+        'G2': '#ffcc00',   # Orange-yellow
+        'G3': '#ff9900',   # Orange
+        'G4': '#ff0000',   # Red
+        'G5': '#990000',   # Dark red
+    }
+
+    # Convert all to numpy arrays for easier indexing
+    event_id = np.array(event_id)
+    jpld_rmse = np.array(jpld_rmse)
+    jpld_mae = np.array(jpld_mae)
+    jpld_unnormalized_rmse = np.array(jpld_unnormalized_rmse)
+    jpld_unnormalized_mae = np.array(jpld_unnormalized_mae)
+    jpld_unnormalized_rmse_low_lat = np.array(jpld_unnormalized_rmse_low_lat)
+    jpld_unnormalized_rmse_mid_lat = np.array(jpld_unnormalized_rmse_mid_lat)
+    jpld_unnormalized_rmse_high_lat = np.array(jpld_unnormalized_rmse_high_lat)
+
+    # All events
+    metrics_dict['all'] = {
+        'jpld_rmse': jpld_rmse,
+        'jpld_mae': jpld_mae,
+        'jpld_unnormalized_rmse': jpld_unnormalized_rmse,
+        'jpld_unnormalized_mae': jpld_unnormalized_mae,
+        'jpld_unnormalized_rmse_low_lat': jpld_unnormalized_rmse_low_lat,
+        'jpld_unnormalized_rmse_mid_lat': jpld_unnormalized_rmse_mid_lat,
+        'jpld_unnormalized_rmse_high_lat': jpld_unnormalized_rmse_high_lat,
+    }
+
+    # Subsets by prefix
+    for prefix in prefixes[1:]:
+        idx = np.char.startswith(event_id.astype(str), prefix)
+        metrics_dict[prefix] = {
+            'jpld_rmse': jpld_rmse[idx],
+            'jpld_mae': jpld_mae[idx],
+            'jpld_unnormalized_rmse': jpld_unnormalized_rmse[idx],
+            'jpld_unnormalized_mae': jpld_unnormalized_mae[idx],
+            'jpld_unnormalized_rmse_low_lat': jpld_unnormalized_rmse_low_lat[idx],
+            'jpld_unnormalized_rmse_mid_lat': jpld_unnormalized_rmse_mid_lat[idx],
+            'jpld_unnormalized_rmse_high_lat': jpld_unnormalized_rmse_high_lat[idx],
+        }
+
+    n_rows = len(prefixes)
+    n_cols = 7
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), squeeze=False)
+
+    metric_names = [
+        ('jpld_rmse', 'JPLD RMSE'),
+        ('jpld_mae', 'JPLD MAE'),
+        ('jpld_unnormalized_rmse', 'JPLD RMSE (TECU)'),
+        ('jpld_unnormalized_mae', 'JPLD MAE (TECU)'),
+        ('jpld_unnormalized_rmse_low_lat', 'JPLD Low Lat RMSE (TECU)'),
+        ('jpld_unnormalized_rmse_mid_lat', 'JPLD Mid Lat RMSE (TECU)'),
+        ('jpld_unnormalized_rmse_high_lat', 'JPLD High Lat RMSE (TECU)'),
+    ]
+
+    for row, prefix in enumerate(prefixes):
+        metrics = metrics_dict[prefix]
+        color = prefix_colors.get(prefix, 'black')
+        for col, (key, title) in enumerate(metric_names):
+            ax = axes[row, col]
+            data = metrics[key]
+            if len(data) > 0:
+                ax.hist(data, bins=30, alpha=0.7, color=color, edgecolor='black')
+                ax.axvline(np.mean(data), color='gray', linestyle='dashed', linewidth=1, label='Mean')
+                if row == 0:
+                    ax.set_title(title)
+                if col == 0:
+                    if prefix == 'all':
+                        ax.set_ylabel('All events')
+                    else:
+                        ax.set_ylabel(f'{prefix} events')
+                ax.legend()
+                ax.ticklabel_format(style='plain', axis='x')
+            else:
+                # No data: turn off axis
+                ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(file_name_hist)
+    plt.close()
 
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
@@ -464,7 +707,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-10-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -479,7 +722,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_2, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
@@ -797,7 +1040,7 @@ def main():
                     plt.close()
 
                     # Plot RMSE losses
-                    plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metric-rmse.pdf')
+                    plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-rmse.pdf')
                     print(f'Saving RMSE plot to {plot_rmse_file}')
                     plt.figure(figsize=(10, 5))
                     if train_rmse_losses:
@@ -866,64 +1109,51 @@ def main():
                             metric_jpld_mae = []
                             metric_jpld_unnormalized_rmse = []
                             metric_jpld_unnormalized_mae = []
+                            metric_jpld_unnormalized_rmse_low_lat = []
+                            metric_jpld_unnormalized_rmse_mid_lat = []
+                            metric_jpld_unnormalized_rmse_high_lat = []
                             if args.valid_event_id:
                                 for i, event_id in enumerate(args.valid_event_id):
                                     save_video = i < max_videos_to_save
-                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
+                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat = eval_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
                                     metric_event_id.append(event_id)
                                     metric_jpld_rmse.append(jpld_rmse)
                                     metric_jpld_mae.append(jpld_mae)
                                     metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
                                     metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
+                                    metric_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat)
+                                    metric_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat)
+                                    metric_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat)
 
                             # Save metrics to a CSV file
-                            metrics_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics.csv')
-                            print(f'Saving metrics to {metrics_file}')
-                            with open(metrics_file, 'w', newline='') as csvfile:
-                                fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae']
-                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                                writer.writeheader()
-                                for i in range(len(metric_event_id)):
-                                    writer.writerow({
-                                        'event_id': metric_event_id[i],
-                                        'jpld_rmse': metric_jpld_rmse[i],
-                                        'jpld_mae': metric_jpld_mae[i],
-                                        'jpld_unnormalized_rmse': metric_jpld_unnormalized_rmse[i],
-                                        'jpld_unnormalized_mae': metric_jpld_unnormalized_mae[i]
-                                    })
+                            metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-metrics')
+                            save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
 
                             metric_seen_event_id = []
                             metric_seen_jpld_rmse = []
                             metric_seen_jpld_mae = []
                             metric_seen_jpld_unnormalized_rmse = []
                             metric_seen_jpld_unnormalized_mae = []
+                            metric_seen_jpld_unnormalized_rmse_low_lat = []
+                            metric_seen_jpld_unnormalized_rmse_mid_lat = []
+                            metric_seen_jpld_unnormalized_rmse_high_lat = []
                             if args.valid_event_seen_id:
                                 for i, event_id in enumerate(args.valid_event_seen_id):
                                     # produce forecasts for some events in the training set (for debugging purposes)
                                     save_video = i < max_videos_to_save
-                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae = eval_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
+                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat = eval_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
                                     metric_seen_event_id.append(event_id)
                                     metric_seen_jpld_rmse.append(jpld_rmse)
                                     metric_seen_jpld_mae.append(jpld_mae)
                                     metric_seen_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
                                     metric_seen_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
+                                    metric_seen_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat)
+                                    metric_seen_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat)
+                                    metric_seen_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat)
 
                             # Save metrics to a CSV file
-                            seen_metrics_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-seen.csv')
-                            print(f'Saving seen metrics to {seen_metrics_file}')
-                            with open(seen_metrics_file, 'w', newline='') as csvfile:
-                                fieldnames = ['event_id', 'jpld_rmse', 'jpld_mae', 'jpld_unnormalized_rmse', 'jpld_unnormalized_mae']
-                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                                writer.writeheader()
-                                for i in range(len(metric_seen_event_id)):
-                                    writer.writerow({
-                                        'event_id': metric_seen_event_id[i],
-                                        'jpld_rmse': metric_seen_jpld_rmse[i],
-                                        'jpld_mae': metric_seen_jpld_mae[i],
-                                        'jpld_unnormalized_rmse': metric_seen_jpld_unnormalized_rmse[i],
-                                        'jpld_unnormalized_mae': metric_seen_jpld_unnormalized_mae[i]
-                                    })
-
+                            seen_metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-seen-metrics')
+                            save_metrics(metric_seen_event_id, metric_seen_jpld_rmse, metric_seen_jpld_mae, metric_seen_jpld_unnormalized_rmse, metric_seen_jpld_unnormalized_mae, metric_seen_jpld_unnormalized_rmse_low_lat, metric_seen_jpld_unnormalized_rmse_mid_lat, metric_seen_jpld_unnormalized_rmse_high_lat, seen_metrics_file_prefix)
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
