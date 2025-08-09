@@ -340,7 +340,7 @@ class IonCastGNN(nn.Module):
             # Get the relevant forcing channel context (up through step + 1) and concatenate with the flattened context grid
             future_forcing_context = masked_grid[:, context_window+step, forcing_channels, :, :].detach().clone() # [B, len(forcing_channels), H, W]
             model_input = torch.cat([context_window_grid, future_forcing_context], dim=1) # [B, C * context_window + len(forcing_channels), H, W]
- 
+
             step_output = self(model_input) # [B, C, H, W]
             
             # only fill in the non-forcing channels, if no forcing channels are passed in, all channels are filled with model output autoregressively
