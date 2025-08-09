@@ -32,7 +32,7 @@ from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
-from dataset_cached import CachedDataset, CachedBatchDataset
+from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
 
 event_catalog = EventCatalog()
@@ -236,8 +236,6 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     sequence_forecast_dates = sequence_dates[sequence_forecast_start_index:]
     print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
-    if isinstance(dataset, CachedDataset):
-        dataset = dataset.dataset
     sequence_data = dataset.get_sequence_data(sequence_dates)
     jpld_seq_data = sequence_data[0]  # Original data
     sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
@@ -466,7 +464,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-10-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -481,7 +479,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_3, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
@@ -603,16 +601,28 @@ def main():
             print('Valid size: {:,}'.format(len(dataset_valid)))
 
             if args.cache_dir:
-                print('On-disk cache for training batches')
                 # use the hash of the entire args object as the directory suffix for the cached dataset
-                dataset_train_cached_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
-                dataset_train_cached = CachedBatchDataset(dataset_train, cache_dir=dataset_train_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
-                train_loader = DataLoader(dataset_train_cached,  batch_size=None,  shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                train_cache_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
+                train_loader = CachedDataLoader(dataset_train, 
+                                                batch_size=args.batch_size, 
+                                                cache_dir=train_cache_dir, 
+                                                num_workers=args.num_workers, 
+                                                shuffle=True,
+                                                pin_memory=True,
+                                                persistent_workers=True,
+                                                # prefetch_factor=4,
+                                                name='train_loader')
 
-                print('On-disk cache for validation batches')
-                dataset_valid_cached_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
-                dataset_valid_cached = CachedBatchDataset(dataset_valid, cache_dir=dataset_valid_cached_dir, batch_size=args.batch_size,num_workers_to_build_cache=args.num_workers)
-                valid_loader = DataLoader(dataset_valid_cached, batch_size=None, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                valid_cache_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
+                valid_loader = CachedDataLoader(dataset_valid, 
+                                                batch_size=args.batch_size, 
+                                                cache_dir=valid_cache_dir, 
+                                                num_workers=args.num_workers, 
+                                                shuffle=False,
+                                                pin_memory=True,
+                                                persistent_workers=True,
+                                                # prefetch_factor=4,
+                                                name='valid_loader')
             else:
                 # No on-disk caching
                 train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
@@ -624,6 +634,8 @@ def main():
                     valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
                 else:
                     valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+
+            print()
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob('{}/epoch-*-model.pth'.format(args.target_dir))
