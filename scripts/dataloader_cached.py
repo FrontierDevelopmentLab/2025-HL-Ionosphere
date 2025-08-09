@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import os
 import shutil
 import json
@@ -12,6 +12,11 @@ try:
     import lz4.frame
 except ImportError:
     lz4 = None
+
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
 from util import format_bytes
 
@@ -56,6 +61,9 @@ class _CachingIterator:
 
             if self.parent_loader.compression == 'lz4':
                 data = lz4.frame.compress(data)
+            elif self.parent_loader.compression == 'zstd':
+                cctx = zstd.ZstdCompressor()
+                data = cctx.compress(data)
             
             with open(filepath, 'wb') as f:
                 f.write(data)
@@ -106,33 +114,28 @@ class _CachingIterator:
         tqdm.write("Cache building complete.")
 
 
-class _CacheReadingIterator:
-    """
-    A fast iterator that reads directly from a completed cache.
-    It simply loads one file per batch.
-    """
-    def __init__(self, parent_loader):
-        self.parent_loader = parent_loader
-        self.files = [os.path.join(self.parent_loader.cache_dir, f) for f in os.listdir(self.parent_loader.cache_dir) if f.endswith(".pt")]
-        
-        if self.parent_loader.shuffle:
-            import random
-            random.shuffle(self.files)
-            
-        self.file_iter = iter(self.files)
+class _CacheFileDataset(Dataset):
+    """A simple dataset that loads individual pre-batched files from a cache."""
+    def __init__(self, files, compression):
+        self.files = files
+        self.compression = compression
 
-    def __iter__(self):
-        return self
+    def __len__(self):
+        return len(self.files)
 
-    def __next__(self):
-        filepath = next(self.file_iter)
+    def __getitem__(self, idx):
+        filepath = self.files[idx]
         with open(filepath, 'rb') as f:
             data = f.read()
 
-        if self.parent_loader.compression == 'lz4':
+        if self.compression == 'lz4':
             data = lz4.frame.decompress(data)
+        elif self.compression == 'zstd':
+            dctx = zstd.ZstdDecompressor()
+            data = dctx.decompress(data)
         
         buffer = io.BytesIO(data)
+        # The loaded object is already a batch
         return torch.load(buffer)
 
 
@@ -142,7 +145,7 @@ class CachedDataLoader:
     epoch, and reads from that cache in all subsequent epochs. This allows for
     non-blocking, multi-process data loading and caching.
     """
-    def __init__(self, dataset, batch_size, cache_dir, num_workers=0, collate_fn=None, shuffle=True, force_recache=False, compression='lz4', pin_memory=False, persistent_workers=False, prefetch_factor=None, name=None):
+    def __init__(self, dataset, batch_size, cache_dir, num_workers=0, collate_fn=None, shuffle=True, force_recache=False, compression='zstd', pin_memory=False, persistent_workers=False, prefetch_factor=None, name=None):
         self.dataset = dataset
         self.batch_size = batch_size
         self.cache_dir = cache_dir
@@ -154,9 +157,12 @@ class CachedDataLoader:
         self.persistent_workers = persistent_workers
         self.prefetch_factor = prefetch_factor
         self.name = name
+        self.cached_files = [] # Attribute to hold the list of cached files
         
         if self.compression == 'lz4' and lz4 is None:
             raise ImportError("lz4 compression is selected, but the 'lz4' package is not installed. Please run 'pip install lz4'.")
+        if self.compression == 'zstd' and zstd is None:
+            raise ImportError("zstd compression is selected, but the 'zstandard' package is not installed. Please run 'pip install zstandard'.")
 
         self.metadata_path = os.path.join(self.cache_dir, 'metadata.json')
         self.num_source_batches = (len(self.dataset) + self.batch_size - 1) // self.batch_size
@@ -170,13 +176,15 @@ class CachedDataLoader:
         print('\nCachedDataLoader')
         if self.name:
             print(f"Name                : {self.name}")
-            print(f"Cache directory     : {self.cache_dir}")
         self.is_cache_valid = self._check_cache_validity()
         if self.is_cache_valid:
             print(f"Using existing cache: {self.cache_dir}")
+            # Scan the directory and cache the file list once
+            self.cached_files = [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith(".pt")]
             self._print_cache_stats()
             print()
         else:
+            print(f"Cache directory     : {self.cache_dir}")
             print('Cache not found or invalid. Will build on-the-fly during first epoch.')
 
     def _check_cache_validity(self):
@@ -201,23 +209,40 @@ class CachedDataLoader:
         return True
 
     def _print_cache_stats(self):
-        files = [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith(".pt")]
-        if not files:
+        # Use the cached file list for stats
+        if not self.cached_files:
             return
-        total_size = sum(os.path.getsize(f) for f in files)
-        num_files = len(files)
+        total_size = sum(os.path.getsize(f) for f in self.cached_files)
+        num_files = len(self.cached_files)
         print(f"Number of batches   : {num_files:,}")
         print(f"Size of each batch  : {format_bytes(total_size / num_files)}")
         print(f"Total size of cache : {format_bytes(total_size)}")
 
     def __iter__(self):
         if self.is_cache_valid:
-            return _CacheReadingIterator(self)
+            # If the file list hasn't been populated yet (i.e., this is the first
+            # epoch after the cache was just built), scan the directory now.
+            if not self.cached_files:
+                self.cached_files = [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith(".pt")]
+
+            # The cache is valid, create a fast dataset and loader to read from it.
+            # This re-uses the standard DataLoader for multi-worker performance.
+            cache_dataset = _CacheFileDataset(self.cached_files, self.compression)
+            
+            # When reading from cache, each "sample" is a full batch, so batch_size must be 1
+            # and collate_fn must be a simple pass-through.
+            return iter(DataLoader(
+                cache_dataset,
+                batch_size=1, # Each file is already a batch
+                collate_fn=lambda x: x[0], # Unpack the single-item list
+                num_workers=self.num_workers,
+                shuffle=self.shuffle,
+                pin_memory=self.pin_memory,
+                persistent_workers=self.persistent_workers if self.num_workers > 0 else False,
+                prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None
+            ))
         else:
-            # if self.name:
-            #     print(f'{self.name} cache not found or invalid. Building on-the-fly.')
-            # else:
-            #     print('Cache not found or invalid. Building on-the-fly.')
+            # The cache is not valid, return the iterator that builds it.
             return _CachingIterator(self)
 
     def __len__(self):

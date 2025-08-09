@@ -610,7 +610,7 @@ def main():
                                                 shuffle=True,
                                                 pin_memory=True,
                                                 persistent_workers=True,
-                                                # prefetch_factor=4,
+                                                prefetch_factor=4,
                                                 name='train_loader')
 
                 valid_cache_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
@@ -621,7 +621,7 @@ def main():
                                                 shuffle=False,
                                                 pin_memory=True,
                                                 persistent_workers=True,
-                                                # prefetch_factor=4,
+                                                prefetch_factor=4,
                                                 name='valid_loader')
             else:
                 # No on-disk caching
