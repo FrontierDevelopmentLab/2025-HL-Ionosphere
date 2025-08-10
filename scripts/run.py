@@ -554,6 +554,24 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
         ('jpld_unnormalized_rmse_high_lat', 'JPLD High Lat RMSE (TECU)'),
     ]
 
+    # Compute xlim for each column (metric) based on all data for that metric
+    col_xlims = []
+    for col, (key, _) in enumerate(metric_names):
+        all_data = []
+        for prefix in prefixes:
+            data = metrics_dict[prefix][key]
+            if len(data) > 0:
+                all_data.append(data)
+        if all_data:
+            all_data = np.concatenate(all_data)
+            xmin = np.nanmin(all_data)
+            xmax = np.nanmax(all_data)
+            # Add a small margin
+            xpad = 0.05 * (xmax - xmin) if xmax > xmin else 1.0
+            col_xlims.append((xmin - xpad, xmax + xpad))
+        else:
+            col_xlims.append((0, 1))
+
     for row, prefix in enumerate(prefixes):
         metrics = metrics_dict[prefix]
         color = prefix_colors.get(prefix, 'black')
@@ -563,6 +581,7 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
             if len(data) > 0:
                 ax.hist(data, bins=30, alpha=0.7, color=color, edgecolor='black')
                 ax.axvline(np.mean(data), color='gray', linestyle='dashed', linewidth=1, label='Mean')
+                ax.set_xlim(col_xlims[col])
                 if row == 0:
                     ax.set_title(title)
                 if col == 0:
@@ -571,7 +590,10 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
                     else:
                         ax.set_ylabel(f'{prefix} events')
                 ax.legend()
-                ax.ticklabel_format(style='plain', axis='x')
+                # Set plain formatting for x-axis, no scientific notation, no offset
+                ax.ticklabel_format(style='plain', axis='x', useOffset=False)
+                # Optionally, set a fixed number of decimals for readability
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.3f}'))
             else:
                 # No data: turn off axis
                 ax.axis('off')
@@ -707,7 +729,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2020-04-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -722,7 +744,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_2, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
