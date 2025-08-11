@@ -3,7 +3,7 @@ Monday todos:
 - Get wandb logging from Frank
 - Integrate quasi-dipole dataset from Halil
 - Get new cached dataset implementation from Gunes
-- Set large run using these new changes
+- Set large run using these new chang1es
 - Merge with main branch (our run.py)
 """
 
@@ -38,6 +38,7 @@ from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
 from dataset_sunmoongeometry import SunMoonGeometry
+from dataset_quasidipole import QuasiDipole
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb, omniweb_all_columns
 from dataset_set import SET, set_all_columns
@@ -45,6 +46,7 @@ from dataset_cached import CachedDataset
 from events import EventCatalog
 from plot_functions import save_gim_plot, save_gim_video, save_gim_video_comparison
 
+FIXED_CADENCE = 15 # mins
 
 matplotlib.use('Agg')
 def run_n_step_prediction(model, ground_truth_sequence, context_window, n_steps=4, return_init_context=False):
@@ -464,8 +466,9 @@ def main():
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
+    parser.add_argument('--quasidipole_dir', type=str, default='quasi_dipole', help='QuasiDipole dataset directory')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set"], default=["sunmoon", "omni", "celestrak", "set"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "omni", "celestrak", "set", "quasidipole"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -514,18 +517,13 @@ def main():
     print('Using device:', device)
 
     dataset_constructors = {
-        'sunmoon': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=None: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
-        # NOTE: OMNI dataset constructor from Gunes' code as reference
-        #  def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
-        'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
-        # NOTE: Celestrak dataset constructor from Gunes' code as reference
-        #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=180, date_exclusions=None, delta_minutes=15, column=['Kp', 'Ap']): # 180 minutes rewind default matching dataset cadence (NOTE: what is a good max value for rewind_minutes?)
-        'celestrak': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=['Kp', 'Ap']: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
-        # NOTE: SET dataset constructor from Gunes' code as reference
-        #  def __init__(self, file_name, date_start=None, date_end=None, normalize=True, rewind_minutes=1440, date_exclusions=None, column=set_all_columns, delta_minutes=15): # 50 minutes rewind defualt
-        'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=set_all_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15,column=column_),
-    }
-
+            'sunmoon': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=None: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
+            'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
+            'celestrak': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=['Kp', 'Ap']: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15, column=column_),
+            'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=set_all_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=15,column=column_),
+            'quasidipole': lambda date_start_=None, date_end_=None, date_exclusions_=None: QuasiDipole(data_dir=dataset_qd_dir, date_start=date_start_, date_end=date_end_, delta_minutes=FIXED_CADENCE),
+        }
+    
     # Set up the log file
     with Tee(log_file):
         print(description)
@@ -557,10 +555,9 @@ def main():
             dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
             dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
             dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
+            dataset_qd_dir = os.path.join(args.data_dir, args.quasidipole_dir)
             dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
             
-            # 'jpld': lambda date_exclusion: JPLD(gim_webdataset, date_start=date_start, date_end=date_end, normalize=True, date_exclusions=date_exclusion)
-
 
             datasets_jpld_valid = []
             date_exclusions = []
