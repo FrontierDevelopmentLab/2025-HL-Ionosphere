@@ -22,19 +22,25 @@ def get_encoder(in_channels=1, hidden_dim=16):
 def get_decoder(out_channels=1, hidden_dim=16):
     return nn.Sequential(
         nn.Unflatten(1, (hidden_dim, 12, 23)),
-        nn.ConvTranspose2d(hidden_dim, hidden_dim, 3, stride=2, padding=(1,0), output_padding=1),
+
+        nn.Upsample(size=(23, 45), mode='bilinear', align_corners=False),
+        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
         nn.BatchNorm2d(hidden_dim),
         nn.LeakyReLU(),
-        nn.ConvTranspose2d(hidden_dim, hidden_dim, 3, stride=2, padding=(2,3), output_padding=1),
+
+        nn.Upsample(size=(45, 90), mode='bilinear', align_corners=False),
+        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
         nn.BatchNorm2d(hidden_dim),
         nn.LeakyReLU(),
-        nn.ConvTranspose2d(hidden_dim, hidden_dim, 3, stride=2, padding=(2,3), output_padding=1),
+
+        nn.Upsample(size=(90, 180), mode='bilinear', align_corners=False),
+        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
         nn.BatchNorm2d(hidden_dim),
         nn.LeakyReLU(),
-        nn.ConvTranspose2d(hidden_dim, out_channels, 3, stride=2, padding=1, output_padding=1),
-        # nn.BatchNorm2d(out_channels),
-        # nn.LeakyReLU(),
-        )
+
+        nn.Upsample(size=(180, 360), mode='bilinear', align_corners=False),
+        nn.Conv2d(hidden_dim, out_channels, 3, stride=1, padding=1, padding_mode='circular'),
+    )
 
 
 class IonCastLSTM(nn.Module):
@@ -53,12 +59,19 @@ class IonCastLSTM(nn.Module):
 
         image_size = (180, 360)
         dummy_input = torch.zeros((1, input_channels, *image_size))
-        embedding_size = self.encoder(dummy_input).size(1)
+        embedding_dim = self.encoder(dummy_input).size(1)
 
-        self.lstm = nn.LSTM(input_size=embedding_size, hidden_size=lstm_dim, num_layers=num_layers, batch_first=True, dropout=dropout)
-        self.fc1 = nn.Linear(lstm_dim, embedding_size)
+        self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=lstm_dim, num_layers=num_layers, batch_first=True, dropout=dropout)
+        self.fc1 = nn.Linear(lstm_dim, embedding_dim)
         self.dropout1 = nn.Dropout(dropout)
         self.hidden = None
+
+        print('IonCastLSTM')
+        print('  input_channels:', input_channels)
+        print('  output_channels:', output_channels)
+        print('  hidden_dim:', hidden_dim)
+        print('  embedding_dim:', embedding_dim)
+        print('  lstm_dim:', lstm_dim)
 
     def init(self, batch_size=1):
         h = torch.zeros(self.num_layers, batch_size, self.lstm_dim)

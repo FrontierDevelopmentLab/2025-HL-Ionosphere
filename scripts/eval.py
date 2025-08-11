@@ -186,7 +186,7 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
             writer.append_data(frame)
 
 
-def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args):
+def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
     if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
         raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
     if date_start > date_end:
@@ -199,13 +199,15 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
         raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
 
-    print('Context start date : {}'.format(date_start))
-    print('Forecast start date: {}'.format(date_forecast_start))
-    print('End date           : {}'.format(date_end))
+    if verbose:
+        print('Context start date : {}'.format(date_start))
+        print('Forecast start date: {}'.format(date_forecast_start))
+        print('End date           : {}'.format(date_end))
 
     if date_end > date_forecast_start + datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes):
         date_end = date_forecast_start + datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes)
-        print('Adjusted end date  : {} ({} time steps after forecast start)'.format(date_end, args.forecast_max_time_steps))
+        if verbose:
+            print('Adjusted end date  : {} (limited by forecast_max_time_steps: {})'.format(date_end, args.forecast_max_time_steps))
 
     sequence_start_date = date_start
     sequence_end_date = date_end
@@ -217,7 +219,8 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     sequence_forecast_start_index = sequence_dates.index(date_forecast_start)
     sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
     sequence_forecast_dates = sequence_dates[sequence_forecast_start_index:]
-    print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
+    if verbose:
+        print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     sequence_data = dataset.get_sequence_data(sequence_dates)
     jpld_seq_data = sequence_data[0]  # Original data
@@ -263,7 +266,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     file_name = os.path.join(args.target_dir, f'{file_name_prefix}-long-horizon-event-{event_id}.mp4')
     title = f'Event: {event_id}, Kp={max_kp}'
 
-    jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
+    jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, True, args)
 
     jpld_rmse = torch.nn.functional.mse_loss(jpld_forecast, jpld_original, reduction='mean').sqrt().item()
     print('JPLD RMSE          : {}'.format(jpld_rmse))
@@ -436,7 +439,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
 
             try:
                 _, _, jpld_forecast_unnormalized, jpld_original_unnormalized, _, _, _, _, _ = \
-                    run_forecast(model, dataset, context_start_date, current_target_date, forecast_start_date, args)
+                    run_forecast(model, dataset, context_start_date, current_target_date, forecast_start_date, verbose=False, args=args)
 
                 forecast_frame = jpld_forecast_unnormalized[-1]
                 original_frame = jpld_original_unnormalized[-1]
