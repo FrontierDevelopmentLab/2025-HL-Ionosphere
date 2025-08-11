@@ -190,14 +190,14 @@ validation_events_4 = ['G0H3-201804202100',
 # Print the event catalog in a readable format
 if __name__ == "__main__":
     event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
-    # for event, val in event_catalog.items():
-    #     print(event, val['date_start'], val['date_end'], val['duration'], val['max_kp'], val['time_steps'])
+    for event, val in event_catalog.items():
+        print(event, val['date_start'], val['date_end'], val['duration'], val['max_kp'], val['time_steps'])
 
     # event_catalog = event_catalog.filter(max_kp_min=6.0, time_steps_min=60).unique().sample(15)
-    event_catalog = event_catalog.filter(prefix='G2', time_steps_min=60, date_end='2024-07-27').unique().sample(4)
-    for event_id, details in event_catalog.items():
-        print(f"{event_id} {details['date_start']} {details['date_end']} {details['duration']} {details['max_kp']} {details['time_steps']}")
-    print(len(event_catalog))
+    # event_catalog = event_catalog.filter(prefix='G2', time_steps_min=60, date_end='2024-07-27').unique().sample(4)
+    # for event_id, details in event_catalog.items():
+    #     print(f"{event_id} {details['date_start']} {details['date_end']} {details['duration']} {details['max_kp']} {details['time_steps']}")
+    # print(len(event_catalog))
 
     # print(event_catalog.keys())
     # print(event_catalog.ids())
