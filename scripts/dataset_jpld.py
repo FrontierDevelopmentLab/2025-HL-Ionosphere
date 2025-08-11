@@ -9,6 +9,7 @@ from glob import glob
 import gzip
 import xarray as xr
 import pickle
+import hashlib
 
 from dataset_webdataset import WebDataset
 
@@ -160,7 +161,11 @@ class JPLD(Dataset):
             date_exclusions_postfix = '_exclusions'
             for exclusion_date_start, exclusion_date_end in self.date_exclusions:
                 print('  {} - {}'.format(exclusion_date_start, exclusion_date_end))
-                date_exclusions_postfix += '__{}_{}'.format(exclusion_date_start.isoformat(), exclusion_date_end.isoformat())
+                date_exclusions_postfix += '{}_{}'.format(exclusion_date_start.isoformat(), exclusion_date_end.isoformat())
+
+            m = hashlib.md5()
+            m.update(date_exclusions_postfix.encode('utf-8'))
+            date_exclusions_postfix = '_' + m.hexdigest()                
         else:
             date_exclusions_postfix = ''
 
