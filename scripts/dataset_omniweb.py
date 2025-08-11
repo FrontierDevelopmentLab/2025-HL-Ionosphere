@@ -102,7 +102,7 @@ omniweb_all_columns_std_of_yeojohnson = torch.tensor([omniweb_std_of_yeojohnson[
 
 # ionosphere-data/omniweb_karman_2025
 class OMNIWeb(PandasDataset):
-    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15): # 50 minutes rewind defualt
+    def __init__(self, data_dir, date_start=None, date_end=None, normalize=True, rewind_minutes=50, date_exclusions=None, column=omniweb_all_columns, delta_minutes=15, return_as_image_size=None): # 50 minutes rewind defualt
         file_name_indices = os.path.join(data_dir, 'omniweb_indices_15min.csv')
         file_name_magnetic_field = os.path.join(data_dir, 'omniweb_magnetic_field_15min.csv')
         file_name_solar_wind = os.path.join(data_dir, 'omniweb_solar_wind_15min.csv')
@@ -135,7 +135,7 @@ class OMNIWeb(PandasDataset):
 
         self.column = column
 
-        super().__init__('OMNIWeb', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions)
+        super().__init__('OMNIWeb', data, self.column, delta_minutes, date_start, date_end, normalize, rewind_minutes, date_exclusions, return_as_image_size)
 
     def normalize_data(self, data): 
         if self.column == omniweb_all_columns:

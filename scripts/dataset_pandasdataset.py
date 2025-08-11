@@ -11,11 +11,19 @@ from warnings import warn
 
 
 class PandasDataset(Dataset):
-    def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None):
+    def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None, return_as_image_size=None):
         self.name = name
         self.data = data_frame
         self.column = column
         self.delta_minutes = delta_minutes
+
+        if return_as_image_size is not None:
+            if not isinstance(return_as_image_size, tuple):
+                raise ValueError('return_as_image_size must be a tuple, e.g. (180, 360)')
+            if len(return_as_image_size) != 2:
+                raise ValueError('return_as_image_size must be a tuple of length 2, e.g. (180, 360)')
+
+        self.return_as_image_size = return_as_image_size
 
         print('Delta minutes         : {:,}'.format(self.delta_minutes))
         self.normalize = normalize
@@ -23,6 +31,7 @@ class PandasDataset(Dataset):
         self.rewind_minutes = rewind_minutes
         print('Rewind minutes        : {:,}'.format(self.rewind_minutes))
         print('Columns               : {}'.format(self.column))
+        print('Return as image size  : {}'.format(self.return_as_image_size))
         print('Rows before processing: {:,}'.format(len(self.data)))
 
         self.data[column] = self.data[column].astype(np.float32)
@@ -158,6 +167,9 @@ class PandasDataset(Dataset):
         data = torch.tensor(data.values[0], dtype=torch.float32)
         if self.normalize:
             data = self.normalize_data(data)
+
+        if self.return_as_image_size is not None:
+            data = data.view(data.shape + (1, 1)).expand(-1, *self.return_as_image_size)
 
         return data
 
