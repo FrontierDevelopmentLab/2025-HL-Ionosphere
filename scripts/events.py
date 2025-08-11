@@ -169,11 +169,11 @@ validation_events_4 = ['G0H3-201804202100',
                        'G1H12-201310081800',
                        'G1H12-201908050600',
 
-                       'G2H3-201503170300',
-                       'G2H9-202405101500',
-                       'G2H9-201709072100',
+                       'G2H12-201509071500',
                        'G2H12-202203131200',
-                       
+                       'G2H12-201605081200',
+                       'G2H12-202302261800',
+
                        'G3H12-201510070300',
                        'G3H12-201503170600',
                        'G3H12-201207150300',
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     #     print(event, val['date_start'], val['date_end'], val['duration'], val['max_kp'], val['time_steps'])
 
     # event_catalog = event_catalog.filter(max_kp_min=6.0, time_steps_min=60).unique().sample(15)
-    event_catalog = event_catalog.filter(prefix='G5', time_steps_min=60, date_end='2024-07-27').unique().sample(4)
+    event_catalog = event_catalog.filter(prefix='G2', time_steps_min=60, date_end='2024-07-27').unique().sample(4)
     for event_id, details in event_catalog.items():
         print(f"{event_id} {details['date_start']} {details['date_end']} {details['duration']} {details['max_kp']} {details['time_steps']}")
     print(len(event_catalog))
