@@ -515,7 +515,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             video_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min.mp4')
 
             titles_top = [f'JPLD GIM TEC Ground Truth: {d}' for d in dates]
-            titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt}-min fixed lead time)' for d in dates]
+            titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt} mins fixed lead time)' for d in dates]
             
             #fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
             mean_rmse = np.mean(lead_time_errors[lt]['rmse'])
