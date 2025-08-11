@@ -29,7 +29,7 @@ from dataset_omniweb import OMNIWeb
 from dataset_set import SET
 from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
-from eval import eval_forecast, save_metrics
+from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time
 
 event_catalog = EventCatalog()
 
@@ -172,6 +172,8 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
+    parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
+    parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
     parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
@@ -431,10 +433,6 @@ def main():
                     valid_jpld_rmse_loss = 0.0
                     with torch.no_grad():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
-                            # if args.model_type == 'VAE1':
-                            #     jpld, _ = batch
-                            #     jpld = jpld.to(device)
-                            #     loss = model.loss(jpld)
                             if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
@@ -518,48 +516,9 @@ def main():
                     # Plot model eval results
                     model.eval()
                     with torch.no_grad():
-                        num_evals = args.num_evals
-
-                        # if args.model_type == 'VAE1':
-                        #     # Set random seed for reproducibility of evaluation samples across epochs
-                        #     rng_state = torch.get_rng_state()
-                        #     torch.manual_seed(args.seed)
-
-                        #     # Reconstruct a batch from the validation set
-                        #     jpld_orig, jpld_orig_dates = next(iter(valid_loader))
-                        #     jpld_orig = jpld_orig[:num_evals]
-                        #     jpld_orig_dates = jpld_orig_dates[:num_evals]
-
-                        #     jpld_orig = jpld_orig.to(device)
-                        #     jpld_recon, _, _ = model.forward(jpld_orig)
-                        #     jpld_orig_unnormalized = JPLD.unnormalize(jpld_orig)
-                        #     jpld_recon_unnormalized = JPLD.unnormalize(jpld_recon)
-
-                        #     # Sample a batch from the model
-                        #     jpld_sample = model.sample(n=num_evals)
-                        #     jpld_sample_unnormalized = JPLD.unnormalize(jpld_sample)
-                        #     jpld_sample_unnormalized = jpld_sample_unnormalized.clamp(0, 140)
-                        #     torch.set_rng_state(rng_state)
-                        #     # Resume with the original random state
-
-                        #     # Save plots
-                        #     for i in range(num_evals):
-                        #         date = jpld_orig_dates[i]
-                        #         date_str = datetime.datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M:%S')
-
-                        #         recon_original_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-original-{i+1:02d}.pdf')
-                        #         save_gim_plot(jpld_orig_unnormalized[i][0].cpu().numpy(), recon_original_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str}')
-
-                        #         recon_file = os.path.join(args.target_dir, f'{file_name_prefix}reconstruction-{i+1:02d}.pdf')
-                        #         save_gim_plot(jpld_recon_unnormalized[i][0].cpu().numpy(), recon_file, vmin=0, vmax=100, title=f'JPLD GIM TEC, {date_str} (Reconstruction)')
-
-                        #         sample_file = os.path.join(args.target_dir, f'{file_name_prefix}sample-{i+1:02d}.pdf')
-                        #         save_gim_plot(jpld_sample_unnormalized[i][0].cpu().numpy(), sample_file, vmin=0, vmax=100, title='JPLD GIM TEC (Sampled from model)')
-
-
                         if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                            # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                             saved_video_categories = set()
-
                             metric_event_id = []
                             metric_jpld_rmse = []
                             metric_jpld_mae = []
@@ -568,59 +527,56 @@ def main():
                             metric_jpld_unnormalized_rmse_low_lat = []
                             metric_jpld_unnormalized_rmse_mid_lat = []
                             metric_jpld_unnormalized_rmse_high_lat = []
+                            
                             if args.valid_event_id:
                                 for i, event_id in enumerate(args.valid_event_id):
+                                    print(f'\n--- Evaluating validation event: {event_id} ---')
                                     event_category = event_id.split('-')[0]
                                     save_video = False
                                     if event_category not in saved_video_categories:
                                         save_video = True
                                         saved_video_categories.add(event_category)
 
-                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat = eval_forecast(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
-                                    metric_event_id.append(event_id)
-                                    metric_jpld_rmse.append(jpld_rmse)
-                                    metric_jpld_mae.append(jpld_mae)
-                                    metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
-                                    metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
-                                    metric_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat)
-                                    metric_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat)
-                                    metric_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat)
+                                    # --- Long Horizon Evaluation ---
+                                    if args.eval_mode in ['long_horizon', 'all']:
+                                        
+                                        jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
+                                        metric_event_id.append(event_id)
+                                        metric_jpld_rmse.append(jpld_rmse)
+                                        metric_jpld_mae.append(jpld_mae)
+                                        metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse_val)
+                                        metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae_val)
+                                        metric_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat_val)
+                                        metric_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat_val)
+                                        metric_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat_val)
 
-                            # Save metrics to a CSV file
-                            metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-metrics')
-                            save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
+                                    # --- Fixed Lead Time Evaluation ---
+                                    if args.eval_mode in ['fixed_lead_time', 'all']:
+                                        eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
 
-                            saved_video_categories_seen = set()
-                            metric_seen_event_id = []
-                            metric_seen_jpld_rmse = []
-                            metric_seen_jpld_mae = []
-                            metric_seen_jpld_unnormalized_rmse = []
-                            metric_seen_jpld_unnormalized_mae = []
-                            metric_seen_jpld_unnormalized_rmse_low_lat = []
-                            metric_seen_jpld_unnormalized_rmse_mid_lat = []
-                            metric_seen_jpld_unnormalized_rmse_high_lat = []
+                            # Save metrics from long-horizon eval
+                            if metric_event_id:
+                                metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-long-horizon-metrics')
+                                save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
+
+                            # --- EVALUATION ON SEEN VALIDATION EVENTS ---
+                            saved_video_categories_seen = set()                            
                             if args.valid_event_seen_id:
                                 for i, event_id in enumerate(args.valid_event_seen_id):
-                                    # produce forecasts for some events in the training set (for debugging purposes)
                                     event_category = event_id.split('-')[0]
                                     save_video = False
                                     if event_category not in saved_video_categories_seen:
                                         save_video = True
-                                        saved_video_categories_seen.add(event_category)
-
-                                    jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat = eval_forecast(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
-                                    metric_seen_event_id.append(event_id)
-                                    metric_seen_jpld_rmse.append(jpld_rmse)
-                                    metric_seen_jpld_mae.append(jpld_mae)
-                                    metric_seen_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse)
-                                    metric_seen_jpld_unnormalized_mae.append(jpld_unnormalized_mae)
-                                    metric_seen_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat)
-                                    metric_seen_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat)
-                                    metric_seen_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat)
-
-                            # Save metrics to a CSV file
-                            seen_metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-seen-metrics')
-                            save_metrics(metric_seen_event_id, metric_seen_jpld_rmse, metric_seen_jpld_mae, metric_seen_jpld_unnormalized_rmse, metric_seen_jpld_unnormalized_mae, metric_seen_jpld_unnormalized_rmse_low_lat, metric_seen_jpld_unnormalized_rmse_mid_lat, metric_seen_jpld_unnormalized_rmse_high_lat, seen_metrics_file_prefix)
+                                        saved_video_categories_seen.add(event_category)                                    
+                                    print(f'\n--- Evaluating seen validation event: {event_id} ---')
+                                    # --- Long Horizon Evaluation (Seen) ---
+                                    if args.eval_mode in ['long_horizon', 'all']:
+                                        # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
+                                        eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
+                                    
+                                    # --- Fixed Lead Time Evaluation (Seen) ---
+                                    if args.eval_mode in ['fixed_lead_time', 'all']:
+                                        eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
 
                     # --- Best Model Checkpointing Logic ---
                     if valid_rmse_loss < best_valid_rmse:
@@ -638,45 +594,53 @@ def main():
                                 shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
-
             print('*** Testing mode\n')
 
-            model, _, _, _, _, _ = load_model(args.model_file, device)
+            if not args.model_file:
+                raise ValueError("A --model_file must be specified for testing mode.")
+            
+            print(f'Loading model from {args.model_file}')
+            model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
             model.eval()
             model = model.to(device)
 
-            dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-            dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
-            training_sequence_length = args.context_window + args.prediction_window
+            if not args.test_event_id:
+                print("No --test_event_id provided. Exiting test mode.")
+                return
 
             with torch.no_grad():
-                if args.test_event_id:
-                    for event_id in args.test_event_id:
-                        if event_id not in event_catalog:
-                            raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
-                        event = event_catalog[event_id]
-                        date_start, date_end, max_kp = event['date_start'], event['date_end'], event['max_kp']
-                        event_start = datetime.datetime.fromisoformat(date_start)
-                        event_end = datetime.datetime.fromisoformat(date_end)
+                for event_id in args.test_event_id:
+                    if event_id not in event_catalog:
+                        raise ValueError(f'Event ID {event_id} not found in EventCatalog')
+                    
+                    event = event_catalog[event_id]
+                    event_start = datetime.datetime.fromisoformat(event['date_start'])
+                    event_end = datetime.datetime.fromisoformat(event['date_end'])
+                    
+                    # Define a data window large enough for all evaluation types
+                    max_lead_time = max(args.lead_times) if args.lead_times else 0
+                    buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
+                    
+                    print(f'\n--- Preparing data for Event: {event_id} ---')
+                    dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
+                    dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                    dataset_celestrak = CelesTrak(os.path.join(args.data_dir, args.celestrak_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
+                    dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=buffer_start, date_end=event_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
+                    dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
+                    
+                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
 
-                        print('* Testing event ID: {}'.format(event_id))
-                        date_start = event_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
-                        # date_forecast_start = event_start
-                        date_end = event_end
+                    file_name_prefix = os.path.join(args.target_dir, 'test')
 
-                        dataset_jpld = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end)
-                        dataset_sunmoon = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                        dataset_celestrak = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
-                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=date_start, date_end=date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
-                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
-                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=training_sequence_length)
+                    if args.eval_mode in ['long_horizon', 'all']:
+                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
 
-                        file_name_prefix = os.path.join(args.target_dir, 'test')
-    
-                        eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
+                    if args.eval_mode in ['fixed_lead_time', 'all']:
+                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
 
-                        # Force cleanup
-                        del dataset_jpld, dataset
+                    # Force cleanup
+                    del dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set, dataset
+                    if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
         else:

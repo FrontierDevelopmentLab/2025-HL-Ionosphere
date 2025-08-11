@@ -16,6 +16,11 @@ from model_lstm import IonCastLSTM
 
 matplotlib.use('Agg')
 
+# Two main types of evaluation for an autoregressive model
+# Long-horizon forecast: Predicting a sequence of images starting from a given date, using the model's autoregressive capabilities.
+# Fixed-lead-time forecast: Predicting a single image at a specific future time, using the model's autoregressive capabilities.
+
+
 
 def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
     """
@@ -242,7 +247,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, args
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
 
-def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, save_video, args):
+def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, args):
     if event_id not in event_catalog:
         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
     event = event_catalog[event_id]
@@ -250,12 +255,12 @@ def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, sav
     event_start = datetime.datetime.fromisoformat(event_start)
     event_end = datetime.datetime.fromisoformat(event_end)
 
-    print('\n* Forecasting')
+    print('\n* Forecasting (Long Horizon)')
     print('Event ID           : {}'.format(event_id))
     date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
     date_forecast_start = event_start
     date_end = event_end
-    file_name = os.path.join(args.target_dir, f'{file_name_prefix}-event-{event_id}-kp{max_kp}-{date_start.strftime("%Y%m%d%H%M")}-{date_end.strftime("%Y%m%d%H%M")}.mp4')
+    file_name = os.path.join(args.target_dir, f'{file_name_prefix}-long-horizon-event-{event_id}.mp4')
     title = f'Event: {event_id}, Kp={max_kp}'
 
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, args)
@@ -300,7 +305,7 @@ def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, sav
     fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
     forecast_mins_ahead = ['{} mins'.format((j + 1) * 15) for j in range(sequence_prediction_window)]
     titles_original = [f'JPLD GIM TEC Ground Truth: {d}' for d in sequence_forecast_dates]
-    titles_forecast = [f'JPLD GIM TEC Forecast: {d} - Autoregressive rollout from {sequence_start_date} ({forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast_dates)]
+    titles_forecast = [f'JPLD GIM TEC Forecast: {d} (Long-horizon rollout from {sequence_start_date}, {forecast_mins_ahead[i]})' for i, d in enumerate(sequence_forecast_dates)]
 
     if save_video:
         save_gim_video_comparison(
@@ -338,6 +343,192 @@ def eval_forecast(model, dataset, event_catalog, event_id, file_name_prefix, sav
                 print(f'Saved channel {i} forecast video to {file_name_channel}')
     
     return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat
+
+
+def plot_lead_time_metrics(metrics, file_name):
+    """
+    Plots metrics (e.g., RMSE, MAE) as a function of lead time.
+    
+    Parameters:
+        metrics (dict): A dictionary where keys are lead times (int) and values are dicts
+                        containing 'mean' and 'std' for each metric.
+        file_name (str): The path to save the plot.
+    """
+    print(f'Saving lead time metrics plot to {file_name}')
+    
+    lead_times = sorted(metrics.keys())
+    
+    # Extract mean and std for RMSE and MAE
+    rmse_means = [metrics[lt]['rmse']['mean'] for lt in lead_times]
+    rmse_stds = [metrics[lt]['rmse']['std'] for lt in lead_times]
+    mae_means = [metrics[lt]['mae']['mean'] for lt in lead_times]
+    mae_stds = [metrics[lt]['mae']['std'] for lt in lead_times]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+    
+    # --- RMSE Plot ---
+    ax1.errorbar(lead_times, rmse_means, yerr=rmse_stds, fmt='-o', capsize=5, label='RMSE (TECU)')
+    ax1.set_ylabel('RMSE (TECU)')
+    ax1.set_title('Forecast RMSE vs. Lead Time')
+    ax1.grid(True, which='both', linestyle='--')
+    ax1.legend()
+
+    # --- MAE Plot ---
+    ax2.errorbar(lead_times, mae_means, yerr=mae_stds, fmt='-o', capsize=5, color='tab:green', label='MAE (TECU)')
+    ax2.set_xlabel('Lead Time (minutes)')
+    ax2.set_ylabel('MAE (TECU)')
+    ax2.set_title('Forecast MAE vs. Lead Time')
+    ax2.grid(True, which='both', linestyle='--')
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig(file_name)
+    plt.close()
+
+
+def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_times_minutes, file_name_prefix, save_video, args):
+    """
+    Evaluates an autoregressive model at fixed lead times over a specified event period.
+    """
+    if event_id not in event_catalog:
+        raise ValueError(f'Event ID {event_id} not found in EventCatalog')
+    event = event_catalog[event_id]
+    event_start = datetime.datetime.fromisoformat(event['date_start'])
+    event_end = datetime.datetime.fromisoformat(event['date_end'])
+    max_kp = event['max_kp']
+
+    # Limit the evaluation period by forecast_max_time_steps
+    max_duration = datetime.timedelta(minutes=args.forecast_max_time_steps * args.delta_minutes)
+    if event_end > event_start + max_duration:
+        original_event_end = event_end
+        event_end = event_start + max_duration
+        print(f'\nAdjusted evaluation period end to {event_end} (limited by forecast_max_time_steps: {args.forecast_max_time_steps})')
+        print(f'Original event end was: {original_event_end}')
+
+
+    print('\n* Forecasting (Fixed Lead Time)')
+    print(f'Event ID           : {event_id}')
+    print(f'Evaluation Period  : {event_start} to {event_end}')
+    print(f'Lead Times (mins)  : {lead_times_minutes}')
+
+    # Dictionaries to store errors and frames for each lead time
+    lead_time_errors = {lt: {'rmse': [], 'mae': []} for lt in lead_times_minutes}
+    lead_time_forecast_frames = {lt: [] for lt in lead_times_minutes}
+    lead_time_original_frames = {lt: [] for lt in lead_times_minutes}
+    lead_time_dates = {lt: [] for lt in lead_times_minutes}
+
+    # Iterate through each 15-minute step in the evaluation period
+    current_target_date = event_start
+    pbar = tqdm(total=(event_end - event_start).total_seconds() / (args.delta_minutes * 60) + 1, desc="Fixed-Lead-Time Eval")
+
+    while current_target_date <= event_end:
+        for lead_time in lead_times_minutes:
+            # Determine the forecast window for this specific target and lead time
+            forecast_start_date = current_target_date - datetime.timedelta(minutes=lead_time)
+            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+            
+            prediction_steps = lead_time // args.delta_minutes
+            if prediction_steps == 0:
+                continue
+            if prediction_steps > args.forecast_max_time_steps:
+                print(f'Skipping lead time {lead_time} minutes: exceeds forecast_max_time_steps ({args.forecast_max_time_steps} minutes)')
+                continue
+
+            try:
+                _, _, jpld_forecast_unnormalized, jpld_original_unnormalized, _, _, _, _, _ = \
+                    run_forecast(model, dataset, context_start_date, current_target_date, forecast_start_date, args)
+
+                forecast_frame = jpld_forecast_unnormalized[-1]
+                original_frame = jpld_original_unnormalized[-1]
+
+                rmse = torch.nn.functional.mse_loss(forecast_frame, original_frame).sqrt().item()
+                mae = torch.nn.functional.l1_loss(forecast_frame, original_frame).item()
+                
+                lead_time_errors[lead_time]['rmse'].append(rmse)
+                lead_time_errors[lead_time]['mae'].append(mae)
+
+                if save_video:
+                    lead_time_forecast_frames[lead_time].append(forecast_frame.cpu().numpy())
+                    lead_time_original_frames[lead_time].append(original_frame.cpu().numpy())
+                    lead_time_dates[lead_time].append(current_target_date)
+
+            except ValueError:
+                pass
+        
+        current_target_date += datetime.timedelta(minutes=args.delta_minutes)
+        pbar.update(1)
+    
+    pbar.close()
+
+    # --- Aggregate, Save, and Plot Metrics ---
+    final_metrics = {}
+    print("\n--- Fixed-Lead-Time Results ---")
+    print(f"{'Lead Time (min)':<20} {'Avg. RMSE (TECU)':<20} {'Std. RMSE (TECU)':<20} {'Avg. MAE (TECU)':<20} {'Std. MAE (TECU)':<20} {'Num. Samples':<15}")
+    
+    csv_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-metrics.csv')
+    csv_data = []
+
+    for lt in sorted(lead_time_errors.keys()):
+        rmse_errors = np.array(lead_time_errors[lt]['rmse'])
+        mae_errors = np.array(lead_time_errors[lt]['mae'])
+        num_samples = len(rmse_errors)
+
+        if num_samples > 0:
+            mean_rmse, std_rmse = np.mean(rmse_errors), np.std(rmse_errors)
+            mean_mae, std_mae = np.mean(mae_errors), np.std(mae_errors)
+            
+            final_metrics[lt] = {
+                'rmse': {'mean': mean_rmse, 'std': std_rmse},
+                'mae': {'mean': mean_mae, 'std': std_mae}
+            }
+            
+            print(f"{lt:<20} {mean_rmse:<20.4f} {std_rmse:<20.4f} {mean_mae:<20.4f} {std_mae:<20.4f} {num_samples:<15}")
+            csv_data.append([lt, mean_rmse, std_rmse, mean_mae, std_mae, num_samples])
+        else:
+            print(f"{lt:<20} {'N/A':<20} {'N/A':<20} {'N/A':<20} {'N/A':<20} {0:<15}")
+
+    print(f"\nSaving detailed metrics to {csv_file_name}")
+    with open(csv_file_name, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['lead_time_minutes', 'mean_rmse_tecu', 'std_rmse_tecu', 'mean_mae_tecu', 'std_mae_tecu', 'num_samples'])
+        writer.writerows(csv_data)
+
+    plot_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-plot.pdf')
+    if final_metrics:
+        plot_lead_time_metrics(final_metrics, plot_file_name)
+    
+    # --- Save Videos if Requested ---
+    if save_video:
+        print("\n--- Generating Fixed-Lead-Time Videos ---")
+        
+        for lt in sorted(lead_time_forecast_frames.keys()):
+            forecast_frames = lead_time_forecast_frames[lt]
+            original_frames = lead_time_original_frames[lt]
+            dates = lead_time_dates[lt]
+            
+            if not forecast_frames:
+                continue
+
+            video_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min.mp4')
+
+            titles_top = [f'JPLD GIM TEC Ground Truth: {d}' for d in dates]
+            titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt}-min fixed lead time)' for d in dates]
+            
+            #fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
+            mean_rmse = np.mean(lead_time_errors[lt]['rmse'])
+            mean_mae = np.mean(lead_time_errors[lt]['mae'])
+            fig_title = f"Event: {event_id} - Kp={max_kp} - RMSE: {mean_rmse:.2f} TECU - MAE: {mean_mae:.2f} TECU"
+
+            save_gim_video_comparison(
+                gim_sequence_top=np.array(original_frames),
+                gim_sequence_bottom=np.array(forecast_frames),
+                file_name=video_file_name,
+                vmin=0, vmax=120,
+                titles_top=titles_top,
+                titles_bottom=titles_bottom,
+                fig_title=fig_title
+            )
+
 
 def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat, file_name_prefix):
     # Save metrics to a CSV file
