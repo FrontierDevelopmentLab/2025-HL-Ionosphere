@@ -10,16 +10,22 @@ import torch
 import os
 import csv
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
+from model_graphcast import IonCastGNN
+from graphcast_utils import stack_features
 
 matplotlib.use('Agg')
 
 # Two main types of evaluation for an autoregressive model
 # Long-horizon forecast: Predicting a sequence of images starting from a given date, using the model's autoregressive capabilities.
 # Fixed-lead-time forecast: Predicting a single image at a specific future time, using the model's autoregressive capabilities.
-
 
 
 def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
@@ -187,8 +193,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
-        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
+    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastGNN):
+        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM or IonCastGNN')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -223,23 +229,47 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     sequence_data = dataset.get_sequence_data(sequence_dates)
-    jpld_seq_data = sequence_data[0]  # Original data
-    sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-    celestrak_seq_data = sequence_data[2]  # CelesTrak data
     device = next(model.parameters()).device
-    jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-    sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
-    celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
-    omniweb_seq_data = sequence_data[3]  # OMNIWeb data
-    omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
-    set_seq_data = sequence_data[4]  # SET data
-    set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
 
-    combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
+    if isinstance(model, (IonCastConvLSTM)) or isinstance(model, IonCastLSTM):
+        # The lines up until the concat is handled directly through graphcast_utils.stack_features
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        celestrak_seq_data = sequence_data[2]  # CelesTrak data
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+        celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
+        omniweb_seq_data = sequence_data[3]  # OMNIWeb data
+        omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
+        set_seq_data = sequence_data[4]  # SET data
+        set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
 
-    combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-    combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
-    combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
+
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+   
+    
+    if isinstance(model, IonCastGNN):
+        # Stack features will convert the sequence_dataset to output shape (B, T, C, H, W)
+        sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
+        combined_seq_batch = stack_features(sequence_data, batched=False)
+
+        combined_seq_batch = combined_seq_batch.to(device)
+        combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
+
+        # Output context & forecast for all time steps, shape (B, T, C, H, W)
+        combined_forecast = model.predict(
+            combined_seq_batch, # .predict will mask out values not in [:, :sequence_forecast_start_index, :, :, :]
+            context_window=sequence_forecast_start_index, # Context window is the number of time steps before the forecast start
+            train=False # Use ground truth forcings for t+1
+        )
+
+        combined_seq_data_original = combined_seq_batch[0, sequence_forecast_start_index:, :, :, :]  # Original data for forecast
+        combined_seq_data_forecast = combined_forecast[0, sequence_forecast_start_index:, :, :, :]  # Forecast data for forecast
+        combined_seq_data = combined_seq_batch[0, :, :, :, :]  # All data for the sequence
+
 
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]
@@ -261,6 +291,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     print('\n* Forecasting (Long Horizon)')
     print('Event ID           : {}'.format(event_id))
     date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+
     date_forecast_start = event_start
     date_end = event_end
     file_name = os.path.join(args.target_dir, f'{file_name_prefix}-long-horizon-event-{event_id}.mp4')
@@ -386,6 +417,17 @@ def plot_lead_time_metrics(metrics, file_name):
     
     plt.tight_layout()
     plt.savefig(file_name)
+
+    # Also save as PNG for W&B upload
+    if wandb is not None and wandb.run is not None:
+        png_file = file_name.replace('.pdf', '.png')
+        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+        plot_name = os.path.splitext(os.path.basename(file_name))[0]
+        try:
+            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+        except Exception as e:
+            print(f"Warning: Could not upload plot {plot_name}: {e}")
+
     plt.close()
 
 
@@ -425,12 +467,12 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
     pbar = tqdm(total=(event_end - event_start).total_seconds() / (args.delta_minutes * 60) + 1, desc="Fixed-Lead-Time Eval")
 
     while current_target_date <= event_end:
-        for lead_time in lead_times_minutes:
+        for lead_time in lead_times_minutes: # this func can take in a list of lead times to test.
             # Determine the forecast window for this specific target and lead time
             forecast_start_date = current_target_date - datetime.timedelta(minutes=lead_time)
-            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
+            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes) # [ context window | lead time ]
             
-            prediction_steps = lead_time // args.delta_minutes
+            prediction_steps = lead_time // args.delta_minutes 
             if prediction_steps == 0:
                 continue
             if prediction_steps > args.forecast_max_time_steps:
@@ -771,4 +813,15 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
                 ax.axis('off')
     plt.tight_layout()
     plt.savefig(file_name_hist)
+
+    # Also save as PNG for W&B upload
+    if wandb is not None and wandb.run is not None:
+        png_file = file_name_hist.replace('.pdf', '.png')
+        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+        plot_name = os.path.splitext(os.path.basename(file_name_hist))[0]
+        try:
+            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+        except Exception as e:
+            print(f"Warning: Could not upload plot {plot_name}: {e}")
+    
     plt.close()

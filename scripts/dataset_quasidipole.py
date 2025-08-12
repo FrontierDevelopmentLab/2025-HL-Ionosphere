@@ -6,11 +6,6 @@ import numpy as np
 import glob
 import os
 
-# directory = "/path/to/dir"
-
-
-
-
 class QuasiDipole(Dataset):
     def __init__(self, data_dir, date_start=None, date_end=None, delta_minutes=15, k = 1):
         self.data_dir = data_dir
