@@ -95,15 +95,24 @@ class IonCastLSTM(nn.Module):
         x = x.reshape(B * T, C, H, W)
         x = self.encoder(x)
         x = x.view(B, T, -1)
-        x = self.dropout1(x)
+        
+        # Encoder output -> LSTM
         x = torch.relu(x)
+        x = self.dropout1(x)
+
         x, self.hidden = self.lstm(x, self.hidden)
-        x = self.dropout1(x)
+
+        # LSTM output -> FC layer
         x = torch.relu(x)
+        x = self.dropout1(x)
+
         x = self.fc1(x)
         x = x.view(B * T, -1)
-        x = self.dropout1(x)
+
+        # FC output -> Decoder
         x = torch.relu(x)
+        x = self.dropout1(x)
+        
         x = self.decoder(x)
         x = x.view(B, T, self.output_channels, H, W)
         return x
