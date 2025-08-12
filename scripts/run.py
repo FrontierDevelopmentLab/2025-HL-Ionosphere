@@ -603,7 +603,7 @@ def main():
                             if args.valid_event_id:
                                 for i, event_id in enumerate(args.valid_event_id):
                                     print(f'\n--- Evaluating validation event: {event_id} ---')
-                                    event_category = event_id.split('-')[0]
+                                    event_category = event_id.split('-')[0][:2]
                                     save_video = False
                                     if event_category not in saved_video_categories:
                                         save_video = True
@@ -660,7 +660,7 @@ def main():
                             saved_video_categories_seen = set()                            
                             if args.valid_event_seen_id:
                                 for i, event_id in enumerate(args.valid_event_seen_id):
-                                    event_category = event_id.split('-')[0]
+                                    event_category = event_id.split('-')[0][:2]
                                     save_video = False
                                     if event_category not in saved_video_categories_seen:
                                         save_video = True
