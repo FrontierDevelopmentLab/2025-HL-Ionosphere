@@ -136,7 +136,7 @@ class _CacheFileDataset(Dataset):
         
         buffer = io.BytesIO(data)
         # The loaded object is already a batch
-        return torch.load(buffer)
+        return torch.load(buffer, weights_only=False)
 
 
 class CachedDataLoader:
