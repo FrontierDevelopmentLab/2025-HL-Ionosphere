@@ -10,6 +10,11 @@ import torch
 import os
 import csv
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
@@ -386,6 +391,17 @@ def plot_lead_time_metrics(metrics, file_name):
     
     plt.tight_layout()
     plt.savefig(file_name)
+    
+    # Also save as PNG for W&B upload
+    if wandb is not None and wandb.run is not None:
+        png_file = file_name.replace('.pdf', '.png')
+        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+        plot_name = os.path.splitext(os.path.basename(file_name))[0]
+        try:
+            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+        except Exception as e:
+            print(f"Warning: Could not upload plot {plot_name}: {e}")
+    
     plt.close()
 
 
@@ -515,7 +531,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             video_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min.mp4')
 
             titles_top = [f'JPLD GIM TEC Ground Truth: {d}' for d in dates]
-            titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt} mins fixed lead time)' for d in dates]
+            titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt}-min fixed lead time)' for d in dates]
             
             #fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
             mean_rmse = np.mean(lead_time_errors[lt]['rmse'])
@@ -776,4 +792,15 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
                 ax.axis('off')
     plt.tight_layout()
     plt.savefig(file_name_hist)
+    
+    # Also save as PNG for W&B upload
+    if wandb is not None and wandb.run is not None:
+        png_file = file_name_hist.replace('.pdf', '.png')
+        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+        plot_name = os.path.splitext(os.path.basename(file_name_hist))[0]
+        try:
+            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+        except Exception as e:
+            print(f"Warning: Could not upload plot {plot_name}: {e}")
+    
     plt.close()

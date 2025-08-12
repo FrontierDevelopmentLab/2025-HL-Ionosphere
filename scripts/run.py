@@ -15,6 +15,10 @@ import shutil
 import random
 
 from util import Tee
+try:
+    import wandb
+except ImportError:
+    wandb = None
 from util import set_random_seed
 from util import md5_hash_str
 # from model_vae import VAE1
@@ -194,7 +198,32 @@ def main():
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
     
+    # Weights & Biases options
+    parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
+    parser.add_argument('--wandb_project', type=str, default='Ionosphere')
+    parser.add_argument('--wandb_run_name', type=str, default=None)
+    parser.add_argument('--wandb_notes', type=str, default=None)
+    parser.add_argument('--wandb_tags', nargs='*', default=None)
+    parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
+
     args = parser.parse_args()
+
+    # --- W&B setup ---
+    if args.wandb_disabled:
+        args.wandb_mode = 'disabled'
+    wandb_config = vars(args).copy()
+    
+    # Initialize wandb
+    if args.wandb_mode != 'disabled' and wandb is not None:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            notes=args.wandb_notes,
+            tags=args.wandb_tags,
+            config=wandb_config,
+            dir=args.target_dir,
+            mode=args.wandb_mode
+        )
     args_cache_affecting_keys = {'data_dir', 
                                  'jpld_dir', 
                                  'celestrak_file_name', 
@@ -376,8 +405,9 @@ def main():
                 best_valid_rmse = float('inf')
 
                 model = model.to(device)
-
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            if wandb is not None and args.wandb_mode != 'disabled':
+                wandb.watch(model, log="all", log_freq=100)
             print('\nNumber of parameters: {:,}\n'.format(num_params))
             
             for epoch in range(epoch_start, args.epochs):
@@ -421,6 +451,16 @@ def main():
                         train_losses.append((iteration, loss))
                         train_rmse_losses.append((iteration, rmse))
                         train_jpld_rmse_losses.append((iteration, jpld_rmse))
+                        # W&B train metrics
+                        if wandb is not None and args.wandb_mode != 'disabled':
+                            wandb.log({
+                                'train/loss': float(loss),
+                                'train/rmse': float(rmse),
+                                'train/jpld_rmse': float(jpld_rmse),
+                                'train/epoch': epoch + 1,
+                                'train/iteration': iteration,
+                                'lr': optimizer.param_groups[0]['lr'],
+                            }, step=iteration)
                         pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss:.4f}, RMSE: {rmse:.4f}, JPLD RMSE: {jpld_rmse:.4f}')
                         pbar.update(1)
 
@@ -455,6 +495,15 @@ def main():
                     valid_rmse_losses.append((iteration, valid_rmse_loss))
                     valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
                     print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
+                    # W&B validation metrics
+                    if wandb is not None and args.wandb_mode != 'disabled':
+                        wandb.log({
+                            'valid/loss': float(valid_loss),
+                            'valid/rmse': float(valid_rmse_loss),
+                            'valid/jpld_rmse': float(valid_jpld_rmse_loss),
+                            'epoch': epoch + 1,
+                            'iteration': iteration
+                        }, step=iteration)
                     scheduler.step(valid_rmse_loss)
                     current_lr = optimizer.param_groups[0]['lr']
                     print(f'Current learning rate: {current_lr:.6f}')
@@ -491,6 +540,17 @@ def main():
                     plt.grid(True)
                     plt.legend()
                     plt.savefig(plot_file)
+                    
+                    # Also save as PNG for W&B upload
+                    if wandb is not None and args.wandb_mode != 'disabled':
+                        png_file = plot_file.replace('.pdf', '.png')
+                        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+                        plot_name = os.path.splitext(os.path.basename(plot_file))[0]
+                        try:
+                            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+                        except Exception as e:
+                            print(f"Warning: Could not upload plot {plot_name}: {e}")
+                    
                     plt.close()
 
                     # Plot RMSE losses
@@ -511,6 +571,17 @@ def main():
                     plt.grid(True)
                     plt.legend()
                     plt.savefig(plot_rmse_file)
+                    
+                    # Also save as PNG for W&B upload
+                    if wandb is not None and args.wandb_mode != 'disabled':
+                        png_file = plot_rmse_file.replace('.pdf', '.png')
+                        plt.savefig(png_file, dpi=300, bbox_inches='tight')
+                        plot_name = os.path.splitext(os.path.basename(plot_rmse_file))[0]
+                        try:
+                            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+                        except Exception as e:
+                            print(f"Warning: Could not upload plot {plot_name}: {e}")
+                    
                     plt.close()
 
                     # Plot model eval results
@@ -558,6 +629,31 @@ def main():
                             if metric_event_id:
                                 metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-long-horizon-metrics')
                                 save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
+                                
+                                # Upload evaluation metrics to W&B
+                                if wandb is not None and args.wandb_mode != 'disabled':
+                                    # Upload as structured data for W&B visualization
+                                    for i, event_id in enumerate(metric_event_id):
+                                        wandb.log({
+                                            f'eval_metrics/{event_id}/jpld_rmse': metric_jpld_rmse[i],
+                                            f'eval_metrics/{event_id}/jpld_mae': metric_jpld_mae[i],
+                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse': metric_jpld_unnormalized_rmse[i],
+                                            f'eval_metrics/{event_id}/jpld_unnormalized_mae': metric_jpld_unnormalized_mae[i],
+                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_low_lat': metric_jpld_unnormalized_rmse_low_lat[i],
+                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_mid_lat': metric_jpld_unnormalized_rmse_mid_lat[i],
+                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_high_lat': metric_jpld_unnormalized_rmse_high_lat[i],
+                                            'epoch': epoch + 1
+                                        })
+                                    
+                                    # Also upload CSV file as artifact if it exists
+                                    csv_file = f'{metrics_file_prefix}.csv'
+                                    if os.path.exists(csv_file):
+                                        try:
+                                            artifact = wandb.Artifact(f'validation_metrics_epoch_{epoch+1}', type='evaluation_metrics')
+                                            artifact.add_file(csv_file)
+                                            wandb.log_artifact(artifact)
+                                        except Exception as e:
+                                            print(f'Warning: Could not upload metrics CSV to W&B: {e}')
 
                             # --- EVALUATION ON SEEN VALIDATION EVENTS ---
                             saved_video_categories_seen = set()                            
@@ -590,7 +686,7 @@ def main():
                             shutil.rmtree(best_model_dir)
                         os.makedirs(best_model_dir, exist_ok=True)
                         for file in os.listdir(args.target_dir):
-                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
+                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.png') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
                                 shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
@@ -603,7 +699,6 @@ def main():
             model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
             model.eval()
             model = model.to(device)
-
             if not args.test_event_id:
                 print("No --test_event_id provided. Exiting test mode.")
                 return
@@ -646,6 +741,21 @@ def main():
         else:
             raise ValueError('Unknown mode: {}'.format(args.mode))
 
+        # Upload any remaining plots from best_model directory
+        if args.mode == 'train' and wandb is not None and args.wandb_mode != 'disabled':
+            best_model_dir = os.path.join(args.target_dir, 'best_model')
+            if os.path.exists(best_model_dir):
+                png_files = glob.glob(os.path.join(best_model_dir, '*.png'))
+                for png_file in png_files:
+                    try:
+                        plot_name = f"best_model/{os.path.splitext(os.path.basename(png_file))[0]}"
+                        wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+                    except Exception as e:
+                        print(f"Warning: Could not upload best model plot {png_file}: {e}")
+        
+        if wandb is not None and args.wandb_mode != 'disabled':
+            wandb.finish()
+        
         end_time = datetime.datetime.now()
         print('End time: {}'.format(end_time))
         print('Total duration: {}'.format(end_time - start_time))
@@ -657,3 +767,4 @@ if __name__ == '__main__':
 
 # Example
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
+
