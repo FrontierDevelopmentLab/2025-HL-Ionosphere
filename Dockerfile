@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /ioncast
+WORKDIR /ioncast/scripts
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -17,3 +17,4 @@ RUN pip install imageio[ffmpeg] --no-cache-dir
 RUN wget --show-progress https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/a_old_versions/de421.bsp -O de421.bsp
 
 COPY scripts/*.py ./
+COPY data/*.csv ../data/
