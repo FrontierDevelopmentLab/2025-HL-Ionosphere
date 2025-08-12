@@ -2,60 +2,69 @@ import torch
 import torch.nn as nn
 
 
-def get_encoder(in_channels=1, hidden_dim=16):
+def get_encoder(in_channels=1, base_channels=16):
         return nn.Sequential(
-            nn.Conv2d(in_channels, hidden_dim, 3, stride=2, padding=1, padding_mode='circular'),
-            nn.BatchNorm2d(hidden_dim),
+            # Input: (B, C, 180, 360)
+            nn.Conv2d(in_channels, base_channels, 3, stride=2, padding=1, padding_mode='circular'), # (B, bc, 90, 180)
+            nn.BatchNorm2d(base_channels),
             nn.LeakyReLU(),
-            nn.Conv2d(hidden_dim, hidden_dim, 3, stride=2, padding=1, padding_mode='circular'),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1, padding_mode='circular'), # (B, 2*bc, 45, 90)
+            nn.BatchNorm2d(base_channels * 2),
             nn.LeakyReLU(),
-            nn.Conv2d(hidden_dim, hidden_dim, 3, stride=2, padding=1, padding_mode='circular'),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(base_channels * 2, base_channels * 4, 3, stride=2, padding=1, padding_mode='circular'), # (B, 4*bc, 23, 45)
+            nn.BatchNorm2d(base_channels * 4),
             nn.LeakyReLU(),
-            nn.Conv2d(hidden_dim, hidden_dim, 3, stride=2, padding=1, padding_mode='circular'),
-            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(base_channels * 4, base_channels * 8, 3, stride=2, padding=1, padding_mode='circular'), # (B, 8*bc, 12, 23)
+            nn.BatchNorm2d(base_channels * 8),
+            nn.LeakyReLU(),
+            nn.Conv2d(base_channels * 8, base_channels * 16, 3, stride=2, padding=1, padding_mode='circular'), # (B, 16*bc, 6, 12)
+            nn.BatchNorm2d(base_channels * 16),
             nn.LeakyReLU(),
             nn.Flatten()
             )
 
-def get_decoder(out_channels=1, hidden_dim=16):
+def get_decoder(out_channels=1, base_channels=16):
     return nn.Sequential(
-        nn.Unflatten(1, (hidden_dim, 12, 23)),
+        nn.Unflatten(1, (base_channels * 16, 6, 12)),
+
+        nn.Upsample(size=(12, 23), mode='bilinear', align_corners=False),
+        nn.Conv2d(base_channels * 16, base_channels * 8, 3, stride=1, padding=1, padding_mode='circular'),
+        nn.BatchNorm2d(base_channels * 8),
+        nn.LeakyReLU(),
 
         nn.Upsample(size=(23, 45), mode='bilinear', align_corners=False),
-        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
-        nn.BatchNorm2d(hidden_dim),
+        nn.Conv2d(base_channels * 8, base_channels * 4, 3, stride=1, padding=1, padding_mode='circular'),
+        nn.BatchNorm2d(base_channels * 4),
         nn.LeakyReLU(),
 
         nn.Upsample(size=(45, 90), mode='bilinear', align_corners=False),
-        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
-        nn.BatchNorm2d(hidden_dim),
+        nn.Conv2d(base_channels * 4, base_channels * 2, 3, stride=1, padding=1, padding_mode='circular'),
+        nn.BatchNorm2d(base_channels * 2),
         nn.LeakyReLU(),
 
         nn.Upsample(size=(90, 180), mode='bilinear', align_corners=False),
-        nn.Conv2d(hidden_dim, hidden_dim, 3, stride=1, padding=1, padding_mode='circular'),
-        nn.BatchNorm2d(hidden_dim),
+        nn.Conv2d(base_channels * 2, base_channels, 3, stride=1, padding=1, padding_mode='circular'),
+        nn.BatchNorm2d(base_channels),
         nn.LeakyReLU(),
 
         nn.Upsample(size=(180, 360), mode='bilinear', align_corners=False),
-        nn.Conv2d(hidden_dim, out_channels, 3, stride=1, padding=1, padding_mode='circular'),
+        nn.Conv2d(base_channels, out_channels, 3, stride=1, padding=1, padding_mode='circular'),
     )
 
 
 class IonCastLSTM(nn.Module):
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=64, lstm_dim=1024, num_layers=2, context_window=4, dropout=0.25):
+    def __init__(self, input_channels=17, output_channels=17, base_channels=8, lstm_dim=1024, num_layers=2, context_window=4, dropout=0.25):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
-        self.hidden_dim = hidden_dim
+        self.base_channels = base_channels
         self.lstm_dim = lstm_dim
         self.num_layers = num_layers
         self.context_window = context_window
         self.dropout = dropout
 
-        self.encoder = get_encoder(input_channels, hidden_dim)
-        self.decoder = get_decoder(output_channels, hidden_dim)
+        self.encoder = get_encoder(input_channels, base_channels)
+        self.decoder = get_decoder(output_channels, base_channels)
 
         image_size = (180, 360)
         dummy_input = torch.zeros((1, input_channels, *image_size))
@@ -69,7 +78,7 @@ class IonCastLSTM(nn.Module):
         print('IonCastLSTM')
         print('  input_channels:', input_channels)
         print('  output_channels:', output_channels)
-        print('  hidden_dim:', hidden_dim)
+        print('  base_channels:', base_channels)
         print('  embedding_dim:', embedding_dim)
         print('  lstm_dim:', lstm_dim)
 

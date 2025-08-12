@@ -94,7 +94,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'best_valid_rmse': best_valid_rmse,
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
-            'model_hidden_dim': model.hidden_dim,
+            'model_base_channels': model.base_channels,
             'model_lstm_dim': model.lstm_dim,
             'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
@@ -125,13 +125,13 @@ def load_model(file_name, device):
     elif checkpoint['model'] == 'IonCastLSTM':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
-        model_hidden_dim = checkpoint['model_hidden_dim']
+        model_base_channels = checkpoint['model_base_channels']
         model_lstm_dim = checkpoint['model_lstm_dim']
         model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_dropout = checkpoint['model_dropout']
         model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
-                            hidden_dim=model_hidden_dim, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
+                            base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
                             context_window=model_context_window, dropout=model_dropout)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
