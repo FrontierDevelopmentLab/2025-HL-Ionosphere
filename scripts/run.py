@@ -31,7 +31,7 @@ from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
 from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time
 
-event_catalog = EventCatalog()
+event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
 
 matplotlib.use('Agg')
 

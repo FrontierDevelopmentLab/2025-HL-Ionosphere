@@ -728,6 +728,8 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
 
     # Compute xlim for each column (metric) based on all data for that metric
     col_xlims = []
+    col_bins = []
+    num_bins = 15
     for col, (key, _) in enumerate(metric_names):
         all_data = []
         for prefix in prefixes:
@@ -740,9 +742,12 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
             xmax = np.nanmax(all_data)
             # Add a small margin
             xpad = 0.05 * (xmax - xmin) if xmax > xmin else 1.0
-            col_xlims.append((xmin - xpad, xmax + xpad))
+            xlim = (xmin - xpad, xmax + xpad)
+            col_xlims.append(xlim)
+            col_bins.append(np.linspace(xlim[0], xlim[1], num_bins + 1))
         else:
             col_xlims.append((0, 1))
+            col_bins.append(np.linspace(0, 1, num_bins + 1))
 
     for row, prefix in enumerate(prefixes):
         metrics = metrics_dict[prefix]
@@ -751,7 +756,7 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
             ax = axes[row, col]
             data = metrics[key]
             if len(data) > 0:
-                ax.hist(data, bins=15, alpha=0.7, color=color, edgecolor='black')
+                ax.hist(data, bins=col_bins[col], alpha=0.7, color=color, edgecolor='black')
                 ax.axvline(np.mean(data), color='gray', linestyle='dashed', linewidth=1, label='Mean')
                 ax.set_xlim(col_xlims[col])
                 if row == 0:
