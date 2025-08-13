@@ -252,7 +252,8 @@ def main():
     args_cache_affecting_hash = md5_hash_str(str(args_cache_affecting))
 
     os.makedirs(args.target_dir, exist_ok=True)
-    log_file = os.path.join(args.target_dir, 'log.txt')
+    timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    log_file = os.path.join(args.target_dir, f'log-{timestamp}.txt')
 
     set_random_seed(args.seed)
     device = torch.device(args.device)
