@@ -156,6 +156,7 @@ class IonCastGNN(nn.Module):
         device="cpu",
         context_window: int = 2,
         forcing_channels: Optional[Any] = None,
+        residual_target: bool = False
     ):
 
         super().__init__()
@@ -209,7 +210,8 @@ class IonCastGNN(nn.Module):
         self.activation_fn = activation_fn
         self.norm_type = norm_type
         self.input_res = input_res  # Input resolution (height, width)
-        
+        self.residual_target = residual_target # Whether the prediction target is the residual of the input grid nodes
+
         # Our parameters
         self.device = device
         self.context_window = context_window
@@ -341,7 +343,19 @@ class IonCastGNN(nn.Module):
             future_forcing_context = masked_grid[:, context_window+step, forcing_channels, :, :].detach().clone() # [B, len(forcing_channels), H, W]
             model_input = torch.cat([context_window_grid, future_forcing_context], dim=1) # [B, C * context_window + len(forcing_channels), H, W]
 
-            step_output = self(model_input) # [B, C, H, W]
+            if self.residual_target:
+                prev_inputs = masked_grid[:, context_window + step - 1, :, :, :] # [B, C, H, W]
+                step_output = self(model_input) + prev_inputs # NOTE: that this may give somewhat nonsensical 
+                                                              # predictions along forcing dimensions potentially
+                                                              # but this shoulndt matter since we mask out and dont
+                                                              # use the predictions along the forcing channels either
+                                                              # in training or testing (reason i think its a bit wonky 
+                                                              # for forcings is because the prev inputs we sum up at ]
+                                                              # this step will correspond to the forcings at t-2 of what 
+                                                              # were predicting  for forcings as we include 1 timestep 
+                                                              # ahead in forcings as context)
+            else:
+                step_output = self(model_input) # [B, C, H, W]
             
             # only fill in the non-forcing channels, if no forcing channels are passed in, all channels are filled with model output autoregressively
             # Update masked_grid with the step output
@@ -443,7 +457,7 @@ class IonCastGNN(nn.Module):
     #     # For simplicity, we can return just the reconstruction loss
     #     return recon_loss, rmse, jpld_rmse
 
-    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2, residual_target=False): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
+    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
         """ 
         Computes the loss for the IonCastGraph model. 
         In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
@@ -475,10 +489,10 @@ class IonCastGNN(nn.Module):
         # pass in the mask list to predict from loss so that entries not used in the loss will be included in forcings
         output_grid = self.predict(grid_features, context_window=context_window, train=train_on_predicted_forcings) # shape (B, T, C, H, W) 
         
-        if residual_target:
-            temp_grids = torch.zeros_like(grid_features)
-            temp_grids[:, 1:, :, :, :] = torch.diff(grid_features, dim=1) # replace nodes with residuals, 
-            grid_features = temp_grids
+        # if residual_target:
+        #     temp_grids = torch.zeros_like(grid_features)
+        #     temp_grids[:, 1:, :, :, :] = torch.diff(grid_features, dim=1) # replace nodes with residuals, 
+        #     grid_features = temp_grids
 
         # Separate out the autoregressive targets and forcing targets
         # input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
@@ -525,6 +539,7 @@ class IonCastGNN(nn.Module):
             recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss 
 
         # Calculate RMSE and jpld_rmse
+        # TODO: Add latitude weighted RMSE, like GraphCast (see equation 20 in paper)
         with torch.no_grad():
             rmse = torch.sqrt(nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='mean'))
             jpld_rmse = torch.sqrt(nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='mean'))
