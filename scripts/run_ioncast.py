@@ -37,6 +37,9 @@ from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
 from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time
 
+# Import phycsicsnemo distributed training utilities
+from physicsnemo.distributed import DistributedManager
+
 # Set up wandb if available
 try:
     import wandb
@@ -49,6 +52,7 @@ FIXED_IMAGE_SIZE = (180, 360) # (lat, lon)
 
 matplotlib.use('Agg')
 
+# TODO: Add distributed Data Sampler to DataLoader, also update checkpoint files (save + load) to work with distributed training. Also to run will need to remove cuda:0 from the device list when running
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
     print('Saving model to {}'.format(file_name))
@@ -142,6 +146,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'input_res': model.input_res,  # Input resolution (height, width)
             'context_window': model.context_window,
             'forcing_channels': model.forcing_channels,  # List of forcing channels
+            'residual_target': model.residual_target,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -195,7 +200,9 @@ def load_model(file_name, device):
         aggregation = checkpoint.get("aggregation", "sum")  # Default to "sum" if not specified
         activation_fn = checkpoint.get("activation_fn", "silu")  # Default to "sum" if not specified
         norm_type = checkpoint.get("norm_type", "LayerNorm")  # Default to "LayerNorm" if not specified
-
+        residual_target = checkpoint.get("residual_target", False) # Default to False if not specified 
+                                                                   # (since if not saved means its an old 
+                                                                   # checkpoint before residual target implemented)
         model = IonCastGNN(
             mesh_level = mesh_level,
             input_res = input_res,
@@ -215,6 +222,7 @@ def load_model(file_name, device):
             context_window=context_window,
             device=device,
             forcing_channels=forcing_channels,  # List of forcing channels to predict
+            residual_target=residual_target
         )
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
@@ -283,12 +291,15 @@ def main():
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
     parser.add_argument('--mesh_level', type=int, default=6, help='Mesh level for IonCastGNN model')
+    parser.add_argument('--distributed', action='store_true', help='If set, use distributed training')
     # IonCastGNN options
     parser.add_argument('--processor_type', type=str, choices=['MessagePassing', 'GraphTransformer'], default='MessagePassing', help='Processor type for IonCastGNN model')
+    parser.add_argument('--khop_neighbors', type=int, default=32, help='Number of k-hop neighbors for IonCastGNN model. note only works with GraphTransformer processor_type')
     parser.add_argument('--ioncast_hidden_dim', type=int, default=512, help='Hidden dimension for IonCastGNN model')
     parser.add_argument('--ioncast_hidden_layers', type=int, default=1, help='Number of hidden layers for IonCastGNN model')
     parser.add_argument('--ioncast_processor_layers', type=int, default=6, help='Number of processor layers for IonCastGNN model')
     parser.add_argument('--train_on_predicted_forcings', action='store_true', help='Train on predicted forcings for IonCastGNN model')
+    parser.add_argument('--residual_target', action='store_true', help='Train on predicted forcings for IonCastGNN model')
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
     parser.add_argument('--wandb_project', type=str, default='Ionosphere')
@@ -356,9 +367,10 @@ def main():
     device = torch.device(args.device)
     print('Using device:', device)
 
-    dataset_constructors = {
+    dataset_constructors = { # NOTE: changed the default column value for omniweb. Gunes says to use the default parser arg for args.omniweb_columns
             'sunmoon': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=None: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
-            'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
+            'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=args.omniweb_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
+            # 'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             'celestrak': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=['Kp', 'Ap']: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=set_all_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE,column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             'quasidipole': lambda date_start_=None, date_end_=None, date_exclusions_=None: QuasiDipole(data_dir=dataset_qd_dir, date_start=date_start_, date_end=date_end_, delta_minutes=FIXED_CADENCE),
@@ -564,6 +576,18 @@ def main():
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
 
                 elif args.model_type == 'IonCastGNN':
+                    if args.distributed:
+                        # If distributed, we need to set the partition size based on the number of GPUs
+                        partition_size = 2
+
+                        # initialize distributed manager
+                        DistributedManager.initialize()
+                        dist = DistributedManager()
+
+                        print(f"Distributed Training: Rank: {dist.rank}, Device: {dist.device}")
+                    else:
+                        partition_size = 1
+
                     # Note: there are many more features that can be included in IonCastGNN; see iio
                     model = IonCastGNN(
                         mesh_level = args.mesh_level,
@@ -573,21 +597,36 @@ def main():
                         input_dim_mesh_nodes = 3, # GraphCast used 3: cos(lat), sin(lon), cos(lon)
                         input_dim_edges = 4, # GraphCast used 4: length(edge), vector diff b/w 3D positions of sender and receiver nodes in coordinate system of the reciever
                         processor_type = args.processor_type, # Options: "MessagePassing" or "GraphTransformer", i.e. GraphCast vs. GenCast
-                        khop_neighbors = 32,
+                        khop_neighbors = args.khop_neighbors,
                         num_attention_heads = 4,
                         processor_layers = args.ioncast_processor_layers,
                         hidden_layers = args.ioncast_hidden_layers,
                         hidden_dim = args.ioncast_hidden_dim,
+                        partition_size=partition_size, # Partition size for the GNN model
                         aggregation = "sum",
                         activation_fn = "silu",
                         norm_type = "LayerNorm",
                         context_window=args.context_window,
                         forcing_channels=forcing_channels, # Forcing channels to use in the model
+                        residual_target=args.residual_target,
                         device=device
                     )
 
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
+
+                if args.distributed:
+                    # distributed data parallel for multi-node training
+                    if dist.world_size > 1:
+                        model = torch.nn.parallel.DistributedDataParallel(
+                            model,
+                            device_ids=[dist.local_rank],
+                            output_device=dist.device,
+                            broadcast_buffers=dist.broadcast_buffers,
+                            find_unused_parameters=dist.find_unused_parameters,
+                            gradient_as_bucket_view=True,
+                            static_graph=True,
+                        )
 
                 # Set up optimizer and initialize loss
                 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -1043,10 +1082,21 @@ if __name__ == '__main__':
 
 # GraphCast examples:
 # Train
-# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-july-2015-2016-quasidipole-cache --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-07-01T00:00:00 --date_end 2016-07-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --cache_dir /home/jupyter/halil_debug/ioncastgnn-train-july-2015-2016-quasidipole-cache/cached_data/ --wandb_run_name IonCastGNN
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2018-big --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 8 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2018-01-01T00:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2018-big --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 8 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2018-01-01T20:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2016-more-pred --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2016-01-01T00:00:00 --mesh_level 6 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
 
 # Test on validation events (validation_events_1, validation_events_2, validation_events_3)
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-debugging-dipole-newrun --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 5 --device cuda:0 --valid_every_nth_epoch 1 --save_all_models --valid_event_id validation_events_1 --max_valid_samples 2 --cache_dir /home/jupyter/cached_data --wandb_run_name IonCastGNN
 
 # Test on a single short event
-# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-debugging-dipole-newrun --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 5 --device cuda:0 --valid_every_nth_epoch 1 --save_all_models --valid_event_id G0H12-201210100000 --max_valid_samples 2 --cache_dir /home/jupyter/cached_data --wandb_run_name IonCastGNN
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-debugging-dipole-newrun --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 5 --device cuda:0 --valid_every_nth_epoch 1 --save_all_models --valid_event_id G0H3-201704230900 --max_valid_samples 2 --cache_dir /home/jupyter/cached_data --wandb_run_name IonCastGNN
+
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2gpu --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-07-01T00:00:00 --date_end 2015-07-01T06:00:00 --mesh_level 6 --device cuda:0 --valid_event_id G0H3-201704230900 --valid_every_nth_epoch 1 --save_all_models --processor_type MessagePassing
+
+
+# 3 year run
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2018-big --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2018-01-01T00:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400
+
+# 1 year run longer prediction window
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2016-more-pred --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2016-01-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400
