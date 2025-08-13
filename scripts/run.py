@@ -197,7 +197,8 @@ def main():
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
-    parser.add_argument('--save_no_models', action='store_true', help='If set, do not save any models during training')
+    parser.add_argument('--no_save', action='store_true', help='If set, do not save any files during trainings')
+    parser.add_argument('--no_valid', action='store_true', help='If set, do not run validation during training')
     
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
@@ -467,7 +468,7 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                if (epoch+1) % args.valid_every_nth_epoch == 0:
+                if (not args.no_valid) and ((epoch+1) % args.valid_every_nth_epoch == 0):
                     print('*** Validation')
                     model.eval()
                     valid_loss = 0.0
@@ -517,7 +518,7 @@ def main():
                     if args.save_no_models:
                         print('Skipping model saving due to --save_no_models flag')
                     else:
-                        save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file)
+                        save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file,)
                     if not args.save_all_models:
                         # Remove previous model files if not saving all models
                         previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
