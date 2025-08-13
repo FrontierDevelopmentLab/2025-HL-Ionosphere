@@ -130,7 +130,8 @@ class JPLD(Dataset):
         self.rewind_minutes = rewind_minutes
         print('\nJPLD')
 
-        print('Directory  : {}'.format(self.data_dir))
+        print('Directory      : {}'.format(self.data_dir))
+        print('Rewind minutes : {}'.format(self.rewind_minutes))
         self.data = WebDataset(data_dir)
 
         self.date_start, self.date_end = self.find_date_range()
