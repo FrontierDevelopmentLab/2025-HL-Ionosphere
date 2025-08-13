@@ -188,22 +188,28 @@ class CachedDataLoader:
             print('Cache not found or invalid. Will build on-the-fly during first epoch.')
 
     def _check_cache_validity(self):
+        if not os.path.exists(self.cache_dir):
+            print("Cache directory does not exist.")
+            return False
         if not os.path.exists(self.metadata_path):
+            print("Metadata file not found.")
             return False
         try:
             with open(self.metadata_path, 'r') as f:
                 metadata = json.load(f)
             
             expected_batches = metadata.get('num_batches')
-            if not expected_batches: return False
+            if not expected_batches: 
+                print("Metadata file is missing 'num_batches'.")
+                return False
                 
             file_count = len([f for f in os.listdir(self.cache_dir) if f.endswith(".pt")])
             if file_count != expected_batches:
-                print(f"Cache file count mismatch (expected {expected_batches}, found {file_count}). Rebuilding.")
+                print(f"Cache file count mismatch (expected {expected_batches}, found {file_count}).")
                 return False
 
         except (IOError, json.JSONDecodeError):
-            print("Corrupted cache metadata. Rebuilding.")
+            print("Corrupted cache metadata.")
             return False
         
         return True
