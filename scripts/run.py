@@ -167,7 +167,7 @@ def main():
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    parser.add_argument('--date_start', type=str, default='2023-10-19T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
@@ -197,6 +197,7 @@ def main():
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
+    parser.add_argument('--save_no_models', action='store_true', help='If set, do not save any models during training')
     
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
@@ -513,7 +514,10 @@ def main():
 
                     # Save model
                     model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                    save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file)
+                    if args.save_no_models:
+                        print('Skipping model saving due to --save_no_models flag')
+                    else:
+                        save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file)
                     if not args.save_all_models:
                         # Remove previous model files if not saving all models
                         previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
