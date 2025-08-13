@@ -201,6 +201,7 @@ def main():
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
     parser.add_argument('--no_model_checkpoint', action='store_true', help='If set, do not save model checkpoints during training')
     parser.add_argument('--no_valid', action='store_true', help='If set, do not run validation during training')
+    parser.add_argument('--no_eval', action='store_true', help='If set, do not run evaluation (event videos etc.) during training, but do compute the validation loss')
     
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
@@ -514,189 +515,190 @@ def main():
                     current_lr = optimizer.param_groups[0]['lr']
                     print(f'Current learning rate: {current_lr:.6f}')
 
-                    file_name_prefix = f'epoch-{epoch + 1:02d}-'
+                    if not args.no_eval:
+                        file_name_prefix = f'epoch-{epoch + 1:02d}-'
 
-                    # Save model
-                    model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                    if args.no_model_checkpoint:
-                        print('Skipping model saving due to --no_model_checkpoint flag')
-                    else:
-                        save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file,)
-                    if not args.save_all_models:
-                        # Remove previous model files if not saving all models
-                        previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
-                        for previous_model_file in previous_model_files:
-                            if previous_model_file != model_file:
-                                print(f'Removing previous model file: {previous_model_file}')
-                                os.remove(previous_model_file)
+                        # Save model
+                        model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
+                        if args.no_model_checkpoint:
+                            print('Skipping model saving due to --no_model_checkpoint flag')
+                        else:
+                            save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file,)
+                        if not args.save_all_models:
+                            # Remove previous model files if not saving all models
+                            previous_model_files = glob.glob(os.path.join(args.target_dir, 'epoch-*-model.pth'))
+                            for previous_model_file in previous_model_files:
+                                if previous_model_file != model_file:
+                                    print(f'Removing previous model file: {previous_model_file}')
+                                    os.remove(previous_model_file)
 
-                    # Define consistent colors for plotting
-                    color_loss = 'tab:blue'
-                    color_rmse_all = 'tab:blue'  # Use blue for All Channels RMSE as requested
-                    color_rmse_jpld = 'tab:green'
+                        # Define consistent colors for plotting
+                        color_loss = 'tab:blue'
+                        color_rmse_all = 'tab:blue'  # Use blue for All Channels RMSE as requested
+                        color_rmse_jpld = 'tab:green'
 
-                    # Plot losses
-                    plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
-                    print(f'Saving loss plot to {plot_file}')
-                    plt.figure(figsize=(10, 5))
-                    if train_losses:
-                        plt.plot(*zip(*train_losses), label='Training', color=color_loss, alpha=0.5)
-                    if valid_losses:
-                        plt.plot(*zip(*valid_losses), label='Validation', color=color_loss, linestyle='--', marker='o')
-                    plt.xlabel('Iteration')
-                    plt.ylabel('MSE Loss')
-                    plt.yscale('log')
-                    plt.grid(True)
-                    plt.legend()
-                    plt.savefig(plot_file)
-                    
-                    # Also save as PNG for W&B upload
-                    if wandb is not None and args.wandb_mode != 'disabled':
-                        png_file = plot_file.replace('.pdf', '.png')
-                        plt.savefig(png_file, dpi=300, bbox_inches='tight')
-                        plot_name = os.path.splitext(os.path.basename(plot_file))[0]
-                        try:
-                            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
-                        except Exception as e:
-                            print(f"Warning: Could not upload plot {plot_name}: {e}")
-                    
-                    plt.close()
+                        # Plot losses
+                        plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
+                        print(f'Saving loss plot to {plot_file}')
+                        plt.figure(figsize=(10, 5))
+                        if train_losses:
+                            plt.plot(*zip(*train_losses), label='Training', color=color_loss, alpha=0.5)
+                        if valid_losses:
+                            plt.plot(*zip(*valid_losses), label='Validation', color=color_loss, linestyle='--', marker='o')
+                        plt.xlabel('Iteration')
+                        plt.ylabel('MSE Loss')
+                        plt.yscale('log')
+                        plt.grid(True)
+                        plt.legend()
+                        plt.savefig(plot_file)
+                        
+                        # Also save as PNG for W&B upload
+                        if wandb is not None and args.wandb_mode != 'disabled':
+                            png_file = plot_file.replace('.pdf', '.png')
+                            plt.savefig(png_file, dpi=300, bbox_inches='tight')
+                            plot_name = os.path.splitext(os.path.basename(plot_file))[0]
+                            try:
+                                wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+                            except Exception as e:
+                                print(f"Warning: Could not upload plot {plot_name}: {e}")
+                        
+                        plt.close()
 
-                    # Plot RMSE losses
-                    plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-rmse.pdf')
-                    print(f'Saving RMSE plot to {plot_rmse_file}')
-                    plt.figure(figsize=(10, 5))
-                    if train_rmse_losses:
-                        plt.plot(*zip(*train_rmse_losses), label='Training (All Channels)', color=color_rmse_all, alpha=0.5)
-                    if valid_rmse_losses:
-                        plt.plot(*zip(*valid_rmse_losses), label='Validation (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
-                    if train_jpld_rmse_losses:
-                        plt.plot(*zip(*train_jpld_rmse_losses), label='Training (JPLD)', color=color_rmse_jpld, alpha=0.5)
-                    if valid_jpld_rmse_losses:
-                        plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
-                    plt.xlabel('Iteration')
-                    plt.ylabel('RMSE')
-                    plt.yscale('log')
-                    plt.grid(True)
-                    plt.legend()
-                    plt.savefig(plot_rmse_file)
-                    
-                    # Also save as PNG for W&B upload
-                    if wandb is not None and args.wandb_mode != 'disabled':
-                        png_file = plot_rmse_file.replace('.pdf', '.png')
-                        plt.savefig(png_file, dpi=300, bbox_inches='tight')
-                        plot_name = os.path.splitext(os.path.basename(plot_rmse_file))[0]
-                        try:
-                            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
-                        except Exception as e:
-                            print(f"Warning: Could not upload plot {plot_name}: {e}")
-                    
-                    plt.close()
+                        # Plot RMSE losses
+                        plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-rmse.pdf')
+                        print(f'Saving RMSE plot to {plot_rmse_file}')
+                        plt.figure(figsize=(10, 5))
+                        if train_rmse_losses:
+                            plt.plot(*zip(*train_rmse_losses), label='Training (All Channels)', color=color_rmse_all, alpha=0.5)
+                        if valid_rmse_losses:
+                            plt.plot(*zip(*valid_rmse_losses), label='Validation (All Channels)', color=color_rmse_all, linestyle='--', marker='o')
+                        if train_jpld_rmse_losses:
+                            plt.plot(*zip(*train_jpld_rmse_losses), label='Training (JPLD)', color=color_rmse_jpld, alpha=0.5)
+                        if valid_jpld_rmse_losses:
+                            plt.plot(*zip(*valid_jpld_rmse_losses), label='Validation (JPLD)', color=color_rmse_jpld, linestyle='--', marker='o')
+                        plt.xlabel('Iteration')
+                        plt.ylabel('RMSE')
+                        plt.yscale('log')
+                        plt.grid(True)
+                        plt.legend()
+                        plt.savefig(plot_rmse_file)
+                        
+                        # Also save as PNG for W&B upload
+                        if wandb is not None and args.wandb_mode != 'disabled':
+                            png_file = plot_rmse_file.replace('.pdf', '.png')
+                            plt.savefig(png_file, dpi=300, bbox_inches='tight')
+                            plot_name = os.path.splitext(os.path.basename(plot_rmse_file))[0]
+                            try:
+                                wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
+                            except Exception as e:
+                                print(f"Warning: Could not upload plot {plot_name}: {e}")
+                        
+                        plt.close()
 
-                    # Plot model eval results
-                    model.eval()
-                    with torch.no_grad():
-                        if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
-                            # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
-                            saved_video_categories = set()
-                            metric_event_id = []
-                            metric_jpld_rmse = []
-                            metric_jpld_mae = []
-                            metric_jpld_unnormalized_rmse = []
-                            metric_jpld_unnormalized_mae = []
-                            metric_jpld_unnormalized_rmse_low_lat = []
-                            metric_jpld_unnormalized_rmse_mid_lat = []
-                            metric_jpld_unnormalized_rmse_high_lat = []
-                            
-                            if args.valid_event_id:
-                                for i, event_id in enumerate(args.valid_event_id):
-                                    print(f'\n--- Evaluating validation event: {event_id} ---')
-                                    event_category = event_id.split('-')[0][:2]
-                                    save_video = False
-                                    if event_category not in saved_video_categories:
-                                        save_video = True
-                                        saved_video_categories.add(event_category)
-
-                                    # --- Long Horizon Evaluation ---
-                                    if args.eval_mode in ['long_horizon', 'all']:
-                                        
-                                        jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
-                                        metric_event_id.append(event_id)
-                                        metric_jpld_rmse.append(jpld_rmse)
-                                        metric_jpld_mae.append(jpld_mae)
-                                        metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse_val)
-                                        metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae_val)
-                                        metric_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat_val)
-                                        metric_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat_val)
-                                        metric_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat_val)
-
-                                    # --- Fixed Lead Time Evaluation ---
-                                    if args.eval_mode in ['fixed_lead_time', 'all']:
-                                        eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
-
-                            # Save metrics from long-horizon eval
-                            if metric_event_id:
-                                metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-long-horizon-metrics')
-                                save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
+                        # Plot model eval results
+                        model.eval()
+                        with torch.no_grad():
+                            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                                # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
+                                saved_video_categories = set()
+                                metric_event_id = []
+                                metric_jpld_rmse = []
+                                metric_jpld_mae = []
+                                metric_jpld_unnormalized_rmse = []
+                                metric_jpld_unnormalized_mae = []
+                                metric_jpld_unnormalized_rmse_low_lat = []
+                                metric_jpld_unnormalized_rmse_mid_lat = []
+                                metric_jpld_unnormalized_rmse_high_lat = []
                                 
-                                # Upload evaluation metrics to W&B
-                                if wandb is not None and args.wandb_mode != 'disabled':
-                                    # Upload as structured data for W&B visualization
-                                    for i, event_id in enumerate(metric_event_id):
-                                        wandb.log({
-                                            f'eval_metrics/{event_id}/jpld_rmse': metric_jpld_rmse[i],
-                                            f'eval_metrics/{event_id}/jpld_mae': metric_jpld_mae[i],
-                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse': metric_jpld_unnormalized_rmse[i],
-                                            f'eval_metrics/{event_id}/jpld_unnormalized_mae': metric_jpld_unnormalized_mae[i],
-                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_low_lat': metric_jpld_unnormalized_rmse_low_lat[i],
-                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_mid_lat': metric_jpld_unnormalized_rmse_mid_lat[i],
-                                            f'eval_metrics/{event_id}/jpld_unnormalized_rmse_high_lat': metric_jpld_unnormalized_rmse_high_lat[i],
-                                            'epoch': epoch + 1
-                                        })
-                                    
-                                    # Also upload CSV file as artifact if it exists
-                                    csv_file = f'{metrics_file_prefix}.csv'
-                                    if os.path.exists(csv_file):
-                                        try:
-                                            artifact = wandb.Artifact(f'validation_metrics_epoch_{epoch+1}', type='evaluation_metrics')
-                                            artifact.add_file(csv_file)
-                                            wandb.log_artifact(artifact)
-                                        except Exception as e:
-                                            print(f'Warning: Could not upload metrics CSV to W&B: {e}')
+                                if args.valid_event_id:
+                                    for i, event_id in enumerate(args.valid_event_id):
+                                        print(f'\n--- Evaluating validation event: {event_id} ---')
+                                        event_category = event_id.split('-')[0][:2]
+                                        save_video = False
+                                        if event_category not in saved_video_categories:
+                                            save_video = True
+                                            saved_video_categories.add(event_category)
 
-                            # --- EVALUATION ON SEEN VALIDATION EVENTS ---
-                            saved_video_categories_seen = set()                            
-                            if args.valid_event_seen_id:
-                                for i, event_id in enumerate(args.valid_event_seen_id):
-                                    event_category = event_id.split('-')[0][:2]
-                                    save_video = False
-                                    if event_category not in saved_video_categories_seen:
-                                        save_video = True
-                                        saved_video_categories_seen.add(event_category)                                    
-                                    print(f'\n--- Evaluating seen validation event: {event_id} ---')
-                                    # --- Long Horizon Evaluation (Seen) ---
-                                    if args.eval_mode in ['long_horizon', 'all']:
-                                        # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
-                                        eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
-                                    
-                                    # --- Fixed Lead Time Evaluation (Seen) ---
-                                    if args.eval_mode in ['fixed_lead_time', 'all']:
-                                        eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
+                                        # --- Long Horizon Evaluation ---
+                                        if args.eval_mode in ['long_horizon', 'all']:
+                                            
+                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
+                                            metric_event_id.append(event_id)
+                                            metric_jpld_rmse.append(jpld_rmse)
+                                            metric_jpld_mae.append(jpld_mae)
+                                            metric_jpld_unnormalized_rmse.append(jpld_unnormalized_rmse_val)
+                                            metric_jpld_unnormalized_mae.append(jpld_unnormalized_mae_val)
+                                            metric_jpld_unnormalized_rmse_low_lat.append(jpld_unnormalized_rmse_low_lat_val)
+                                            metric_jpld_unnormalized_rmse_mid_lat.append(jpld_unnormalized_rmse_mid_lat_val)
+                                            metric_jpld_unnormalized_rmse_high_lat.append(jpld_unnormalized_rmse_high_lat_val)
 
-                    # --- Best Model Checkpointing Logic ---
-                    if valid_rmse_loss < best_valid_rmse:
-                        best_valid_rmse = valid_rmse_loss
-                        print(f'\n*** New best validation RMSE: {best_valid_rmse:.4f}***\n')
-                        # copy model checkpoint and all plots/videos to the best model directory
-                        best_model_dir = os.path.join(args.target_dir, 'best_model')
-                        print(f'Saving best model to {best_model_dir}')
-                        # delete the previous best model directory if it exists
-                        if os.path.exists(best_model_dir):
-                            shutil.rmtree(best_model_dir)
-                        os.makedirs(best_model_dir, exist_ok=True)
-                        for file in os.listdir(args.target_dir):
-                            if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.png') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
-                                shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
+                                        # --- Fixed Lead Time Evaluation ---
+                                        if args.eval_mode in ['fixed_lead_time', 'all']:
+                                            eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
+
+                                # Save metrics from long-horizon eval
+                                if metric_event_id:
+                                    metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-long-horizon-metrics')
+                                    save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
+                                    
+                                    # Upload evaluation metrics to W&B
+                                    if wandb is not None and args.wandb_mode != 'disabled':
+                                        # Upload as structured data for W&B visualization
+                                        for i, event_id in enumerate(metric_event_id):
+                                            wandb.log({
+                                                f'eval_metrics/{event_id}/jpld_rmse': metric_jpld_rmse[i],
+                                                f'eval_metrics/{event_id}/jpld_mae': metric_jpld_mae[i],
+                                                f'eval_metrics/{event_id}/jpld_unnormalized_rmse': metric_jpld_unnormalized_rmse[i],
+                                                f'eval_metrics/{event_id}/jpld_unnormalized_mae': metric_jpld_unnormalized_mae[i],
+                                                f'eval_metrics/{event_id}/jpld_unnormalized_rmse_low_lat': metric_jpld_unnormalized_rmse_low_lat[i],
+                                                f'eval_metrics/{event_id}/jpld_unnormalized_rmse_mid_lat': metric_jpld_unnormalized_rmse_mid_lat[i],
+                                                f'eval_metrics/{event_id}/jpld_unnormalized_rmse_high_lat': metric_jpld_unnormalized_rmse_high_lat[i],
+                                                'epoch': epoch + 1
+                                            })
+                                        
+                                        # Also upload CSV file as artifact if it exists
+                                        csv_file = f'{metrics_file_prefix}.csv'
+                                        if os.path.exists(csv_file):
+                                            try:
+                                                artifact = wandb.Artifact(f'validation_metrics_epoch_{epoch+1}', type='evaluation_metrics')
+                                                artifact.add_file(csv_file)
+                                                wandb.log_artifact(artifact)
+                                            except Exception as e:
+                                                print(f'Warning: Could not upload metrics CSV to W&B: {e}')
+
+                                # --- EVALUATION ON SEEN VALIDATION EVENTS ---
+                                saved_video_categories_seen = set()                            
+                                if args.valid_event_seen_id:
+                                    for i, event_id in enumerate(args.valid_event_seen_id):
+                                        event_category = event_id.split('-')[0][:2]
+                                        save_video = False
+                                        if event_category not in saved_video_categories_seen:
+                                            save_video = True
+                                            saved_video_categories_seen.add(event_category)                                    
+                                        print(f'\n--- Evaluating seen validation event: {event_id} ---')
+                                        # --- Long Horizon Evaluation (Seen) ---
+                                        if args.eval_mode in ['long_horizon', 'all']:
+                                            # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
+                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
+                                        
+                                        # --- Fixed Lead Time Evaluation (Seen) ---
+                                        if args.eval_mode in ['fixed_lead_time', 'all']:
+                                            eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
+
+                        # --- Best Model Checkpointing Logic ---
+                        if valid_rmse_loss < best_valid_rmse:
+                            best_valid_rmse = valid_rmse_loss
+                            print(f'\n*** New best validation RMSE: {best_valid_rmse:.4f}***\n')
+                            # copy model checkpoint and all plots/videos to the best model directory
+                            best_model_dir = os.path.join(args.target_dir, 'best_model')
+                            print(f'Saving best model to {best_model_dir}')
+                            # delete the previous best model directory if it exists
+                            if os.path.exists(best_model_dir):
+                                shutil.rmtree(best_model_dir)
+                            os.makedirs(best_model_dir, exist_ok=True)
+                            for file in os.listdir(args.target_dir):
+                                if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.png') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
+                                    shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
             print('*** Testing mode\n')
