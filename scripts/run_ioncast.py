@@ -272,7 +272,7 @@ def main():
     parser.add_argument('--valid_event_id', nargs='*', default=validation_events_2, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='*', default=['G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=0, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
@@ -1012,10 +1012,10 @@ def main():
                         eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
-                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
+                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, True, args)
 
                     # Force cleanup
-                    del dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set, dataset
+                    del dataset_jpld, dataset
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
         else:
