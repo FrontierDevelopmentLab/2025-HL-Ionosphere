@@ -10,22 +10,16 @@ import torch
 import os
 import csv
 
-try:
-    import wandb
-except ImportError:
-    wandb = None
-
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
-from model_graphcast import IonCastGNN
-from graphcast_utils import stack_features
 
 matplotlib.use('Agg')
 
 # Two main types of evaluation for an autoregressive model
 # Long-horizon forecast: Predicting a sequence of images starting from a given date, using the model's autoregressive capabilities.
 # Fixed-lead-time forecast: Predicting a single image at a specific future time, using the model's autoregressive capabilities.
+
 
 
 def plot_global_ionosphere_map(ax, image, cmap='jet', vmin=None, vmax=None, title=None):
@@ -193,8 +187,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastGNN):
-        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM or IonCastGNN')
+    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
+        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -229,47 +223,23 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     sequence_data = dataset.get_sequence_data(sequence_dates)
+    jpld_seq_data = sequence_data[0]  # Original data
+    sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+    celestrak_seq_data = sequence_data[2]  # CelesTrak data
     device = next(model.parameters()).device
+    jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+    sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+    celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
+    omniweb_seq_data = sequence_data[3]  # OMNIWeb data
+    omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
+    set_seq_data = sequence_data[4]  # SET data
+    set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
 
-    if isinstance(model, (IonCastConvLSTM)) or isinstance(model, IonCastLSTM):
-        # The lines up until the concat is handled directly through graphcast_utils.stack_features
-        jpld_seq_data = sequence_data[0]  # Original data
-        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-        celestrak_seq_data = sequence_data[2]  # CelesTrak data
-        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
-        celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
-        omniweb_seq_data = sequence_data[3]  # OMNIWeb data
-        omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
-        set_seq_data = sequence_data[4]  # SET data
-        set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
+    combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
 
-        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
-
-        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
-        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-   
-    
-    if isinstance(model, IonCastGNN):
-        # Stack features will convert the sequence_dataset to output shape (B, T, C, H, W)
-        sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
-        combined_seq_batch = stack_features(sequence_data, batched=False)
-
-        combined_seq_batch = combined_seq_batch.to(device)
-        combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
-
-        # Output context & forecast for all time steps, shape (B, T, C, H, W)
-        combined_forecast = model.predict(
-            combined_seq_batch, # .predict will mask out values not in [:, :sequence_forecast_start_index, :, :, :]
-            context_window=sequence_forecast_start_index, # Context window is the number of time steps before the forecast start
-            train=False # Use ground truth forcings for t+1
-        )
-
-        combined_seq_data_original = combined_seq_batch[0, sequence_forecast_start_index:, :, :, :]  # Original data for forecast
-        combined_seq_data_forecast = combined_forecast[0, sequence_forecast_start_index:, :, :, :]  # Forecast data for forecast
-        combined_seq_data = combined_seq_batch[0, :, :, :, :]  # All data for the sequence
-
+    combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+    combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+    combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]
@@ -291,7 +261,6 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     print('\n* Forecasting (Long Horizon)')
     print('Event ID           : {}'.format(event_id))
     date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-
     date_forecast_start = event_start
     date_end = event_end
     file_name = os.path.join(args.target_dir, f'{file_name_prefix}-long-horizon-event-{event_id}.mp4')
@@ -418,16 +387,6 @@ def plot_lead_time_metrics(metrics, file_name):
     plt.tight_layout()
     plt.savefig(file_name)
 
-    # Also save as PNG for W&B upload
-    if wandb is not None and wandb.run is not None:
-        png_file = file_name.replace('.pdf', '.png')
-        plt.savefig(png_file, dpi=300, bbox_inches='tight')
-        plot_name = os.path.splitext(os.path.basename(file_name))[0]
-        try:
-            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
-        except Exception as e:
-            print(f"Warning: Could not upload plot {plot_name}: {e}")
-
     plt.close()
 
 
@@ -467,12 +426,12 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
     pbar = tqdm(total=(event_end - event_start).total_seconds() / (args.delta_minutes * 60) + 1, desc="Fixed-Lead-Time Eval")
 
     while current_target_date <= event_end:
-        for lead_time in lead_times_minutes: # this func can take in a list of lead times to test.
+        for lead_time in lead_times_minutes:
             # Determine the forecast window for this specific target and lead time
             forecast_start_date = current_target_date - datetime.timedelta(minutes=lead_time)
-            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes) # [ context window | lead time ]
+            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes)
             
-            prediction_steps = lead_time // args.delta_minutes 
+            prediction_steps = lead_time // args.delta_minutes
             if prediction_steps == 0:
                 continue
             if prediction_steps > args.forecast_max_time_steps:
@@ -532,15 +491,14 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
         else:
             print(f"{lt:<20} {'N/A':<20} {'N/A':<20} {'N/A':<20} {'N/A':<20} {0:<15}")
 
-    print(f"\nSaving detailed metrics to {csv_file_name}")
-    with open(csv_file_name, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['lead_time_minutes', 'mean_rmse_tecu', 'std_rmse_tecu', 'mean_mae_tecu', 'std_mae_tecu', 'num_samples'])
-        writer.writerows(csv_data)
+    # CSV file creation disabled for fixed-lead-time evaluation
+    # print(f"\nSaving detailed metrics to {csv_file_name}")
+    # with open(csv_file_name, 'w', newline='') as f:
+    #     writer = csv.writer(f)
+    #     writer.writerow(['lead_time_minutes', 'mean_rmse_tecu', 'std_rmse_tecu', 'mean_mae_tecu', 'std_mae_tecu', 'num_samples'])
+    #     writer.writerows(csv_data)
 
-    plot_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-plot.pdf')
-    if final_metrics:
-        plot_lead_time_metrics(final_metrics, plot_file_name)
+    # Per-event plot generation disabled - metrics will be aggregated across all events
     
     # --- Save Videos if Requested ---
     if save_video:
@@ -573,6 +531,9 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
                 titles_bottom=titles_bottom,
                 fig_title=fig_title
             )
+    
+    # Return metrics data for aggregation
+    return lead_time_errors, event_id
 
 
 def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat, file_name_prefix):
@@ -770,6 +731,8 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
 
     # Compute xlim for each column (metric) based on all data for that metric
     col_xlims = []
+    col_bins = []
+    num_bins = 15
     for col, (key, _) in enumerate(metric_names):
         all_data = []
         for prefix in prefixes:
@@ -782,9 +745,12 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
             xmax = np.nanmax(all_data)
             # Add a small margin
             xpad = 0.05 * (xmax - xmin) if xmax > xmin else 1.0
-            col_xlims.append((xmin - xpad, xmax + xpad))
+            xlim = (xmin - xpad, xmax + xpad)
+            col_xlims.append(xlim)
+            col_bins.append(np.linspace(xlim[0], xlim[1], num_bins + 1))
         else:
             col_xlims.append((0, 1))
+            col_bins.append(np.linspace(0, 1, num_bins + 1))
 
     for row, prefix in enumerate(prefixes):
         metrics = metrics_dict[prefix]
@@ -793,7 +759,7 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
             ax = axes[row, col]
             data = metrics[key]
             if len(data) > 0:
-                ax.hist(data, bins=15, alpha=0.7, color=color, edgecolor='black')
+                ax.hist(data, bins=col_bins[col], alpha=0.7, color=color, edgecolor='black')
                 ax.axvline(np.mean(data), color='gray', linestyle='dashed', linewidth=1, label='Mean')
                 ax.set_xlim(col_xlims[col])
                 if row == 0:
@@ -814,14 +780,185 @@ def save_metrics(event_id, jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unn
     plt.tight_layout()
     plt.savefig(file_name_hist)
 
-    # Also save as PNG for W&B upload
-    if wandb is not None and wandb.run is not None:
-        png_file = file_name_hist.replace('.pdf', '.png')
-        plt.savefig(png_file, dpi=300, bbox_inches='tight')
-        plot_name = os.path.splitext(os.path.basename(file_name_hist))[0]
-        try:
-            wandb.log({f"plots/{plot_name}": wandb.Image(png_file)})
-        except Exception as e:
-            print(f"Warning: Could not upload plot {plot_name}: {e}")
-    
     plt.close()
+
+
+def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_ids, file_name_prefix):
+    """
+    Aggregate metrics from multiple fixed-lead-time evaluations and create a single plot
+    showing mean and std of RMSE and MAE versus lead times for each event category.
+    
+    Args:
+        all_lead_time_errors: List of lead_time_errors dictionaries from eval_forecast_fixed_lead_time calls
+        all_event_ids: List of event_ids corresponding to each lead_time_errors
+        file_name_prefix: Prefix for output file names
+    """
+    if not all_lead_time_errors:
+        print("No fixed-lead-time metrics to aggregate")
+        return
+    
+    # Combine all metrics by event category
+    category_metrics = {}
+    
+    for lead_time_errors, event_id in zip(all_lead_time_errors, all_event_ids):
+        # Determine event category from event_id (first two characters: G0, G1, G2, etc.)
+        category = event_id[:2] if len(event_id) >= 2 else "Unknown"
+        
+        if category not in category_metrics:
+            category_metrics[category] = {
+                'lead_times': [],
+                'rmse_values': [],
+                'mae_values': []
+            }
+        
+        # Extract metrics for each lead time
+        for lead_time_minutes, metrics in lead_time_errors.items():
+            # lead_time_minutes is already an integer (e.g., 60, 120, 180)
+            # metrics['rmse'] and metrics['mae'] are lists of values for this lead time
+            
+            rmse_list = metrics['rmse']
+            mae_list = metrics['mae']
+            
+            # Add each individual measurement to the category metrics
+            # Both lists should have the same length
+            for rmse_val, mae_val in zip(rmse_list, mae_list):
+                category_metrics[category]['lead_times'].append(lead_time_minutes)
+                category_metrics[category]['rmse_values'].append(rmse_val)
+                category_metrics[category]['mae_values'].append(mae_val)
+    
+    # Convert to numpy arrays and compute statistics for each category
+    category_stats = {}
+    for category, data in category_metrics.items():
+        # Group by lead time to compute mean and std
+        lead_times = np.array(data['lead_times'])
+        rmse_values = np.array(data['rmse_values'])
+        mae_values = np.array(data['mae_values'])
+        
+        unique_lead_times = np.unique(lead_times)
+        rmse_means = []
+        rmse_stds = []
+        mae_means = []
+        mae_stds = []
+        
+        for lt in unique_lead_times:
+            mask = lead_times == lt
+            rmse_means.append(np.mean(rmse_values[mask]))
+            rmse_stds.append(np.std(rmse_values[mask]))
+            mae_means.append(np.mean(mae_values[mask]))
+            mae_stds.append(np.std(mae_values[mask]))
+        
+        category_stats[category] = {
+            'lead_times': unique_lead_times,
+            'rmse_mean': np.array(rmse_means),
+            'rmse_std': np.array(rmse_stds),
+            'mae_mean': np.array(mae_means),
+            'mae_std': np.array(mae_stds)
+        }
+    
+    # Create the aggregated plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # NOAA color scale for G1-G5, and a custom color for G0
+    prefix_colors = {
+        'all': 'black',
+        'G0': '#bdbdbd',   # Gray for G0 (custom, not in NOAA)
+        'G1': '#ffff00',   # Yellow
+        'G2': '#ffcc00',   # Orange-yellow
+        'G3': '#ff9900',   # Orange
+        'G4': '#ff0000',   # Red
+        'G5': '#990000',   # Dark red
+    }
+    
+    # Plot RMSE
+    for category, stats in category_stats.items():
+        color = prefix_colors.get(category, 'black')  # Default to black if category not found
+        ax1.errorbar(stats['lead_times'], stats['rmse_mean'], yerr=stats['rmse_std'], 
+                    label=category, color=color, capsize=5, marker='o')
+    
+    ax1.set_xlabel('Lead Time (minutes)')
+    ax1.set_ylabel('RMSE (TECU)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot MAE
+    for category, stats in category_stats.items():
+        color = prefix_colors.get(category, 'black')  # Default to black if category not found
+        ax2.errorbar(stats['lead_times'], stats['mae_mean'], yerr=stats['mae_std'], 
+                    label=category, color=color, capsize=5, marker='o')
+    
+    ax2.set_xlabel('Lead Time (minutes)')
+    ax2.set_ylabel('MAE (TECU)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_file_name = file_name_prefix + '-fixed-lead-time-metrics.pdf'
+    plt.savefig(plot_file_name, bbox_inches='tight')
+    print(f'Fixed-lead-time aggregated metrics plot saved to {plot_file_name}')
+    plt.close()
+    
+    # Save aggregated metrics to CSV file
+    csv_file_name = file_name_prefix + '-fixed-lead-time-metrics.csv'
+    print(f'Saving aggregated fixed-lead-time metrics to {csv_file_name}')
+    
+    with open(csv_file_name, 'w', newline='') as csvfile:
+        fieldnames = ['event_category', 'lead_time_minutes', 'mean_rmse_tecu', 'std_rmse_tecu', 'mean_mae_tecu', 'std_mae_tecu', 'num_samples']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        # Write data for each category and lead time
+        for category, stats in category_stats.items():
+            for i, lead_time in enumerate(stats['lead_times']):
+                # Count samples for this category and lead time
+                lead_times_array = np.array(category_metrics[category]['lead_times'])
+                num_samples = np.sum(lead_times_array == lead_time)
+                
+                writer.writerow({
+                    'event_category': category,
+                    'lead_time_minutes': lead_time,
+                    'mean_rmse_tecu': stats['rmse_mean'][i],
+                    'std_rmse_tecu': stats['rmse_std'][i],
+                    'mean_mae_tecu': stats['mae_mean'][i],
+                    'std_mae_tecu': stats['mae_std'][i],
+                    'num_samples': num_samples
+                })
+        
+        # Add summary statistics across all categories
+        writer.writerow({})  # Empty row for separation
+        writer.writerow({'event_category': '--- SUMMARY ACROSS ALL CATEGORIES ---'})
+        
+        # Compute overall statistics across all categories for each lead time
+        all_lead_times = set()
+        for stats in category_stats.values():
+            all_lead_times.update(stats['lead_times'])
+        
+        for lead_time in sorted(all_lead_times):
+            # Collect all RMSE and MAE values for this lead time across all categories
+            all_rmse_for_lt = []
+            all_mae_for_lt = []
+            total_samples = 0
+            
+            for category, data in category_metrics.items():
+                lead_times_array = np.array(data['lead_times'])
+                rmse_array = np.array(data['rmse_values'])
+                mae_array = np.array(data['mae_values'])
+                
+                mask = lead_times_array == lead_time
+                all_rmse_for_lt.extend(rmse_array[mask])
+                all_mae_for_lt.extend(mae_array[mask])
+                total_samples += np.sum(mask)
+            
+            if total_samples > 0:
+                writer.writerow({
+                    'event_category': 'ALL',
+                    'lead_time_minutes': lead_time,
+                    'mean_rmse_tecu': np.mean(all_rmse_for_lt),
+                    'std_rmse_tecu': np.std(all_rmse_for_lt),
+                    'mean_mae_tecu': np.mean(all_mae_for_lt),
+                    'std_mae_tecu': np.std(all_mae_for_lt),
+                    'num_samples': total_samples
+                })
+    
+    print(f"Aggregated fixed-lead-time metrics for {len(category_stats)} event categories: {list(category_stats.keys())}")
