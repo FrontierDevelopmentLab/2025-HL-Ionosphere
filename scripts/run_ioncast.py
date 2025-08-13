@@ -280,7 +280,7 @@ def main():
     parser.add_argument('--valid_event_id', nargs='*', default=validation_events_2, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G2H3-202303230900', 'G1H9-202302261800', 'G1H3-202302261800', 'G0H9-202302160900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='*', default=['G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=0, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
@@ -357,6 +357,13 @@ def main():
     elif args.valid_event_id == ['validation_events_3']:
         args.valid_event_id = validation_events_3
 
+    if args.test_event_id == ['validation_events_1']:
+        args.test_event_id = validation_events_1
+    elif args.test_event_id == ['validation_events_2']:
+        args.test_event_id = validation_events_2
+    elif args.test_event_id == ['validation_events_3']:
+        args.test_event_id = validation_events_3
+
     # Set up the target directory and log.txt (name after datetime to avoid overwriting)
     os.makedirs(args.target_dir, exist_ok=True)
     log_file = os.path.join(args.target_dir, 'log.txt')
@@ -387,6 +394,13 @@ def main():
         start_time = datetime.datetime.now()
         print('Start time: {}'.format(start_time))
 
+        # Preparing data paths and constructors
+        dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
+        dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
+        dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
+        dataset_qd_dir = os.path.join(args.data_dir, args.quasidipole_dir)
+        dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
+
         if args.mode == 'train':
             print('\n*** Training mode\n')
 
@@ -402,13 +416,6 @@ def main():
             date_end = datetime.datetime.fromisoformat(args.date_end)
             training_sequence_length = args.context_window + args.prediction_window
             print(f'Training sequence length {training_sequence_length} = context_window {args.context_window} + prediction_window {args.prediction_window})')
-
-            # Preparing data paths and constructors
-            dataset_jpld_dir = os.path.join(args.data_dir, args.jpld_dir)
-            dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
-            dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
-            dataset_qd_dir = os.path.join(args.data_dir, args.quasidipole_dir)
-            dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
             
             datasets_jpld_valid = []
             datasets_omniweb_valid = []
@@ -1044,10 +1051,10 @@ def main():
                         eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
-                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
+                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, True, args)
 
                     # Force cleanup
-                    del dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set, dataset
+                    del dataset_jpld, dataset
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
         else:
@@ -1085,6 +1092,7 @@ if __name__ == '__main__':
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2018-big --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 8 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2018-01-01T00:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2018-big --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 8 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2018-01-01T20:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2016-more-pred --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2016-01-01T00:00:00 --mesh_level 6 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-2year20152017 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2017-01-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_event_seen_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --wandb_run_name IonCastGNN
 
 # Test on validation events (validation_events_1, validation_events_2, validation_events_3)
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-debugging-dipole-newrun --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-05-13T00:00:00 --date_end 2015-05-14T00:00:00 --mesh_level 5 --device cuda:0 --valid_every_nth_epoch 1 --save_all_models --valid_event_id validation_events_1 --max_valid_samples 2 --cache_dir /home/jupyter/cached_data --wandb_run_name IonCastGNN
@@ -1100,3 +1108,4 @@ if __name__ == '__main__':
 
 # 1 year run longer prediction window
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-2015-2016-more-pred --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 5 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2016-01-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --model_file /home/jupyter/linnea_results/ioncastgnn-train-2year20152017/epoch-01-model.pth --target_dir /home/jupyter/linnea_results/ioncastgnn-train-2year20152017 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2015-01-01T00:00:00 --date_end 2017-01-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_every_nth_epoch 1 --save_all_models --test_event_id validation_events_1 --max_valid_samples 1000 --wandb_run_name IonCastGNN
