@@ -280,7 +280,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
 
-def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, args):
+def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, args):
     if event_id not in event_catalog:
         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
     event = event_catalog[event_id]
@@ -294,7 +294,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
 
     date_forecast_start = event_start
     date_end = event_end
-    file_name = os.path.join(args.target_dir, f'{file_name_prefix}-long-horizon-event-{event_id}.mp4')
+    file_name = f'{file_name_prefix}-long-horizon-event-{event_id}.mp4'
     title = f'Event: {event_id}, Kp={max_kp}'
 
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, True, args)
@@ -376,6 +376,16 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
                 )
                 print(f'Saved channel {i} forecast video to {file_name_channel}')
     
+    if save_numpy:
+        # Save the numpy arrays for the main JPLD channel
+        numpy_file_original = file_name.replace('.mp4', '-original.npy')
+        numpy_file_forecast = file_name.replace('.mp4', '-forecast.npy')
+        
+        np.save(numpy_file_original, jpld_original_unnormalized.cpu().numpy())
+        np.save(numpy_file_forecast, jpld_forecast_unnormalized.cpu().numpy())
+        
+        print(f'Saved original frames to {numpy_file_original}')
+        print(f'Saved forecast frames to {numpy_file_forecast}')
     return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat
 
 
@@ -431,7 +441,7 @@ def plot_lead_time_metrics(metrics, file_name):
     plt.close()
 
 
-def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_times_minutes, file_name_prefix, save_video, args):
+def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_times_minutes, file_name_prefix, save_video, save_numpy, args):
     """
     Evaluates an autoregressive model at fixed lead times over a specified event period.
     """
@@ -472,7 +482,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             forecast_start_date = current_target_date - datetime.timedelta(minutes=lead_time)
             context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes) # [ context window | lead time ]
             
-            prediction_steps = lead_time // args.delta_minutes 
+            prediction_steps = lead_time // args.delta_minutes
             if prediction_steps == 0:
                 continue
             if prediction_steps > args.forecast_max_time_steps:
@@ -510,7 +520,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
     print("\n--- Fixed-Lead-Time Results ---")
     print(f"{'Lead Time (min)':<20} {'Avg. RMSE (TECU)':<20} {'Std. RMSE (TECU)':<20} {'Avg. MAE (TECU)':<20} {'Std. MAE (TECU)':<20} {'Num. Samples':<15}")
     
-    csv_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-metrics.csv')
+    csv_file_name = f'{file_name_prefix}-fixed-lead-time-event-{event_id}-metrics.csv'
     csv_data = []
 
     for lt in sorted(lead_time_errors.keys()):
@@ -552,7 +562,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             if not forecast_frames:
                 continue
 
-            video_file_name = os.path.join(args.target_dir, f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min.mp4')
+            video_file_name = f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min.mp4'
 
             titles_top = [f'JPLD GIM TEC Ground Truth: {d}' for d in dates]
             titles_bottom = [f'JPLD GIM TEC Forecast: {d} ({lt}-min fixed lead time)' for d in dates]
@@ -571,7 +581,27 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
                 titles_bottom=titles_bottom,
                 fig_title=fig_title
             )
+    
+    # --- Save NumPy arrays if Requested ---
+    if save_numpy:
+        print("\n--- Saving Fixed-Lead-Time NumPy Arrays ---")
+        
+        for lt in sorted(lead_time_forecast_frames.keys()):
+            forecast_frames = lead_time_forecast_frames[lt]
+            original_frames = lead_time_original_frames[lt]
+            
+            if not forecast_frames:
+                continue
 
+            numpy_file_original = f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min-original.npy'
+            numpy_file_forecast = f'{file_name_prefix}-fixed-lead-time-event-{event_id}-{lt}min-forecast.npy'
+            
+            np.save(numpy_file_original, np.array(original_frames))
+            np.save(numpy_file_forecast, np.array(forecast_frames))
+            
+            print(f'Saved original frames to {numpy_file_original}')
+            print(f'Saved forecast frames to {numpy_file_forecast}')
+    
     # Return metrics data for aggregation
     return lead_time_errors, event_id
 
@@ -842,6 +872,10 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
         all_event_ids: List of event_ids corresponding to each lead_time_errors
         file_name_prefix: Prefix for output file names
     """
+    # save a metrics figure (pdf) with four histograms of all metrics for all events
+    file_name_hist = os.path.join(file_name_prefix + '-histograms.pdf')
+    print(f'Saving metrics histograms to {file_name_hist}')
+    
     if not all_lead_time_errors:
         print("No fixed-lead-time metrics to aggregate")
         return
@@ -1013,7 +1047,7 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
             
             if total_samples > 0:
                 writer.writerow({
-                    'event_category': 'ALL',
+                    'event_category': 'all',
                     'lead_time_minutes': lead_time,
                     'mean_rmse_tecu': np.mean(all_rmse_for_lt),
                     'std_rmse_tecu': np.std(all_rmse_for_lt),

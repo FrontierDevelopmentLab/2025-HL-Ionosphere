@@ -35,7 +35,7 @@ from dataset_omniweb import OMNIWeb, omniweb_all_columns
 from dataset_set import SET, set_all_columns
 from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
-from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time
+from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 # Import phycsicsnemo distributed training utilities
 from physicsnemo.distributed import DistributedManager
@@ -743,7 +743,7 @@ def main():
                         pbar.update(1)
 
                 # Validation loop
-                if (epoch+1) % args.valid_every_nth_epoch == 0:
+                if (not args.no_valid) and ((epoch+1) % args.valid_every_nth_epoch == 0):
                     print('*** Validation')
                     model.eval()
                     valid_loss = 0.0
@@ -813,10 +813,10 @@ def main():
                     print(f'Current learning rate: {current_lr:.6f}')
 
                     if not args.no_eval:
-                        file_name_prefix = f'epoch-{epoch + 1:02d}-'
+                        file_name_prefix = os.path.join(args.target_dir, f'epoch-{epoch + 1:02d}-')
 
                         # Save model
-                        model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
+                        model_file = f'{file_name_prefix}model.pth'
                         if args.no_model_checkpoint:
                             print('Skipping model saving due to --no_model_checkpoint flag')
                         else:
@@ -835,7 +835,7 @@ def main():
                         color_rmse_jpld = 'tab:green'
 
                         # Plot losses
-                        plot_file = os.path.join(args.target_dir, f'{file_name_prefix}loss.pdf')
+                        plot_file = f'{file_name_prefix}loss.pdf'
                         print(f'Saving loss plot to {plot_file}')
                         plt.figure(figsize=(10, 5))
                         if train_losses:
@@ -862,7 +862,7 @@ def main():
                         plt.close()
 
                         # Plot RMSE losses
-                        plot_rmse_file = os.path.join(args.target_dir, f'{file_name_prefix}metrics-rmse.pdf')
+                        plot_rmse_file = f'{file_name_prefix}metrics-rmse.pdf'
                         print(f'Saving RMSE plot to {plot_rmse_file}')
                         plt.figure(figsize=(10, 5))
                         if train_rmse_losses:
@@ -923,7 +923,7 @@ def main():
                                         # --- Long Horizon Evaluation ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             
-                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, args)
+                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, False, args)
                                             metric_event_id.append(event_id)
                                             metric_jpld_rmse.append(jpld_rmse)
                                             metric_jpld_mae.append(jpld_mae)
@@ -935,12 +935,12 @@ def main():
 
                                         # --- Fixed Lead Time Evaluation ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
+                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, False, args)
                                             fixed_lead_time_metrics.append(lead_time_errors)
                                             fixed_lead_time_event_ids.append(event_id_returned)
                                 # Save metrics from long-horizon eval
                                 if metric_event_id:
-                                    metrics_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid-long-horizon-metrics')
+                                    metrics_file_prefix = f'{file_name_prefix}valid-long-horizon-metrics'
                                     save_metrics(metric_event_id, metric_jpld_rmse, metric_jpld_mae, metric_jpld_unnormalized_rmse, metric_jpld_unnormalized_mae, metric_jpld_unnormalized_rmse_low_lat, metric_jpld_unnormalized_rmse_mid_lat, metric_jpld_unnormalized_rmse_high_lat, metrics_file_prefix)
                                 
                                     # Upload evaluation metrics to W&B
@@ -970,7 +970,7 @@ def main():
                                 
                                 # Aggregate and plot fixed-lead-time metrics
                                 if fixed_lead_time_metrics:
-                                    plot_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid')
+                                    plot_file_prefix = f'{file_name_prefix}valid'
                                     aggregate_and_plot_fixed_lead_time_metrics(fixed_lead_time_metrics, fixed_lead_time_event_ids, plot_file_prefix)
                                     
                                     # Upload fixed-lead-time metrics CSV to W&B if it exists
@@ -1001,17 +1001,17 @@ def main():
                                         # --- Long Horizon Evaluation (Seen) ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
-                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, args)
-                                        
+                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, False, args)
+
                                         # --- Fixed Lead Time Evaluation (Seen) ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
+                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, False, args)
                                             fixed_lead_time_metrics_seen.append(lead_time_errors_seen)
                                             fixed_lead_time_event_ids_seen.append(event_id_returned_seen)
                                 
                                 # Aggregate and plot fixed-lead-time metrics for seen events
                                 if fixed_lead_time_metrics_seen:
-                                    plot_file_prefix_seen = os.path.join(args.target_dir, f'{file_name_prefix}valid-seen')
+                                    plot_file_prefix_seen = f'{file_name_prefix}valid-seen'
                                     aggregate_and_plot_fixed_lead_time_metrics(fixed_lead_time_metrics_seen, fixed_lead_time_event_ids_seen, plot_file_prefix_seen)
                         # --- Best Model Checkpointing Logic ---
                         if valid_rmse_loss < best_valid_rmse:
@@ -1091,10 +1091,14 @@ def main():
                     file_name_prefix = os.path.join(args.target_dir, 'test')
 
                     if args.eval_mode in ['long_horizon', 'all']:
-                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
+                        save_video = True
+                        save_numpy = True
+                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
-                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
+                        save_video = True
+                        save_numpy = True
+                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, args)
                         test_fixed_lead_time_metrics.append(lead_time_errors_test)
                         test_fixed_lead_time_event_ids.append(event_id_returned_test)
                     # Force cleanup
