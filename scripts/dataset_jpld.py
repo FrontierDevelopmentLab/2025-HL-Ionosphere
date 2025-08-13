@@ -124,9 +124,10 @@ class JPLDRaw(Dataset):
 
 # ionosphere-data/jpld/webdataset
 class JPLD(Dataset):
-    def __init__(self, data_dir, date_start=None, date_end=None, date_exclusions=None, normalize=True):
+    def __init__(self, data_dir, date_start=None, date_end=None, date_exclusions=None, normalize=True, rewind_minutes=50):
         self.data_dir = data_dir
         self.normalize = normalize
+        self.rewind_minutes = rewind_minutes
         print('\nJPLD')
 
         print('Directory  : {}'.format(self.data_dir))
@@ -247,7 +248,16 @@ class JPLD(Dataset):
 
         if date not in self.dates_set:
             print('Date not found in JPLD : {}'.format(date))
-            return None
+            # try to find the closest date before the given date, start from the given date and go backwards in delta_minutes steps, do not go more than rewind_minutes back
+            rewind_steps = self.rewind_minutes // self.delta_minutes
+            for i in range(rewind_steps):
+                date_rewind = date - datetime.timedelta(minutes=self.delta_minutes * (i + 1))
+                if date_rewind in self.dates_set:
+                    date = date_rewind
+                    print('Rewinding to the closest date: {}'.format(date))
+                    break
+            else:
+                return None  # No data found within the rewind range
         
         if self.date_exclusions is not None:
             for exclusion_date_start, exclusion_date_end in self.date_exclusions:
