@@ -126,7 +126,10 @@ class IonCastLSTM(nn.Module):
         data_target = data[:, 1:, :, :, :]
 
         self.init(batch_size=B)
-        data_predict = self.forward(data_input)
+        # The model now predicts the residual (the change between frames)
+        residual_predict = self.forward(data_input)
+        # Add the residual to the input to get the final prediction
+        data_predict = data_input + residual_predict
         data_predict = data_predict.view(B, T - 1, C, H, W)
         
         elementwise_loss = nn.functional.mse_loss(data_predict, data_target, reduction='none')
@@ -149,12 +152,22 @@ class IonCastLSTM(nn.Module):
         B, T_context, C, H, W = data_context.size()
         
         self.init(batch_size=B)
-        context_input = data_context
-        context_output = self.forward(context_input)
-        x = context_output[:, -1, :, :, :].unsqueeze(1)  # Last time step output
+        # First, run the context through the model to set the LSTM state.
+        # The output here is the predicted residual for the context window.
+        _ = self.forward(data_context)
+
+        # Start prediction from the last frame of the context.
+        current_frame = data_context[:, -1, :, :, :].unsqueeze(1)
         prediction = []
+
         for _ in range(prediction_window):
-            prediction.append(x)
-            x = self.forward(x)
+            # Predict the residual for the next frame
+            residual = self.forward(current_frame)
+            # Add the residual to the current frame to get the next frame
+            next_frame = current_frame + residual
+            prediction.append(next_frame)
+            # The predicted frame becomes the input for the next step
+            current_frame = next_frame
+
         prediction = torch.cat(prediction, dim=1)  # Concatenate along time dimension
         return prediction
