@@ -199,7 +199,7 @@ def main():
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
     parser.add_argument('--valid_every_nth_epoch', type=int, default=1, help='Validate every nth epoch')
     parser.add_argument('--cache_dir', type=str, default=None, help='If set, build an on-disk cache for all training batches, to speed up training (WARNING: this will take a lot of disk space, ~terabytes per year)')
-    parser.add_argument('--no_save', action='store_true', help='If set, do not save any files during trainings')
+    parser.add_argument('--no_model_checkpoint', action='store_true', help='If set, do not save model checkpoints during training')
     parser.add_argument('--no_valid', action='store_true', help='If set, do not run validation during training')
     
     # Weights & Biases options
@@ -235,7 +235,7 @@ def main():
                                  'omniweb_columns', 
                                  'set_file_name', 
                                  'date_start', 
-                                 'date_end', 
+                                 'date_end', ""
                                  'date_dilation',
                                  'delta_minutes', 
                                  'batch_size', 
@@ -518,8 +518,8 @@ def main():
 
                     # Save model
                     model_file = os.path.join(args.target_dir, f'{file_name_prefix}model.pth')
-                    if args.save_no_models:
-                        print('Skipping model saving due to --save_no_models flag')
+                    if args.no_model_checkpoint:
+                        print('Skipping model saving due to --no_model_checkpoint flag')
                     else:
                         save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, model_file,)
                     if not args.save_all_models:
