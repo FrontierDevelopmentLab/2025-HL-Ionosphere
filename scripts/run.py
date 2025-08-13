@@ -165,10 +165,12 @@ def main():
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
-    # parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
-    # parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
-    parser.add_argument('--date_start', type=str, default='2023-10-19T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
+    parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
+    parser.add_argument('--date_dilation', type=int, default=1, help='Dilation factor for the construction of sequence starting points, e.g. 1 means every delta_minutes, 2 means every 2 * delta_minutes, etc.')
+
+    # parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    # parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
@@ -234,6 +236,7 @@ def main():
                                  'set_file_name', 
                                  'date_start', 
                                  'date_end', 
+                                 'date_dilation',
                                  'delta_minutes', 
                                  'batch_size', 
                                  'model_type', 
@@ -325,8 +328,8 @@ def main():
                 # dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, column=args.omniweb_columns)
                 dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
                 dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=(180, 360))
-                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
 
