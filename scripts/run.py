@@ -33,7 +33,7 @@ from dataset_omniweb import OMNIWeb
 from dataset_set import SET
 from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
-from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time
+from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
 
@@ -610,6 +610,10 @@ def main():
                                 metric_jpld_unnormalized_rmse_mid_lat = []
                                 metric_jpld_unnormalized_rmse_high_lat = []
                                 
+                                # Fixed-lead-time metrics collection
+                                fixed_lead_time_metrics = []
+                                fixed_lead_time_event_ids = []
+                                
                                 if args.valid_event_id:
                                     for i, event_id in enumerate(args.valid_event_id):
                                         print(f'\n--- Evaluating validation event: {event_id} ---')
@@ -634,7 +638,9 @@ def main():
 
                                         # --- Fixed Lead Time Evaluation ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
+                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, args)
+                                            fixed_lead_time_metrics.append(lead_time_errors)
+                                            fixed_lead_time_event_ids.append(event_id_returned)
 
                                 # Save metrics from long-horizon eval
                                 if metric_event_id:
@@ -665,9 +671,29 @@ def main():
                                                 wandb.log_artifact(artifact)
                                             except Exception as e:
                                                 print(f'Warning: Could not upload metrics CSV to W&B: {e}')
+                                
+                                # Aggregate and plot fixed-lead-time metrics
+                                if fixed_lead_time_metrics:
+                                    plot_file_prefix = os.path.join(args.target_dir, f'{file_name_prefix}valid')
+                                    aggregate_and_plot_fixed_lead_time_metrics(fixed_lead_time_metrics, fixed_lead_time_event_ids, plot_file_prefix)
+                                    
+                                    # Upload fixed-lead-time metrics CSV to W&B if it exists
+                                    if wandb is not None and args.wandb_mode != 'disabled':
+                                        csv_file = f'{plot_file_prefix}_fixed_lead_time_metrics_aggregated.csv'
+                                        if os.path.exists(csv_file):
+                                            try:
+                                                artifact = wandb.Artifact(f'fixed_lead_time_metrics_epoch_{epoch+1}', type='evaluation_metrics')
+                                                artifact.add_file(csv_file)
+                                                wandb.log_artifact(artifact)
+                                            except Exception as e:
+                                                print(f'Warning: Could not upload fixed-lead-time metrics CSV to W&B: {e}')
 
                                 # --- EVALUATION ON SEEN VALIDATION EVENTS ---
-                                saved_video_categories_seen = set()                            
+                                saved_video_categories_seen = set()
+                                # Fixed-lead-time metrics collection for seen events
+                                fixed_lead_time_metrics_seen = []
+                                fixed_lead_time_event_ids_seen = []
+                                
                                 if args.valid_event_seen_id:
                                     for i, event_id in enumerate(args.valid_event_seen_id):
                                         event_category = event_id.split('-')[0][:2]
@@ -683,7 +709,14 @@ def main():
                                         
                                         # --- Fixed Lead Time Evaluation (Seen) ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
+                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, args)
+                                            fixed_lead_time_metrics_seen.append(lead_time_errors_seen)
+                                            fixed_lead_time_event_ids_seen.append(event_id_returned_seen)
+                                
+                                # Aggregate and plot fixed-lead-time metrics for seen events
+                                if fixed_lead_time_metrics_seen:
+                                    plot_file_prefix_seen = os.path.join(args.target_dir, f'{file_name_prefix}valid-seen')
+                                    aggregate_and_plot_fixed_lead_time_metrics(fixed_lead_time_metrics_seen, fixed_lead_time_event_ids_seen, plot_file_prefix_seen)
 
                         # --- Best Model Checkpointing Logic ---
                         if valid_rmse_loss < best_valid_rmse:
@@ -715,6 +748,10 @@ def main():
                 return
 
             with torch.no_grad():
+                # Initialize collections for test metrics
+                test_fixed_lead_time_metrics = []
+                test_fixed_lead_time_event_ids = []
+                
                 for event_id in args.test_event_id:
                     if event_id not in event_catalog:
                         raise ValueError(f'Event ID {event_id} not found in EventCatalog')
@@ -742,12 +779,19 @@ def main():
                         eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, True, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
-                        eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
+                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, args)
+                        test_fixed_lead_time_metrics.append(lead_time_errors_test)
+                        test_fixed_lead_time_event_ids.append(event_id_returned_test)
 
                     # Force cleanup
                     del dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set, dataset
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                
+                # Aggregate and plot fixed-lead-time metrics for test events
+                if test_fixed_lead_time_metrics:
+                    plot_file_prefix_test = os.path.join(args.target_dir, 'test')
+                    aggregate_and_plot_fixed_lead_time_metrics(test_fixed_lead_time_metrics, test_fixed_lead_time_event_ids, plot_file_prefix_test)
 
         else:
             raise ValueError('Unknown mode: {}'.format(args.mode))
