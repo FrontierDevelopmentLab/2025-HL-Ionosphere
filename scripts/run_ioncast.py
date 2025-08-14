@@ -662,18 +662,18 @@ def main():
                         static_graph=True,
                     )
 
-                # Set up optimizer and initialize loss
-                optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
-                iteration = 0
-                epoch_start = 0
-                train_losses = []
-                valid_losses = []
-                train_rmse_losses = []
-                valid_rmse_losses = []
-                train_jpld_rmse_losses = []
-                valid_jpld_rmse_losses = []
-                best_valid_rmse = float('inf')
+            # Set up optimizer and initialize loss
+            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
+            iteration = 0
+            epoch_start = 0
+            train_losses = []
+            valid_losses = []
+            train_rmse_losses = []
+            valid_rmse_losses = []
+            train_jpld_rmse_losses = []
+            valid_jpld_rmse_losses = []
+            best_valid_rmse = float('inf')
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -1207,7 +1207,7 @@ if __name__ == '__main__':
 
 
 # dilation 8, 15 years, 2010-05-13T00:00:00 to 2024-08-01T00:00:00
-# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-2010-2024 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400 --date_dilation 8
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-2010-2024-bigdilation-test --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400 --date_dilation 2000
 
 # Multiprocessing example
 # torchrun --nproc_per_node=2 run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-distributed-fulldataset-dilation8 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 8 --partition_size 2 --valid_event_id validation_events_1 
