@@ -108,8 +108,15 @@ class _CachingIterator:
     def _finalize_cache(self):
         """Write the metadata file to mark the cache as complete and valid."""
         metadata = {'num_batches': self.num_batches_processed}
-        with open(self.parent_loader.metadata_path, 'w') as f:
+        
+        # Write to temporary file first, then rename for atomic operation
+        temp_metadata_path = self.parent_loader.metadata_path + '.tmp'
+        with open(temp_metadata_path, 'w') as f:
             json.dump(metadata, f)
+        
+        # Atomic rename
+        os.rename(temp_metadata_path, self.parent_loader.metadata_path)
+        
         self.parent_loader.is_cache_valid = True
         tqdm.write("Cache building complete.")
 
@@ -184,8 +191,13 @@ class CachedDataLoader:
             self._print_cache_stats()
             print()
         else:
-            print(f"Cache directory     : {self.cache_dir}")
             print('Cache not found or invalid. Will build on-the-fly during first epoch.')
+            # Clean up invalid cache completely
+            if os.path.exists(self.cache_dir):
+                print(f'Deleting old cache: {self.cache_dir}')
+                shutil.rmtree(self.cache_dir)
+            os.makedirs(self.cache_dir, exist_ok=True)
+            print(f"Cache directory     : {self.cache_dir}")
 
     def _check_cache_validity(self):
         if not os.path.exists(self.cache_dir):
