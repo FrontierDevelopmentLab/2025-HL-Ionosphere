@@ -453,14 +453,14 @@ def plot_lead_time_metrics(metrics, file_name):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
     
     # --- RMSE Plot ---
-    ax1.errorbar(lead_times, rmse_means, yerr=rmse_stds, fmt='-o', capsize=5, label='RMSE (TECU)')
+    ax1.errorbar(lead_times, rmse_means, yerr=rmse_stds, fmt='-o', capsize=5, label='RMSE (TECU)', alpha=0.7)
     ax1.set_ylabel('RMSE (TECU)')
     ax1.set_title('Forecast RMSE vs. Lead Time')
     ax1.grid(True, which='both', linestyle='--')
     ax1.legend()
 
     # --- MAE Plot ---
-    ax2.errorbar(lead_times, mae_means, yerr=mae_stds, fmt='-o', capsize=5, color='tab:green', label='MAE (TECU)')
+    ax2.errorbar(lead_times, mae_means, yerr=mae_stds, fmt='-o', capsize=5, color='tab:green', label='MAE (TECU)', alpha=0.7)
     ax2.set_xlabel('Lead Time (minutes)')
     ax2.set_ylabel('MAE (TECU)')
     ax2.set_title('Forecast MAE vs. Lead Time')
