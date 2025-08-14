@@ -23,6 +23,7 @@ from util import md5_hash_str
 # from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
+from model_linear import IonCastLinear
 from model_graphcast import IonCastGNN
 from graphcast_utils import stack_features, calc_shapes_for_stack_features
 from dataset_jpld import JPLD
@@ -109,6 +110,25 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_context_window': model.context_window,
             'model_dropout': model.dropout,
         }
+    elif isinstance(model, IonCastLinear):
+        checkpoint = {
+            'model': 'IonCastLinear',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_context_window': model.context_window,
+        }
     elif isinstance(model, (IonCastGNN, torch.nn.parallel.DistributedDataParallel)):
         if hasattr(model, "module"):
             print(f"DistributedDataParallel model, will save {model.module} instead")
@@ -182,6 +202,12 @@ def load_model(file_name, device):
         model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                             base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
                             context_window=model_context_window, dropout=model_dropout)
+    elif checkpoint['model'] == 'IonCastLinear':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_context_window = checkpoint['model_context_window']
+        model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
+                              context_window=model_context_window)
     elif checkpoint["model"] == "IonCastGNN": 
         pprint.pprint(checkpoint.keys())
         mesh_level = checkpoint["mesh_level"]
@@ -265,19 +291,21 @@ def main():
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
     parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "omni", "celestrak", "set", "quasidipole"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
+    parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
+    parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
     parser.add_argument('--date_dilation', type=int, default=1, help='Dilation factor for the construction of sequence starting points, e.g. 1 means every delta_minutes, 2 means every 2 * delta_minutes, etc.')
-    parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
-    parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
+    # parser.add_argument('--date_start', type=str, default='2024-04-19T00:00:00', help='Start date')
+    # parser.add_argument('--date_end', type=str, default='2024-04-20T00:00:00', help='End date')
     parser.add_argument('--delta_minutes', type=int, default=15, help='Time step in minutes')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=2, help='Number of epochs for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
-    parser.add_argument('--learning_rate', type=float, default=3e-3, help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
+    parser.add_argument('--learning_rate', type=float, default=2e-4, help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-6, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastGNN'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastGNN'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -616,6 +644,9 @@ def main():
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
 
+                elif args.model_type == 'IonCastLinear':
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window)
+
                 elif args.model_type == 'IonCastGNN':
                     # Note: there are many more features that can be included in IonCastGNN; see iio
                     model = IonCastGNN(
@@ -703,7 +734,7 @@ def main():
                         #     jpld = jpld.to(device)
                         #     loss = model.loss(jpld)
 
-                        if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                        if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                             jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
 
                             # Send to device
@@ -785,7 +816,7 @@ def main():
                     valid_jpld_rmse_loss = 0.0
                     with torch.no_grad():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
-                            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
                                 sunmoon_seq = sunmoon_seq.to(device)
@@ -937,7 +968,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM' or args.model_type == 'IonCastGNN':
+                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastGNN']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
@@ -965,7 +996,7 @@ def main():
                                         # --- Long Horizon Evaluation ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             
-                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, False, args)
+                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, False, save_video, args)
                                             metric_event_id.append(event_id)
                                             metric_jpld_rmse.append(jpld_rmse)
                                             metric_jpld_mae.append(jpld_mae)
@@ -977,7 +1008,7 @@ def main():
 
                                         # --- Fixed Lead Time Evaluation ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, False, args)
+                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, False, save_video, args)
                                             fixed_lead_time_metrics.append(lead_time_errors)
                                             fixed_lead_time_event_ids.append(event_id_returned)
                                 # Save metrics from long-horizon eval
@@ -1043,11 +1074,11 @@ def main():
                                         # --- Long Horizon Evaluation (Seen) ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
-                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, False, args)
-
+                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, False, save_video, args)
+                                        
                                         # --- Fixed Lead Time Evaluation (Seen) ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, False, args)
+                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, False, save_video, args)
                                             fixed_lead_time_metrics_seen.append(lead_time_errors_seen)
                                             fixed_lead_time_event_ids_seen.append(event_id_returned_seen)
                                 
@@ -1135,12 +1166,12 @@ def main():
                     if args.eval_mode in ['long_horizon', 'all']:
                         save_video = True
                         save_numpy = True
-                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, args)
+                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_video, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
                         save_video = True
                         save_numpy = True
-                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, args)
+                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, save_video, args)
                         test_fixed_lead_time_metrics.append(lead_time_errors_test)
                         test_fixed_lead_time_event_ids.append(event_id_returned_test)
                     # Force cleanup
@@ -1211,3 +1242,7 @@ if __name__ == '__main__':
 
 # Multiprocessing example
 # torchrun --nproc_per_node=2 run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-distributed-fulldataset-dilation8 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 8 --partition_size 2 --valid_event_id validation_events_1 
+
+
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-residual --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cpu --model_file /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-residual/epoch-01-model.pth --lead_times 30 60 90 120 --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --model_file /home/jupyter/linnea_results/ioncastgnn-train-fulldataset/epoch-01-model.pth --lead_times 30 60 90 120 --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
