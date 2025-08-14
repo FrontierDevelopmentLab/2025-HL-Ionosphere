@@ -1,0 +1,110 @@
+# W&B Sweep Configuration for Ionosphere Forecasting
+program: run_ioncast.py
+method: random  # bayes, grid, random
+metric:
+  goal: minimize
+  name: valid/loss #valid/jpld_rmse
+
+# Command template (data_dir and target_dir need to be set when launching)
+command:
+  - ${env}
+  - python
+  - ${program}
+  - "--data_dir"
+  - "/home/jupyter/data"  # Change this to your actual data directory
+  - "--target_dir" 
+  - "/home/jupyter/sweep_results/${name}"
+  - "--mode"
+  - "train"
+  - "--save_no_models"  #NOT TO SAVE SPACE !
+  - "--no_eval" 
+  - ${args}
+
+parameters:
+  # Model Architecture
+  model_type:
+    values: ["IonCastGNN"]
+  
+  # Training Parameters
+  learning_rate:
+    # values: [3e-4]
+    values: [0.00001, 0.00003, 0.0001, 0.0003, 0.001, 0.003, 0.01]
+  
+  #weight_decay:
+  #  values: [0.0, 1e-6, 1e-5, 1e-4, 1e-3]
+  #  #oldvalues: [0.000001, 0.000003, 0.00001, 0.00003, 0.0001, 0.0003, 0.001]
+  
+  batch_size:
+   values: [1]
+  
+  num_workers:
+    values: [12]
+  
+  #dropout:
+  #  distribution: uniform
+  #  min: 0.1
+  #  max: 0.5
+  
+  # Model-specific parameters
+  context_window:
+    distribution: int_uniform
+    min: 1
+    max: 40
+  
+  prediction_window:
+   values: [1, 2, 4]
+  
+  # Model architecture parameters
+  #hidden_dim:
+  #  values: [32, 64, 128, 256]
+  
+  #lstm_dim:
+  #  values: [512, 1024, 2048]  # Only used for IonCastLSTM
+  
+  #num_layers:
+  #  values: [1, 2, 3, 4]
+  
+  # Loss weighting
+  #jpld_weight:
+  #  distribution: uniform
+  #  min: 1.0
+  #  max: 50.0
+
+  # Data time range - sweep different time periods
+  date_start:
+    values: 
+      - "2010-05-13T00:00:00"
+  
+  date_end:
+    values:
+      - "2024-08-01T00:00:00"
+
+  date_dilation:
+    values: [500]
+
+  # Time resolution fix 15 
+  delta_minutes:
+    values: [15]
+
+  # Fixed parameters (not swept)
+  mode:
+    value: "train"
+  epochs:
+    value: 1  # Reduce for faster sweeps but allow some learning
+  wandb_mode:
+    value: "online"
+  
+  # Fixed validation settings
+  valid_every_nth_epoch:
+    value: 1
+
+# Sweep settings
+name: "ionosphere-hyperparameter-sweep"
+description: "Optimize hyperparameters for ionosphere forecasting model"
+
+# Early termination to save compute
+#early_terminate:
+#  type: hyperband
+#  s: 2
+#  eta: 3
+#  max_iter: 10
