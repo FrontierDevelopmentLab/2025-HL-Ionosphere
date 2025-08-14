@@ -37,9 +37,6 @@ from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
 from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
-# Import phycsicsnemo distributed training utilities
-from physicsnemo.distributed import DistributedManager
-
 # Set up wandb if available
 try:
     import wandb
@@ -51,8 +48,6 @@ FIXED_CADENCE = 15 # mins
 FIXED_IMAGE_SIZE = (180, 360) # (lat, lon)
 
 matplotlib.use('Agg')
-
-# TODO: Add distributed Data Sampler to DataLoader, also update checkpoint files (save + load) to work with distributed training. Also to run will need to remove cuda:0 from the device list when running
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
     print('Saving model to {}'.format(file_name))
@@ -114,7 +109,11 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_context_window': model.context_window,
             'model_dropout': model.dropout,
         }
-    elif isinstance(model, IonCastGNN):
+    elif isinstance(model, (IonCastGNN, torch.nn.parallel.DistributedDataParallel)):
+        if hasattr(model, "module"):
+            print(f"DistributedDataParallel model, will save {model.module} instead")
+            model = model.module
+
         checkpoint = {
             'model': 'IonCastGNN',
             'epoch': epoch,
@@ -147,6 +146,8 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'context_window': model.context_window,
             'forcing_channels': model.forcing_channels,  # List of forcing channels
             'residual_target': model.residual_target,
+            'partition_size': model.partition_size,
+            'partition_group_name': model.partition_group_name,
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -203,6 +204,9 @@ def load_model(file_name, device):
         residual_target = checkpoint.get("residual_target", False) # Default to False if not specified 
                                                                    # (since if not saved means its an old 
                                                                    # checkpoint before residual target implemented)
+        partition_size = checkpoint.get("partition_size", 1)
+        partition_group_name = checkpoint.get("partition_group_name", None)
+
         model = IonCastGNN(
             mesh_level = mesh_level,
             input_res = input_res,
@@ -222,8 +226,11 @@ def load_model(file_name, device):
             context_window=context_window,
             device=device,
             forcing_channels=forcing_channels,  # List of forcing channels to predict
-            residual_target=residual_target
+            residual_target=residual_target,
+            partition_size=partition_size,
+            partition_group_name=partition_group_name,
         )
+        
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -278,7 +285,7 @@ def main():
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
     parser.add_argument('--valid_event_id', nargs='*', default=['G0H3-201704230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
-    parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
+    parser.add_argument('--max_valid_samples', type=int, default=None, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G0H9-202302160900'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
@@ -294,7 +301,8 @@ def main():
     parser.add_argument('--no_eval', action='store_true', help='If set, do not run evaluation (event videos etc.) during training, but do compute the validation loss')
     # IonCastGNN options
     parser.add_argument('--mesh_level', type=int, default=6, help='Mesh level for IonCastGNN model')
-    parser.add_argument('--distributed', action='store_true', help='If set, use distributed training')
+    parser.add_argument('--partition_size', type=int, default=1, help='Partition size for distributed training. If 1, single gpu training')
+    parser.add_argument('--partition_group_name', type=str, default=None, help='Partition group name for distributed training. Length must match partition_size')
     parser.add_argument('--processor_type', type=str, choices=['MessagePassing', 'GraphTransformer'], default='MessagePassing', help='Processor type for IonCastGNN model')
     parser.add_argument('--khop_neighbors', type=int, default=32, help='Number of k-hop neighbors for IonCastGNN model. note only works with GraphTransformer processor_type')
     parser.add_argument('--ioncast_hidden_dim', type=int, default=512, help='Hidden dimension for IonCastGNN model')
@@ -515,9 +523,12 @@ def main():
 
             # Set up the DataLoaders
             if args.cache_dir:
+                if args.partition_size > 1:
+                    raise NotImplementedError(f"Distributed runs arent yet supported with data caching, partition_size must be set to 1, not {args.partition_size}")
                 # use the hash of the entire args object as the directory suffix for the cached dataset
                 train_cache_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
                 os.makedirs(train_cache_dir, exist_ok=True) # Create if it does not exist
+
                 train_loader = CachedDataLoader(dataset_train, 
                                                 batch_size=args.batch_size, 
                                                 cache_dir=train_cache_dir, 
@@ -541,18 +552,37 @@ def main():
                                                 force_recache=False, # Note: currently hard-coded to True, so that the cache is always rebuilt
                                                 prefetch_factor=4,
                                                 name='valid_loader')
-            else:
-                # No on-disk caching
-                train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+            else: # No on-disk caching
+                # Create Distributed Sampler if partition_size > 1
+                if args.partition_size > 1:
+                    # Import physicsnemo distributed training utilities
+                    from physicsnemo.distributed import DistributedManager
 
-                if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
-                    print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
-                    indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
-                    sampler = SubsetRandomSampler(indices)
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                    # initialize distributed manager
+                    DistributedManager.initialize()
+                    dist = DistributedManager()
+
+                    print(f"Distributed Training: Rank: {dist.rank}, Device: {dist.device}")
+                    device = dist.device
+
+                    # Set up DistributedSampler and dataloaders
+                    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_train, shuffle=True)
+                    valid_sampler = torch.utils.data.distributed.DistributedSampler(dataset_valid, shuffle=False)
+
+                    train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4, sampler=train_sampler)
+                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4, sampler=valid_sampler)
                 else:
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-        
+                    # Set up dataloaders without DistributedSampler
+                    train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+
+                    if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
+                        print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
+                        indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
+                        sampler = SubsetRandomSampler(indices)
+                        valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                    else:
+                        valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                        
             if args.model_type == 'IonCastGNN':
                 # Calculate n_features, C, and forcing_channels given a batch of data
                 seq_dataset_batch = next(iter(train_loader))
@@ -587,18 +617,6 @@ def main():
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
 
                 elif args.model_type == 'IonCastGNN':
-                    if args.distributed:
-                        # If distributed, we need to set the partition size based on the number of GPUs
-                        partition_size = 2
-
-                        # initialize distributed manager
-                        DistributedManager.initialize()
-                        dist = DistributedManager()
-
-                        print(f"Distributed Training: Rank: {dist.rank}, Device: {dist.device}")
-                    else:
-                        partition_size = 1
-
                     # Note: there are many more features that can be included in IonCastGNN; see iio
                     model = IonCastGNN(
                         mesh_level = args.mesh_level,
@@ -613,7 +631,8 @@ def main():
                         processor_layers = args.ioncast_processor_layers,
                         hidden_layers = args.ioncast_hidden_layers,
                         hidden_dim = args.ioncast_hidden_dim,
-                        partition_size=partition_size, # Partition size for the GNN model
+                        partition_size=args.partition_size, # Partition size for the GNN model
+                        partition_group_name=args.partition_group_name,
                         aggregation = "sum",
                         activation_fn = "silu",
                         norm_type = "LayerNorm",
@@ -625,19 +644,23 @@ def main():
 
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
+                
+            print(f"model device: {next(model.parameters()).device}")
+            model = model.to(device)
 
-                if args.distributed:
-                    # distributed data parallel for multi-node training
-                    if dist.world_size > 1:
-                        model = torch.nn.parallel.DistributedDataParallel(
-                            model,
-                            device_ids=[dist.local_rank],
-                            output_device=dist.device,
-                            broadcast_buffers=dist.broadcast_buffers,
-                            find_unused_parameters=dist.find_unused_parameters,
-                            gradient_as_bucket_view=True,
-                            static_graph=True,
-                        )
+            if args.partition_size > 1:
+                # distributed data parallel for multi-node training
+                if dist.world_size > 1:
+                    print(f"dist.local_rank: {dist.local_rank}, dist.device: {dist.device}, dist.broadcast_buffers: {dist.broadcast_buffers}, dist.find_unused_parameters: {dist.find_unused_parameters}")
+                    model = torch.nn.parallel.DistributedDataParallel(
+                        model,
+                        device_ids=[dist.local_rank],
+                        output_device=dist.device,
+                        broadcast_buffers=dist.broadcast_buffers,
+                        find_unused_parameters=dist.find_unused_parameters,
+                        gradient_as_bucket_view=True,
+                        static_graph=True,
+                    )
 
                 # Set up optimizer and initialize loss
                 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -652,8 +675,6 @@ def main():
                 valid_jpld_rmse_losses = []
                 best_valid_rmse = float('inf')
 
-                model = model.to(device)
-
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
             if wandb is not None and args.wandb_mode != 'disabled':
@@ -665,6 +686,11 @@ def main():
             for epoch in range(epoch_start, args.epochs):
                 print('\n*** Epoch {:,}/{:,} started'.format(epoch+1, args.epochs))
                 print('*** Training')
+
+                # this line below is necessary if using the distributed sampler, see torch docs https://docs.pytorch.org/docs/stable/data.html
+                if args.partition_size > 1:
+                    train_sampler.set_epoch(epoch)
+                    valid_sampler.set_epoch(epoch)
 
                 # Training
                 model.train()
@@ -701,14 +727,22 @@ def main():
                             ) 
                             
                             grid_nodes = grid_nodes.to(device)
-                            grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32                        
-                            
-                            loss, rmse, jpld_rmse = model.loss(
-                                grid_nodes, 
-                                prediction_window=args.prediction_window,
-                                jpld_weight=args.jpld_weight,
-                                train_on_predicted_forcings=args.train_on_predicted_forcings, 
-                            )
+                            grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32        
+                                            
+                            if args.partition_size > 1:
+                                loss, rmse, jpld_rmse = model.module.loss(
+                                    grid_nodes, 
+                                    prediction_window=args.prediction_window,
+                                    jpld_weight=args.jpld_weight,
+                                    train_on_predicted_forcings=args.train_on_predicted_forcings, 
+                                )
+                            else:
+                                loss, rmse, jpld_rmse = model.loss(
+                                    grid_nodes, 
+                                    prediction_window=args.prediction_window,
+                                    jpld_weight=args.jpld_weight,
+                                    train_on_predicted_forcings=args.train_on_predicted_forcings, 
+                                )
 
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
@@ -774,12 +808,20 @@ def main():
                                 grid_nodes = grid_nodes.to(device)
                                 grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
 
-                                loss, rmse, jpld_rmse = model.loss(
-                                    grid_nodes, 
-                                    prediction_window=args.prediction_window,
-                                    jpld_weight=args.jpld_weight,
-                                    train_on_predicted_forcings=args.train_on_predicted_forcings 
-                                )
+                                if args.partition_size > 1:
+                                    loss, rmse, jpld_rmse = model.module.loss(
+                                        grid_nodes, 
+                                        prediction_window=args.prediction_window,
+                                        jpld_weight=args.jpld_weight,
+                                        train_on_predicted_forcings=args.train_on_predicted_forcings, 
+                                    )
+                                else:
+                                    loss, rmse, jpld_rmse = model.loss(
+                                        grid_nodes, 
+                                        prediction_window=args.prediction_window,
+                                        jpld_weight=args.jpld_weight,
+                                        train_on_predicted_forcings=args.train_on_predicted_forcings, 
+                                    )
                                 
                             else:
                                 raise ValueError('Unknown model type: {}'.format(args.model_type))
@@ -1166,3 +1208,5 @@ if __name__ == '__main__':
 
 # dilation 8, 15 years, 2010-05-13T00:00:00 to 2024-08-01T00:00:00
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-2010-2024 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --max_valid_samples 1400 --date_dilation 8
+
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-test-distributed --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2010-10-13T00:00:00 --mesh_level 6 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 8 --partition_size 2

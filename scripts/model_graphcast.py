@@ -211,6 +211,8 @@ class IonCastGNN(nn.Module):
         self.norm_type = norm_type
         self.input_res = input_res  # Input resolution (height, width)
         self.residual_target = residual_target # Whether the prediction target is the residual of the input grid nodes
+        self.partition_size = partition_size
+        self.partition_group_name = partition_group_name
 
         # Our parameters
         self.device = device

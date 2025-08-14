@@ -193,10 +193,17 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastGNN):
+    if hasattr(model, "module"):
+        model = model.module
+        
+    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastGNN) and not isinstance(model, torch.nn.parallel.DistributedDataParallel):
         raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM or IonCastGNN')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
+    # if hasattr(model, "module"):
+    #     if date_forecast_start - datetime.timedelta(minutes=model.module.context_window * args.delta_minutes) < date_start:
+    #         raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
+    # else:
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
         raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
     if date_forecast_start >= date_end:
@@ -229,9 +236,9 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
     sequence_data = dataset.get_sequence_data(sequence_dates)
-    device = next(model.parameters()).device
 
     if isinstance(model, (IonCastConvLSTM)) or isinstance(model, IonCastLSTM):
+        device = next(model.parameters()).device
         # The lines up until the concat is handled directly through graphcast_utils.stack_features
         jpld_seq_data = sequence_data[0]  # Original data
         sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
@@ -256,15 +263,25 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
         combined_seq_batch = stack_features(sequence_data, batched=False)
 
-        combined_seq_batch = combined_seq_batch.to(device)
         combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
 
         # Output context & forecast for all time steps, shape (B, T, C, H, W)
-        combined_forecast = model.predict(
-            combined_seq_batch, # .predict will mask out values not in [:, :sequence_forecast_start_index, :, :, :]
-            context_window=sequence_forecast_start_index, # Context window is the number of time steps before the forecast start
-            train=False # Use ground truth forcings for t+1
-        )
+        if hasattr(model, "module"):
+            device = next(model.module.parameters()).device
+            combined_seq_batch = combined_seq_batch.to(device)
+            combined_forecast = model.module.predict(
+                combined_seq_batch, # .predict will mask out values not in [:, :sequence_forecast_start_index, :, :, :]
+                context_window=sequence_forecast_start_index, # Context window is the number of time steps before the forecast start
+                train=False # Use ground truth forcings for t+1
+            )
+        else:
+            device = next(model.parameters()).device
+            combined_seq_batch = combined_seq_batch.to(device)
+            combined_forecast = model.predict(
+                combined_seq_batch, # .predict will mask out values not in [:, :sequence_forecast_start_index, :, :, :]
+                context_window=sequence_forecast_start_index, # Context window is the number of time steps before the forecast start
+                train=False # Use ground truth forcings for t+1
+            )
 
         combined_seq_data_original = combined_seq_batch[0, sequence_forecast_start_index:, :, :, :]  # Original data for forecast
         combined_seq_data_forecast = combined_forecast[0, sequence_forecast_start_index:, :, :, :]  # Forecast data for forecast
@@ -274,7 +291,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]
 
-    jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
+    jpld_original_unnormalized = JPLD.unnormalize(jpld_original) # [T, H, W]
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
 
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
@@ -480,8 +497,11 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
         for lead_time in lead_times_minutes: # this func can take in a list of lead times to test.
             # Determine the forecast window for this specific target and lead time
             forecast_start_date = current_target_date - datetime.timedelta(minutes=lead_time)
-            context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes) # [ context window | lead time ]
-            
+            if hasattr(model, "module"):
+                context_start_date = forecast_start_date - datetime.timedelta(minutes=model.module.context_window * args.delta_minutes) # [ context window | lead time ]
+            else:
+                context_start_date = forecast_start_date - datetime.timedelta(minutes=model.context_window * args.delta_minutes) # [ context window | lead time ]
+
             prediction_steps = lead_time // args.delta_minutes
             if prediction_steps == 0:
                 continue
@@ -875,7 +895,7 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
     # save a metrics figure (pdf) with four histograms of all metrics for all events
     file_name_hist = os.path.join(file_name_prefix + '-histograms.pdf')
     print(f'Saving metrics histograms to {file_name_hist}')
-    
+
     if not all_lead_time_errors:
         print("No fixed-lead-time metrics to aggregate")
         return
