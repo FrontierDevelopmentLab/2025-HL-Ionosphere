@@ -24,6 +24,7 @@ from util import md5_hash_str
 # from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
+from model_linear import IonCastLinear
 from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
@@ -100,6 +101,25 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_context_window': model.context_window,
             'model_dropout': model.dropout,
         }
+    elif isinstance(model, IonCastLinear):
+        checkpoint = {
+            'model': 'IonCastLinear',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_context_window': model.context_window,
+        }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
@@ -133,6 +153,12 @@ def load_model(file_name, device):
         model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                             base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
                             context_window=model_context_window, dropout=model_dropout)
+    elif checkpoint['model'] == 'IonCastLinear':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_context_window = checkpoint['model_context_window']
+        model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
+                              context_window=model_context_window)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -180,7 +206,7 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -194,6 +220,7 @@ def main():
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
     parser.add_argument('--dropout', type=float, default=0.15, help='Dropout rate for the model')
+    
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
     parser.add_argument('--save_all_channels', action='store_true', help='If set, save all channels in the forecast video, not just the JPLD channel')
@@ -319,7 +346,7 @@ def main():
             #     dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
             #     dataset_train = dataset_jpld_train
             #     dataset_valid = dataset_jpld_valid
-            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
@@ -397,6 +424,8 @@ def main():
                     model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout)
                 elif args.model_type == 'IonCastLSTM':
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
+                elif args.model_type == 'IonCastLinear':
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -433,7 +462,7 @@ def main():
                         #     jpld = jpld.to(device)
 
                         #     loss = model.loss(jpld)
-                        if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                        if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                             jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
@@ -481,7 +510,7 @@ def main():
                     valid_jpld_rmse_loss = 0.0
                     with torch.no_grad():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
-                            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
                                 sunmoon_seq = sunmoon_seq.to(device)
@@ -599,7 +628,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if args.model_type == 'IonCastConvLSTM' or args.model_type == 'IonCastLSTM':
+                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
