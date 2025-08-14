@@ -627,7 +627,7 @@ def main():
                                         # --- Long Horizon Evaluation ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             
-                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, False, args)
+                                            jpld_rmse, jpld_mae, jpld_unnormalized_rmse_val, jpld_unnormalized_mae_val, jpld_unnormalized_rmse_low_lat_val, jpld_unnormalized_rmse_mid_lat_val, jpld_unnormalized_rmse_high_lat_val = eval_forecast_long_horizon(model, dataset_valid, event_catalog, event_id, file_name_prefix+'valid', save_video, False, save_video, args)
                                             metric_event_id.append(event_id)
                                             metric_jpld_rmse.append(jpld_rmse)
                                             metric_jpld_mae.append(jpld_mae)
@@ -639,7 +639,7 @@ def main():
 
                                         # --- Fixed Lead Time Evaluation ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, False, args)
+                                            lead_time_errors, event_id_returned = eval_forecast_fixed_lead_time(model, dataset_valid, event_catalog, event_id, args.lead_times, file_name_prefix+'valid', save_video, False, save_video, args)
                                             fixed_lead_time_metrics.append(lead_time_errors)
                                             fixed_lead_time_event_ids.append(event_id_returned)
 
@@ -706,11 +706,11 @@ def main():
                                         # --- Long Horizon Evaluation (Seen) ---
                                         if args.eval_mode in ['long_horizon', 'all']:
                                             # Note: We don't save metrics for 'seen' events to avoid clutter, just the video.
-                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, False, args)
+                                            eval_forecast_long_horizon(model, dataset_train, event_catalog, event_id, file_name_prefix+'valid-seen', save_video, False, save_video, args)
                                         
                                         # --- Fixed Lead Time Evaluation (Seen) ---
                                         if args.eval_mode in ['fixed_lead_time', 'all']:
-                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, False, args)
+                                            lead_time_errors_seen, event_id_returned_seen = eval_forecast_fixed_lead_time(model, dataset_train, event_catalog, event_id, args.lead_times, file_name_prefix+'valid-seen', save_video, False, save_video, args)
                                             fixed_lead_time_metrics_seen.append(lead_time_errors_seen)
                                             fixed_lead_time_event_ids_seen.append(event_id_returned_seen)
                                 
@@ -779,12 +779,12 @@ def main():
                     if args.eval_mode in ['long_horizon', 'all']:
                         save_video = True
                         save_numpy = True
-                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, args)
+                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_video, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
                         save_video = True
                         save_numpy = True
-                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, args)
+                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, save_video, args)
                         test_fixed_lead_time_metrics.append(lead_time_errors_test)
                         test_fixed_lead_time_event_ids.append(event_id_returned_test)
 

@@ -9,6 +9,9 @@ import datetime
 import torch
 import os
 import csv
+import pandas as pd
+import seaborn as sns
+import random
 
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
@@ -250,7 +253,66 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
 
-def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, args):
+def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
+    """
+    Create a scatter plot with marginal histograms comparing ground truth vs predicted values.
+    
+    Parameters:
+        gt (np.ndarray): Ground truth values (1D array, flattened across all pixels & frames)
+        pred (np.ndarray): Predicted values (1D array, flattened across all pixels & frames)  
+        file_name (str): Path to save the plot
+        max_points (int): Maximum number of points to plot for performance
+        title (str): Title for the plot
+    """
+    print(f'Saving scatter plot to {file_name}')
+    
+    # Sample data for performance if needed
+    n_total = len(gt)
+    if n_total > max_points:
+        random.seed(42)  # For reproducible sampling
+        sample_indices = random.sample(range(n_total), max_points)
+        gt_sampled = gt[sample_indices]
+        pred_sampled = pred[sample_indices]
+    else:
+        gt_sampled = gt
+        pred_sampled = pred
+    
+    # Create DataFrame for seaborn
+    df = pd.DataFrame({'Ground Truth (TECU)': gt_sampled, 'Predicted (TECU)': pred_sampled})
+    
+    # Use seaborn jointplot - much faster and cleaner
+    g = sns.jointplot(
+        data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
+        kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True)
+    )
+    
+    # Add light grid for better readability
+    g.ax_joint.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+    
+    # Add reference line (perfect prediction) - subtle styling
+    max_val = max(np.max(gt_sampled), np.max(pred_sampled))
+    min_val = min(np.min(gt_sampled), np.min(pred_sampled))
+    g.ax_joint.plot([min_val, max_val], [min_val, max_val], 
+                   color='black', linestyle='-', linewidth=1.5, alpha=0.7, 
+                   label='Perfect Prediction')
+    g.ax_joint.legend()
+    
+    # Add correlation coefficient (compute on sampled data for speed)
+    corr = np.corrcoef(gt_sampled, pred_sampled)[0, 1]
+    g.ax_joint.text(0.05, 0.95, f'R = {corr:.3f}', transform=g.ax_joint.transAxes, 
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Add title if provided
+    if title:
+        # Adjust figure spacing to accommodate title
+        g.fig.subplots_adjust(top=0.9)  # Make room for title
+        g.fig.suptitle(title, fontsize=12, y=0.95)
+    
+    plt.savefig(file_name, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_scatter, args):
     if event_id not in event_catalog:
         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
     event = event_catalog[event_id]
@@ -264,7 +326,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     date_forecast_start = event_start
     date_end = event_end
     file_name = f'{file_name_prefix}-long-horizon-event-{event_id}.mp4'
-    title = f'Event: {event_id}, Kp={max_kp}'
+    title = f'Event: {event_id}, Kp={max_kp:.2f}'
 
     jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window = run_forecast(model, dataset, date_start, date_end, date_forecast_start, True, args)
 
@@ -345,6 +407,16 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
                 )
                 print(f'Saved channel {i} forecast video to {file_name_channel}')
     
+    if save_scatter:
+        # Generate scatter plot with marginal histograms
+        scatter_file_name = file_name.replace('.mp4', '-scatter.pdf')
+        
+        # Flatten the unnormalized JPLD data
+        gt_flat = jpld_original_unnormalized.cpu().numpy().flatten()
+        pred_flat = jpld_forecast_unnormalized.cpu().numpy().flatten()
+        
+        plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, title=fig_title)
+    
     if save_numpy:
         # Save the numpy arrays for the main JPLD channel
         numpy_file_original = file_name.replace('.mp4', '-original.npy')
@@ -401,7 +473,7 @@ def plot_lead_time_metrics(metrics, file_name):
     plt.close()
 
 
-def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_times_minutes, file_name_prefix, save_video, save_numpy, args):
+def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_times_minutes, file_name_prefix, save_video, save_numpy, save_scatter, args):
     """
     Evaluates an autoregressive model at fixed lead times over a specified event period.
     """
@@ -531,7 +603,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             #fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
             mean_rmse = np.mean(lead_time_errors[lt]['rmse'])
             mean_mae = np.mean(lead_time_errors[lt]['mae'])
-            fig_title = f"Event: {event_id} - Kp={max_kp} - RMSE: {mean_rmse:.2f} TECU - MAE: {mean_mae:.2f} TECU"
+            fig_title = f"Event: {event_id} - Kp={max_kp:.2f} - RMSE: {mean_rmse:.2f} TECU - MAE: {mean_mae:.2f} TECU"
 
             save_gim_video_comparison(
                 gim_sequence_top=np.array(original_frames),
@@ -542,6 +614,16 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
                 titles_bottom=titles_bottom,
                 fig_title=fig_title
             )
+            
+            # Generate scatter plot for this lead time if requested
+            if save_scatter:
+                scatter_file_name = video_file_name.replace('.mp4', '-scatter.pdf')
+                
+                # Flatten the data
+                gt_flat = np.array(original_frames).flatten()
+                pred_flat = np.array(forecast_frames).flatten()
+                
+                plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, title=fig_title)
     
     # --- Save NumPy arrays if Requested ---
     if save_numpy:
