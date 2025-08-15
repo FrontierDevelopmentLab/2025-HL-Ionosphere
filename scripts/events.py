@@ -172,6 +172,24 @@ validation_events_2 = ['G0H3-201804202100',
 validation_events_3 = ['G0H3-201804202100',]
 
 
+validation_events_4 = ['G0H3-201804202100',
+                       'G0H3-201610140300',
+
+                       'G1H12-201507041800',
+                       'G1H12-201704220000',
+                       'G1H12-201310081800',
+
+                       'G2H12-201509071500',
+                       'G2H12-201605081200',
+
+                       'G3H12-201510070300',
+                       'G3H12-201207150300',
+                       'G3H12-201306010000',
+
+                       'G4H12-201203090300',
+                       'G4H12-201506221500',
+                       ]
+
 # Print the event catalog in a readable format
 if __name__ == "__main__":
     event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')

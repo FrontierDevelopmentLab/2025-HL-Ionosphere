@@ -25,6 +25,7 @@ from util import md5_hash_str
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
 from model_linear import IonCastLinear
+from model_lstmsdo import IonCastLSTMSDO
 from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
@@ -32,8 +33,9 @@ from dataset_sunmoongeometry import SunMoonGeometry
 from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb
 from dataset_set import SET
+from dataset_sdocore import SDOCore
 from dataloader_cached import CachedDataLoader
-from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4
 from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
@@ -120,6 +122,31 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_output_channels': model.output_channels,
             'model_context_window': model.context_window,
         }
+    elif isinstance(model, IonCastLSTMSDO):
+        checkpoint = {
+            'model': 'IonCastLSTMSDO',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_base_channels': model.base_channels,
+            'model_lstm_dim': model.lstm_dim,
+            'model_num_layers': model.num_layers,
+            'model_context_window': model.context_window,
+            'model_dropout': model.dropout,
+            'model_sdo_dim': model.sdo_dim,
+            'model_sdo_num_layers': model.sdo_num_layers,
+        }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
@@ -159,6 +186,20 @@ def load_model(file_name, device):
         model_context_window = checkpoint['model_context_window']
         model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
                               context_window=model_context_window)
+    elif checkpoint['model'] == 'IonCastLSTMSDO':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_base_channels = checkpoint['model_base_channels']
+        model_lstm_dim = checkpoint['model_lstm_dim']
+        model_num_layers = checkpoint['model_num_layers']
+        model_context_window = checkpoint['model_context_window']
+        model_dropout = checkpoint['model_dropout']
+        model_sdo_dim = checkpoint['model_sdo_dim']
+        model_sdo_num_layers = checkpoint['model_sdo_num_layers']
+        model = IonCastLSTMSDO(input_channels=model_input_channels, output_channels=model_output_channels,
+                                   base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
+                                   context_window=model_context_window, dropout=model_dropout, sdo_dim=model_sdo_dim, 
+                                   sdo_num_layers=model_sdo_num_layers)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -190,6 +231,7 @@ def main():
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
+    parser.add_argument('--sdocore_file_name', type=str, default='sdocore/sdo_core_dataset_21504.h5', help='Name of the SDOCore dataset file')
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -206,13 +248,13 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_4, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G0H6-201706111800', 'G4H9-202303231800'], help='Test event IDs to use for evaluation')
@@ -261,9 +303,10 @@ def main():
                                  'celestrak_file_name', 
                                  'omniweb_dir', 
                                  'omniweb_columns', 
-                                 'set_file_name', 
+                                 'set_file_name',
+                                 'sdocore_file_name',
                                  'date_start', 
-                                 'date_end', ""
+                                 'date_end', 
                                  'date_dilation',
                                  'delta_minutes', 
                                  'batch_size', 
@@ -311,10 +354,11 @@ def main():
             dataset_celestrak_file_name = os.path.join(args.data_dir, args.celestrak_file_name)
             dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
             dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
+            dataset_sdocore_file_name = os.path.join(args.data_dir, args.sdocore_file_name)
 
             print('Processing excluded dates')
 
-            datasets_omniweb_valid = []
+            datasets_sunmoon_valid = []
 
             date_exclusions = []
             if args.valid_event_id:
@@ -327,20 +371,9 @@ def main():
                     exclusion_end = datetime.datetime.fromisoformat(event['date_end'])
                     date_exclusions.append((exclusion_start, exclusion_end))
 
-                    datasets_omniweb_valid.append(OMNIWeb(dataset_omniweb_dir, date_start=exclusion_start, date_end=exclusion_end, column=args.omniweb_columns, return_as_image_size=(180, 360)))
+                    datasets_sunmoon_valid.append(SunMoonGeometry(date_start=exclusion_start, date_end=exclusion_end, extra_time_steps=args.sun_moon_extra_time_steps))
 
-            dataset_omniweb_valid = Union(datasets=datasets_omniweb_valid)
-
-            if args.valid_event_seen_id is None:
-                num_seen_events = max(2, len(args.valid_event_id))
-                date_start_plus_context = date_start + datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-                event_catalog_within_training_set = event_catalog.filter(date_start=date_start_plus_context, date_end=date_end).exclude(date_exclusions=date_exclusions)
-                if len(event_catalog_within_training_set) > 0:
-                    args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
-                    print('\nUsing validation events seen during training: {}\n'.format(args.valid_event_seen_id))
-                else:
-                    print('\nNo validation events seen during training found within the training set. Using empty list.\n')
-                    args.valid_event_seen_id = []
+            dataset_sunmoon_valid = Union(datasets=datasets_sunmoon_valid)
 
             # if args.model_type == 'VAE1':
             #     dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
@@ -348,19 +381,44 @@ def main():
             #     dataset_valid = dataset_jpld_valid
             if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
-                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end)
+                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                # dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
                 dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
-                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=(180, 360))
+                dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
-                # dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, column=args.omniweb_columns)
+                dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, column=args.omniweb_columns)
                 dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
-                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=(180, 360))
+                dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
+            elif args.model_type == 'IonCastLSTMSDO':
+                # SDO model uses only JPLD + SunMoonGeometry for image channels, SDOCore for context
+                # Limit all datasets to SDO data range (2010-2018) since SDOCore is required
+                from datetime import datetime as dt
+                sdo_end_date = dt.fromisoformat('2018-08-17T04:48:00')
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=sdo_end_date, date_exclusions=date_exclusions)
+                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
+                dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=sdo_end_date, extra_time_steps=args.sun_moon_extra_time_steps)
+                # dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                dataset_sdocore_train = SDOCore(dataset_sdocore_file_name, date_start=date_start, date_end=sdo_end_date)
+                dataset_sdocore_valid = SDOCore(dataset_sdocore_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_sdocore_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_sdocore_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
             else:
                 raise ValueError('Unknown model type: {}'.format(args.model_type))
+
+            # Pick seen events within the training data, if not given
+            if args.valid_event_seen_id is None:
+                num_seen_events = max(2, len(args.valid_event_id))
+                date_start_plus_context = dataset_train.date_start + datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                event_catalog_within_training_set = event_catalog.filter(date_start=date_start_plus_context, date_end=dataset_train.date_end).exclude(date_exclusions=date_exclusions)
+                if len(event_catalog_within_training_set) > 0:
+                    args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
+                    print('\nUsing validation events seen during training: {}\n'.format(args.valid_event_seen_id))
+                else:
+                    print('\nNo validation events seen during training found within the training set. Using empty list.\n')
+                    args.valid_event_seen_id = []
 
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
@@ -417,7 +475,10 @@ def main():
                 print('Next iteration: {:,}'.format(iteration+1))
             else:
                 print('Creating new model')
-                total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                if args.model_type == 'IonCastLSTMSDO':
+                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
+                else:
+                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                 # if args.model_type == 'VAE1':
                 #     model = VAE1(z_dim=512, sigma_vae=False)
                 if args.model_type == 'IonCastConvLSTM':
@@ -426,6 +487,8 @@ def main():
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
                 elif args.model_type == 'IonCastLinear':
                     model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window)
+                elif args.model_type == 'IonCastLSTMSDO':
+                    model = IonCastLSTMSDO(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, sdo_dim=21504)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -473,6 +536,19 @@ def main():
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
                             loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                        elif args.model_type == 'IonCastLSTMSDO':
+                            jpld_seq, sunmoon_seq, sdo_seq, _ = batch
+                            jpld_seq = jpld_seq.to(device)
+                            sunmoon_seq = sunmoon_seq.to(device)
+                            sdo_seq = sdo_seq.to(device)
+
+                            # Combine JPLD and SunMoonGeometry for image channels
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Shape: (B, T, 37, H, W)
+                            
+                            # Use SDO sequence as context (Shape: (B, T, 21504))
+                            sdo_context = sdo_seq[:, :args.context_window, :]  # Use context window portion
+
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
                         else:
                             raise ValueError('Unknown model type: {}'.format(args.model_type))
                         
@@ -520,6 +596,19 @@ def main():
 
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                                 loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                            elif args.model_type == 'IonCastLSTMSDO':
+                                jpld_seq, sunmoon_seq, sdo_seq, _ = batch
+                                jpld_seq = jpld_seq.to(device)
+                                sunmoon_seq = sunmoon_seq.to(device)
+                                sdo_seq = sdo_seq.to(device)
+
+                                # Combine JPLD and SunMoonGeometry for image channels
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Shape: (B, T, 37, H, W)
+                                
+                                # Use SDO sequence as context (Shape: (B, T, 21504))
+                                sdo_context = sdo_seq[:, :args.context_window, :]  # Use context window portion
+
+                                loss, rmse, jpld_rmse = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
                             else:
                                 raise ValueError('Unknown model type: {}'.format(args.model_type))
                             valid_loss += loss.item()
@@ -628,7 +717,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
@@ -795,13 +884,20 @@ def main():
                     buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
                     
                     print(f'\n--- Preparing data for Event: {event_id} ---')
-                    dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
-                    dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                    dataset_celestrak = CelesTrak(os.path.join(args.data_dir, args.celestrak_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
-                    dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=buffer_start, date_end=event_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
-                    dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
-                    
-                    dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    if model.__class__.__name__ == 'IonCastLSTMSDO':
+                        # SDO model uses only JPLD + SunMoonGeometry + SDOCore
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    else:
+                        # Other models use all 5 datasets
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_celestrak = CelesTrak(os.path.join(args.data_dir, args.celestrak_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
+                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=buffer_start, date_end=event_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
+                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
 
                     file_name_prefix = os.path.join(args.target_dir, 'test')
 

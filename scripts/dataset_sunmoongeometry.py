@@ -37,7 +37,7 @@ class SunMoonGeometry(Dataset):
     Note: The scalar values (coordinates, distances, day of year) are broadcast
     to the same spatial dimensions as the zenith angle maps.
     """
-    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0, ephemeris_dir=None):
+    def __init__(self, date_start=None, date_end=None, delta_minutes=15, image_size=(180, 360), normalize=True, combined=True, extra_time_steps=0, ephemeris_dir=None, date_exclusions=None):
         self.date_start = date_start
         self.date_end = date_end
         self.delta_minutes = delta_minutes
@@ -52,10 +52,18 @@ class SunMoonGeometry(Dataset):
         if self.date_end is None:
             self.date_end = datetime.datetime(2024, 8, 1, 0, 0, 0)
 
+        self.date_exclusions = date_exclusions
         current_date = self.date_start
         self.dates = []
         while current_date <= self.date_end:
-            self.dates.append(current_date)
+            exclude = False
+            if self.date_exclusions is not None:
+                for exclusion_date_start, exclusion_date_end in self.date_exclusions:
+                    if exclusion_date_start <= current_date <= exclusion_date_end:
+                        exclude = True
+                        break
+            if not exclude:
+                self.dates.append(current_date)
             current_date += datetime.timedelta(minutes=self.delta_minutes)
 
         self.dates_set = set(self.dates)
@@ -67,6 +75,10 @@ class SunMoonGeometry(Dataset):
         print('Delta                   : {} minutes'.format(self.delta_minutes))
         print('Image size              : {}'.format(self.image_size))
         print('Extra time steps        : {}'.format(self.extra_time_steps))
+        if self.date_exclusions is not None:
+            print('Date exclusions:')
+            for exclusion_date_start, exclusion_date_end in self.date_exclusions:
+                print('  {} - {}'.format(exclusion_date_start, exclusion_date_end))
 
         # Don't initialize Skyfield objects here
         self._ts = None
@@ -87,7 +99,10 @@ class SunMoonGeometry(Dataset):
             self._earth_body = self._eph['earth']
             self._sun_body = self._eph['sun']
             self._moon_body = self._eph['moon']
-
+    
+    def __repr__(self):
+        return '{} ({} - {})'.format(self.name, self.date_start, self.date_end)
+    
     def __len__(self):
         return len(self.dates)
     

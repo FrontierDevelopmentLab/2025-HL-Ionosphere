@@ -16,6 +16,7 @@ import random
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
+from model_lstmsdo import IonCastLSTMSDO
 
 matplotlib.use('Agg')
 
@@ -190,8 +191,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM):
-        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM')
+    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastLSTMSDO):
+        raise ValueError('Model must be an instance of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -225,24 +226,44 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     if verbose:
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
-    sequence_data = dataset.get_sequence_data(sequence_dates)
-    jpld_seq_data = sequence_data[0]  # Original data
-    sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-    celestrak_seq_data = sequence_data[2]  # CelesTrak data
-    device = next(model.parameters()).device
-    jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-    sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
-    celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
-    omniweb_seq_data = sequence_data[3]  # OMNIWeb data
-    omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
-    set_seq_data = sequence_data[4]  # SET data
-    set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
+    if isinstance(model, IonCastConvLSTM) or isinstance(model, IonCastLSTM):
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        celestrak_seq_data = sequence_data[2]  # CelesTrak data
+        device = next(model.parameters()).device
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+        celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
+        omniweb_seq_data = sequence_data[3]  # OMNIWeb data
+        omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
+        set_seq_data = sequence_data[4]  # SET data
+        set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
 
-    combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
 
-    combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-    combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
-    combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    elif isinstance(model, IonCastLSTMSDO):
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        sdo_seq_data = sequence_data[2]  # SDO context data
+        device = next(model.parameters()).device
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+        sdo_seq_data = sdo_seq_data.to(device) # sequence_length, sdo_latent_dim
+
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+
+        sdo_seq_data_context = sdo_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), sdo_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    else:
+        raise ValueError('Model type not supported for forecasting')
 
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]
