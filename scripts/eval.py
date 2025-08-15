@@ -191,8 +191,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon']:
-        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD or IonCastLSTM-ablation-JPLDSunMoon')
+    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD']:
+        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD or IonCastLSTM-ablation-JPLDSunMoon or IonCastLinear-ablation-JPLD')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -245,7 +245,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
         combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-    elif model.name in ['IonCastLSTM-ablation-JPLD']:
+    elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD']:
         sequence_data = dataset.get_sequence_data(sequence_dates)
         jpld_seq_data = sequence_data[0]  # Original data
         device = next(model.parameters()).device

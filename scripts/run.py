@@ -256,7 +256,7 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 60, 90, 120], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -400,7 +400,7 @@ def main():
                 dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
-            elif args.model_type == 'IonCastLSTM-ablation-JPLD':
+            elif args.model_type in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD']:
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
@@ -517,6 +517,10 @@ def main():
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     name = 'IonCastLinear'
                     model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                elif args.model_type == 'IonCastLinear-ablation-JPLD':
+                    total_channels = 1  # JPLD (1)
+                    name = 'IonCastLinear-ablation-JPLD'
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
                 elif args.model_type == 'IonCastLSTMSDO':
                     total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
                     name = 'IonCastLSTMSDO'
@@ -568,7 +572,7 @@ def main():
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
                             loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
-                        elif model.name == 'IonCastLSTM-ablation-JPLD':
+                        elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD']:
                             jpld_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
 
@@ -643,7 +647,7 @@ def main():
 
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                                 loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
-                            elif model.name == 'IonCastLSTM-ablation-JPLD':
+                            elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD']:
                                 jpld_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
 
@@ -779,7 +783,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon']:
+                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
