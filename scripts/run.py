@@ -255,8 +255,8 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-6, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
-    parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 60, 90, 120], help='A list of lead times in minutes for fixed-lead-time evaluation.')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -405,6 +405,13 @@ def main():
                 dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
                 dataset_train = Sequences(datasets=[dataset_jpld_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
+            elif args.model_type == 'IonCastLSTM-ablation-JPLDSunMoon':
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
+                dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                dataset_sunmoon_valid = SunMoonGeometry(date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
             elif args.model_type == 'IonCastLSTMSDO':
                 # SDO model uses only JPLD + SunMoonGeometry for image channels, SDOCore for context
                 # Limit all datasets to SDO data range (2010-2018) since SDOCore is required
@@ -502,6 +509,10 @@ def main():
                     total_channels = 1  # JPLD (1)
                     name = 'IonCastLSTM-ablation-JPLD'
                     model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
+                elif args.model_type == 'IonCastLSTM-ablation-JPLDSunMoon':
+                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
+                    name = 'IonCastLSTM-ablation-JPLDSunMoon'
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLinear':
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     name = 'IonCastLinear'
@@ -546,7 +557,7 @@ def main():
                         #     jpld = jpld.to(device)
 
                         #     loss = model.loss(jpld)
-                        if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+                        if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                             jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
@@ -557,12 +568,22 @@ def main():
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
                             loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
-                        elif args.model_type == 'IonCastLSTM-ablation-JPLD':
+                        elif model.name == 'IonCastLSTM-ablation-JPLD':
                             jpld_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
 
                             loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
-                        elif args.model_type == 'IonCastLSTMSDO':
+
+                        elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
+                            jpld_seq, sunmoon_seq, _ = batch
+                            jpld_seq = jpld_seq.to(device)
+                            sunmoon_seq = sunmoon_seq.to(device)
+
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
+
+                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+
+                        elif model.name == 'IonCastLSTMSDO':
                             jpld_seq, sunmoon_seq, sdo_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
@@ -627,6 +648,16 @@ def main():
                                 jpld_seq = jpld_seq.to(device)
 
                                 loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
+
+                            elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
+                                jpld_seq, sunmoon_seq, _ = batch
+                                jpld_seq = jpld_seq.to(device)
+                                sunmoon_seq = sunmoon_seq.to(device)
+
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
+
+                                loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+
                             elif model.name == 'IonCastLSTMSDO':
                                 jpld_seq, sunmoon_seq, sdo_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
@@ -748,7 +779,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD']:
+                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
@@ -930,7 +961,7 @@ def main():
                         dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
                         dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
                     else:
-                        raise ValueError(f'Unknown model name: {model.name}')
+                        raise ValueError(f'Unsupported model: {model.name}')
 
                     file_name_prefix = os.path.join(args.target_dir, 'test')
 

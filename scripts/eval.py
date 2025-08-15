@@ -191,8 +191,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD']:
-        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD')
+    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon']:
+        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD or IonCastLSTM-ablation-JPLDSunMoon')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -255,7 +255,21 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
 
         combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
         combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    elif model.name in ['IonCastLSTM-ablation-JPLDSunMoon']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        device = next(model.parameters()).device
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
+
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)        
+    
     elif model.name in ['IonCastLSTMSDO']:
         sequence_data = dataset.get_sequence_data(sequence_dates)
         jpld_seq_data = sequence_data[0]  # Original data
