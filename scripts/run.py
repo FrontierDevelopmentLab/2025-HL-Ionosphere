@@ -79,6 +79,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
             'model_dropout': model.dropout,
+            'model_name': model.name
         }
     elif isinstance(model, IonCastLSTM):
         checkpoint = {
@@ -102,6 +103,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_dropout': model.dropout,
+            'model_name': model.name
         }
     elif isinstance(model, IonCastLinear):
         checkpoint = {
@@ -121,6 +123,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
             'model_context_window': model.context_window,
+            'model_name': model.name
         }
     elif isinstance(model, IonCastLSTMSDO):
         checkpoint = {
@@ -146,6 +149,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_dropout': model.dropout,
             'model_sdo_dim': model.sdo_dim,
             'model_sdo_num_layers': model.sdo_num_layers,
+            'model_name': model.name
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -165,10 +169,11 @@ def load_model(file_name, device):
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
         model_dropout = checkpoint['model_dropout']
+        model_name = checkpoint['model_name']
         model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                                 hidden_dim=model_hidden_dim, num_layers=model_num_layers,
                                 context_window=model_context_window, prediction_window=model_prediction_window,
-                                dropout=model_dropout)
+                                dropout=model_dropout, name=model_name)
     elif checkpoint['model'] == 'IonCastLSTM':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
@@ -177,15 +182,17 @@ def load_model(file_name, device):
         model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_dropout = checkpoint['model_dropout']
+        model_name = checkpoint['model_name']
         model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                             base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
-                            context_window=model_context_window, dropout=model_dropout)
+                            context_window=model_context_window, dropout=model_dropout, name=model_name)
     elif checkpoint['model'] == 'IonCastLinear':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
         model_context_window = checkpoint['model_context_window']
+        model_name = checkpoint['model_name']
         model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
-                              context_window=model_context_window)
+                              context_window=model_context_window, name=model_name)
     elif checkpoint['model'] == 'IonCastLSTMSDO':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
@@ -196,10 +203,11 @@ def load_model(file_name, device):
         model_dropout = checkpoint['model_dropout']
         model_sdo_dim = checkpoint['model_sdo_dim']
         model_sdo_num_layers = checkpoint['model_sdo_num_layers']
+        model_name = checkpoint['model_name']
         model = IonCastLSTMSDO(input_channels=model_input_channels, output_channels=model_output_channels,
                                    base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
-                                   context_window=model_context_window, dropout=model_dropout, sdo_dim=model_sdo_dim, 
-                                   sdo_num_layers=model_sdo_num_layers)
+                                   context_window=model_context_window, dropout=model_dropout, sdo_dim=model_sdo_dim,
+                                   sdo_num_layers=model_sdo_num_layers, name=model_name)
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -248,7 +256,7 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -392,6 +400,11 @@ def main():
                 dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
                 dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
+            elif args.model_type == 'IonCastLSTM-ablation-JPLD':
+                dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
+                dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
+                dataset_train = Sequences(datasets=[dataset_jpld_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
             elif args.model_type == 'IonCastLSTMSDO':
                 # SDO model uses only JPLD + SunMoonGeometry for image channels, SDOCore for context
                 # Limit all datasets to SDO data range (2010-2018) since SDOCore is required
@@ -475,20 +488,28 @@ def main():
                 print('Next iteration: {:,}'.format(iteration+1))
             else:
                 print('Creating new model')
-                if args.model_type == 'IonCastLSTMSDO':
-                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
-                else:
-                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                 # if args.model_type == 'VAE1':
                 #     model = VAE1(z_dim=512, sigma_vae=False)
                 if args.model_type == 'IonCastConvLSTM':
-                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout)
+                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                    name = 'IonCastConvLSTM'
+                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLSTM':
-                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout)
+                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                    name = 'IonCastLSTM'
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
+                elif args.model_type == 'IonCastLSTM-ablation-JPLD':
+                    total_channels = 1  # JPLD (1)
+                    name = 'IonCastLSTM-ablation-JPLD'
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLinear':
-                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window)
+                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                    name = 'IonCastLinear'
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
                 elif args.model_type == 'IonCastLSTMSDO':
-                    model = IonCastLSTMSDO(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, sdo_dim=21504)
+                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
+                    name = 'IonCastLSTMSDO'
+                    model = IonCastLSTMSDO(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, sdo_dim=21504, name=name)
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -536,6 +557,11 @@ def main():
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
 
                             loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                        elif args.model_type == 'IonCastLSTM-ablation-JPLD':
+                            jpld_seq, _ = batch
+                            jpld_seq = jpld_seq.to(device)
+
+                            loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
                         elif args.model_type == 'IonCastLSTMSDO':
                             jpld_seq, sunmoon_seq, sdo_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
@@ -586,7 +612,7 @@ def main():
                     valid_jpld_rmse_loss = 0.0
                     with torch.no_grad():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
-                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
                                 sunmoon_seq = sunmoon_seq.to(device)
@@ -596,7 +622,12 @@ def main():
 
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
                                 loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
-                            elif args.model_type == 'IonCastLSTMSDO':
+                            elif model.name == 'IonCastLSTM-ablation-JPLD':
+                                jpld_seq, _ = batch
+                                jpld_seq = jpld_seq.to(device)
+
+                                loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
+                            elif model.name == 'IonCastLSTMSDO':
                                 jpld_seq, sunmoon_seq, sdo_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
                                 sunmoon_seq = sunmoon_seq.to(device)
@@ -610,7 +641,7 @@ def main():
 
                                 loss, rmse, jpld_rmse = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
                             else:
-                                raise ValueError('Unknown model type: {}'.format(args.model_type))
+                                raise ValueError('Unknown model name: {}'.format(model.name))
                             valid_loss += loss.item()
                             valid_rmse_loss += rmse.item()
                             valid_jpld_rmse_loss += jpld_rmse.item()
@@ -717,7 +748,7 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear']:
+                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD']:
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
@@ -884,13 +915,7 @@ def main():
                     buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
                     
                     print(f'\n--- Preparing data for Event: {event_id} ---')
-                    if model.__class__.__name__ == 'IonCastLSTMSDO':
-                        # SDO model uses only JPLD + SunMoonGeometry + SDOCore
-                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
-                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                        dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
-                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
-                    else:
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                         # Other models use all 5 datasets
                         dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
                         dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
@@ -898,6 +923,14 @@ def main():
                         dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=buffer_start, date_end=event_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
                         dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
                         dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    elif model.name == 'IonCastLSTMSDO':
+                        # SDO model uses only JPLD + SunMoonGeometry + SDOCore
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    else:
+                        raise ValueError(f'Unknown model name: {model.name}')
 
                     file_name_prefix = os.path.join(args.target_dir, 'test')
 

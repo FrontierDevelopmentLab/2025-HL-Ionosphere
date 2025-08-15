@@ -191,8 +191,8 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastLSTMSDO):
-        raise ValueError('Model must be an instance of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO')
+    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD']:
+        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD')
     if date_start > date_end:
         raise ValueError('date_start must be before date_end')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
@@ -226,7 +226,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     if verbose:
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
-    if isinstance(model, IonCastConvLSTM) or isinstance(model, IonCastLSTM):
+    if model.name in ['IonCastLSTM', 'IonCastConvLSTM', 'IonCastLinear']:
         sequence_data = dataset.get_sequence_data(sequence_dates)
         jpld_seq_data = sequence_data[0]  # Original data
         sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
@@ -245,7 +245,18 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
         combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-    elif isinstance(model, IonCastLSTMSDO):
+    elif model.name in ['IonCastLSTM-ablation-JPLD']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        device = next(model.parameters()).device
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+
+        combined_seq_data = jpld_seq_data
+
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)        
+    elif model.name in ['IonCastLSTMSDO']:
         sequence_data = dataset.get_sequence_data(sequence_dates)
         jpld_seq_data = sequence_data[0]  # Original data
         sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
@@ -263,7 +274,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
 
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), sdo_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
     else:
-        raise ValueError('Model type not supported for forecasting')
+        raise ValueError(f'Model not supported for forecasting: {model.name}')
 
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]

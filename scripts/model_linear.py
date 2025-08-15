@@ -10,7 +10,7 @@ class IonCastLinear(nn.Module):
     to predict the next frame. No context window, minimal parameters.
     """
     
-    def __init__(self, input_channels=17, output_channels=17, context_window=4):
+    def __init__(self, input_channels=17, output_channels=17, context_window=4, name=None):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -18,8 +18,12 @@ class IonCastLinear(nn.Module):
         
         # Ultra-simple: just a channel-wise linear transformation
         self.linear = nn.Linear(input_channels, output_channels)
-        
-        print('IonCastLinear')
+
+        if name is None:
+            name = 'IonCastLinear'
+        self.name = name
+
+        print(self.name)
         print('  input_channels:', input_channels)
         print('  output_channels:', output_channels)
         print('  context_window:', context_window, '(only uses last frame)')
