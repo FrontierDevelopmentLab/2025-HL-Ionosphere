@@ -37,7 +37,7 @@ def train():
     parser.add_argument('--torch_type', type=str, default='float32', help='Torch type to use for training')
     parser.add_argument('--subset_type', type=int, default=5,  choices=[5, 10, 20, 30, 40], help='Which Madrigal data to use, possible choices are: 5, 10, 20, 30, 40 million points')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
-    parser.add_argument('--model_path', type=str, default=None, help='Path to the model to load. If None, a new model is created')
+    parser.add_argument('--model_path', type=str, default='', help='Path to the model to load. If None, a new model is created')
     parser.add_argument('--lr', type=float, default=0.0004, help='Learning rate for the optimizer')
     parser.add_argument('--run_name', default='', help='Run name to be stored in wandb')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train the model')
@@ -161,7 +161,7 @@ def train():
 
 
     ts_ionopy_model.to(device)
-    if opt.model_path is not None:
+    if opt.model_path != '':
         print(f"Loading Ionopy model from {opt.model_path}")
         ts_ionopy_model.load_state_dict(torch.load(opt.model_path))
 
@@ -424,7 +424,7 @@ def train():
             old_best = best_val_loss
             best_val_loss = validation_loss
             print(f"Validation loss improved from {old_best:.8f} to {validation_loss:.8f}, saving model")
-            if opt.model_path is not None:
+            if opt.model_path != '':
                 torch.save(ts_ionopy_model.state_dict(), opt.model_path)
             else:
                 torch.save(ts_ionopy_model.state_dict(), f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}.pth")
