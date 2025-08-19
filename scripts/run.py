@@ -262,7 +262,7 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_1, help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=validation_events_4, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G0H6-201706111800', 'G4H9-202303231800'], help='Test event IDs to use for evaluation')
@@ -395,7 +395,7 @@ def main():
                 dataset_celestrak_train = CelesTrak(dataset_celestrak_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
                 dataset_celestrak_valid = CelesTrak(dataset_celestrak_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_omniweb_train = OMNIWeb(dataset_omniweb_dir, date_start=date_start, date_end=date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
-                dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, column=args.omniweb_columns)
+                dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
                 dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end, return_as_image_size=(180, 360))
                 dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end, return_as_image_size=(180, 360))
                 dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
@@ -433,8 +433,13 @@ def main():
                 num_seen_events = max(2, len(args.valid_event_id))
                 date_start_plus_context = dataset_train.date_start + datetime.timedelta(minutes=args.context_window * args.delta_minutes)
                 event_catalog_within_training_set = event_catalog.filter(date_start=date_start_plus_context, date_end=dataset_train.date_end).exclude(date_exclusions=date_exclusions)
-                if len(event_catalog_within_training_set) > 0:
-                    args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
+                
+                # Additional filtering: ensure no event's context window overlaps with excluded date ranges
+                event_catalog_no_context_overlap = event_catalog_within_training_set.exclude_context_overlap(date_exclusions, args.context_window * args.delta_minutes)
+                
+                if len(event_catalog_no_context_overlap) > 0:
+                    # Sample from the filtered list
+                    args.valid_event_seen_id = event_catalog_no_context_overlap.sample(min(num_seen_events, len(event_catalog_no_context_overlap))).ids()
                     print('\nUsing validation events seen during training: {}\n'.format(args.valid_event_seen_id))
                 else:
                     print('\nNo validation events seen during training found within the training set. Using empty list.\n')
