@@ -3,6 +3,7 @@ import numpy as np
 from warnings import warn
 
 # SDOML-lite: 2010-05-13T00:00:00 - 2024-07-27T00:00:00
+# SDOML: 2010-05-13T00:12:00 - 2018-08-17T04:48:00
 
 # NOAA Space Weather Scales
 # Geomagnetic Storms

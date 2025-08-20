@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import datetime
+import warnings
 
 
 class Sequences(Dataset):
@@ -52,7 +53,15 @@ class Sequences(Dataset):
                 if i == 0:
                     # Data from all datasets must be available at the first step in sequence
                     if date not in dataset.dates_set:
-                        raise ValueError('First date of the sequence {} not found in dataset {}'.format(date, dataset.name))
+                        # Fallback: try to access the data in case the dataset can provide it (e.g., through rewind logic)
+                        try:
+                            test_data, _ = dataset[date]
+                            if test_data is None:
+                                raise ValueError('First date of the sequence {} not found in dataset {}'.format(date, dataset.name))
+
+                            warnings.warn(f'Date {date} not in {dataset.name}.dates_set but accessible via __getitem__ and succeeded due to rewind behavior')
+                        except:
+                            raise ValueError('First date of the sequence {} not found in dataset {}'.format(date, dataset.name))
                     d, _ = dataset[date]
                     data.append(d)
                 else:
