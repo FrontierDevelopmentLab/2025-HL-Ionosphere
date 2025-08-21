@@ -12,15 +12,15 @@ from tqdm import tqdm
 TEC_MEAN_LOG1P = 2.34
 TEC_STD_LOG1P = 0.82
 
-DTEC_MEAN_LOG1P = 0.679265
-DTEC_STD_LOG1P = 0.30878955
+DTEC_MEDIAN = 0.9271219968795776
 
 class MadrigalDatasetTimeSeries(Dataset):
     def __init__(self, 
                 config, 
-                torch_type,
+                torch_type=torch.float32,
                 min_date=pd.to_datetime("2010-06-13 00:00:00"),
-                max_date=pd.to_datetime("2024-07-31 23:45:00")
+                max_date=pd.to_datetime("2024-07-31 23:45:00"),
+                n_samples_mc=10000#number of samples for the Monte Carlo sampling for estimating the real std when changing units
                 ):
 
         self.min_date = min_date
@@ -36,12 +36,16 @@ class MadrigalDatasetTimeSeries(Dataset):
         print("Loading Madrigal dataset with config:\n", config)
         # Ensure all dataframes are sorted for merge_asof
         self.data=pd.read_csv(config['madrigal_path'])
+        print("Madrigal data loaded with shape:", self.data.shape)
         self.data = self.data[(pd.to_datetime(self.data['all__dates_datetime__'])>=self.min_date) & (pd.to_datetime(self.data['all__dates_datetime__'])<=self.max_date)]
+        #let's discard TEC values below 0.1:
+        print("Discarding Madrigal TEC values < 0.1")
+        mask = self.data['madrigal__tec__[TECU]'].values > 0.1
+        self.data = self.data[mask]
         self.data.reset_index(drop=True, inplace=True)
         dates=pd.DatetimeIndex(self.data['all__dates_datetime__'].values)
         self.data['all__dates_datetime__']=dates
         self.data = self.data.sort_values('all__dates_datetime__').reset_index(drop=True)
-        print("Madrigal data loaded with shape:", self.data.shape)
         print("Now removing 0 TEC values...")
         self.data=self.data[self.data['madrigal__tec__[TECU]'].values>0]
         self.data.reset_index(drop=True, inplace=True)
@@ -87,13 +91,27 @@ class MadrigalDatasetTimeSeries(Dataset):
 
         self.input_features = torch.stack(self.input_features).T
         print("Input features shape:", self.input_features.shape)
-        self.tec = torch.tensor((np.log1p(self.data['madrigal__tec__[TECU]'].values)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
-        self.dtec = torch.tensor(np.log1p(self.data['madrigal__dtec__[TECU]'].values), dtype=self.torch_type)
+        tec = self.data['madrigal__tec__[TECU]'].values
+        self.tec = torch.tensor((np.log1p(tec)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
+        #first order approx to have the std in normalized units:
+        #but we first replace to the NaN of the DTEC the median (e.g. if the std is not known, the median std over the whole thing is used)
+        dtec=self.data['madrigal__dtec__[TECU]'].values
         #we replace to the NaN of the DTEC the median (e.g. if the std is not known, the median std over the whole thing is used)
-        self.dtec[torch.isnan(self.dtec)]=torch.median(self.dtec[~torch.isnan(self.dtec)])
-        #let's now normalize the dtec:
-        self.dtec = (self.dtec - DTEC_MEAN_LOG1P) / DTEC_STD_LOG1P
+        dtec[np.isnan(dtec)] = DTEC_MEDIAN #we replace NaN with the median
+        #let's also replace the ones above 10 with 10.:
+        dtec = np.clip(dtec, 0., 10.) #we clip the values to be between 0 and 10
+        self.dtec = torch.tensor(np.log1p(dtec), dtype=self.torch_type)
+        #let's now normalize the dtec min max from -1 to 1 assuming the min is 0 and max is 1.609
+        self.dtec = 2*(self.dtec - 0.)/(np.log1p(10.)-0.)-1.
+        #self.dtec = (self.dtec - DTEC_MEAN_LOG1P) / DTEC_STD_LOG1P
+        #self.dtec = torch.tensor(dtec, dtype=self.torch_type)
 
+        print("Before normalization:")
+        print("Min TEC:", self.data['madrigal__tec__[TECU]'].min(), "Max TEC:", self.data['madrigal__tec__[TECU]'].max())
+        print("Min dTEC:", self.data['madrigal__dtec__[TECU]'].min(), "Max dTEC:", self.data['madrigal__dtec__[TECU]'].max())
+        print("After normalization:")
+        print("Min TEC:", self.tec.min().item(), "Max TEC:", self.tec.max().item())
+        print("Min dTEC:", self.dtec.min().item(), "Max dTEC:", self.dtec.max().item())
         # Add time series data here.            
         if config["use_jpld"] is not None:
             print("\nLoading JPLD dataset.")
