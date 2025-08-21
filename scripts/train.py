@@ -105,20 +105,25 @@ def run_epoch(ts_ionopy_model, dataloader, device, opt, scheduler, optimizer, ep
         torch.set_grad_enabled(True)
     for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
         historical_ts_numeric = []
+        future_ts_numeric = None
         for key in batch:
             if key not in {'date', 'inputs', 'tec', 'dtec'}:    
                 if key in batch:
                     historical_ts_numeric.append(batch[key][:, :-1, :])
+            if key == 'jpld':
+                future_ts_numeric = batch['jpld'][:, -1, :].unsqueeze(1).to(device)
         if historical_ts_numeric:  # Only stack if not empty
             historical_ts_numeric = torch.cat(historical_ts_numeric, dim=2).to(device)
-        future_ts_numeric=batch['jpld'][:,-1,:].unsqueeze(1).to(device)
         minibatch = {
                 'static_feats_numeric': batch['inputs'].to(device),
                 'historical_ts_numeric': historical_ts_numeric,
-                'future_ts_numeric':  future_ts_numeric,#batch size x future steps x num features
                 'target': batch['tec'].to(device)
                 }
-                    
+        if future_ts_numeric is not None:
+            minibatch['future_ts_numeric'] = future_ts_numeric.to(device)
+        else:
+            #pass zeros in cases where there is no future time series data available:
+            minibatch['future_ts_numeric'] = torch.zeros(historical_ts_numeric.shape[0], 1, historical_ts_numeric.shape[2], device=device)
         #let's store the normalized and unnormalized target density:
         tec_log1p = minibatch['target'] * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
         tec_madrigal = torch.expm1(tec_log1p) 
@@ -262,6 +267,12 @@ def train():
     parser.add_argument('--lstm_layers', type=int, default=2, help='Number of LSTM layers of the TFT or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--attention_heads', type=int, default=4, help='Number of attention heads for the TFT')
     parser.add_argument('--wandb_inactive', action='store_true', help='Flag to activate/deactivate weights and biases')
+    parser.add_argument('--no_jpld', action='store_false', help='Flag to include/exclude JPLD data in the dataset')
+    parser.add_argument('--no_omni_indices', action='store_false', help='Flag to include/exclude OMNI indices data in the dataset')
+    parser.add_argument('--no_omni_magnetic_field', action='store_false', help='Flag to include/exclude OMNI magnetic field data in the dataset')
+    parser.add_argument('--no_omni_solar_wind', action='store_false', help='Flag to include/exclude OMNI solar wind data in the dataset')
+    parser.add_argument('--no_set_sw', action='store_false', help='Flag to include/exclude SET SW data in the dataset')
+    parser.add_argument('--no_celestrack', action='store_false', help='Flag to include/exclude Celestrack data in the dataset')
     opt = parser.parse_args()
 
     timestamp_training = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
@@ -270,7 +281,7 @@ def train():
             project="ionopy",
             entity="ionocast",
             config=vars(opt),
-            name=f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
+            name=f"{opt.no_jpld}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
         )
         print("W&B is active")
     
@@ -293,12 +304,12 @@ def train():
             'omni_magnetic_field_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_magnetic_field.csv',
             'omni_solar_wind_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_solar_wind.csv',
             'jpld_path': f'{opt.bucket_dir}/jpld/subset_lat_lon/jpld_vtec_15min.csv',
-            'use_celestrack': True,
-            'use_set_sw': True,
-            'use_jpld': True,
-            'use_omni_indices': True,
-            'use_omni_magnetic_field': True,
-            'use_omni_solar_wind': True,
+            'use_celestrack': opt.no_celestrack,
+            'use_set_sw': opt.no_set_sw,
+            'use_jpld': opt.no_jpld,
+            'use_omni_indices': opt.no_omni_indices,
+            'use_omni_magnetic_field': opt.no_omni_magnetic_field,
+            'use_omni_solar_wind': opt.no_omni_solar_wind,
             'lag_days_proxies':opt.lag_days_proxies, # 81 days
             'proxies_resolution':opt.proxies_resolution,  # 1 day
             'lag_minutes_omni':opt.lag_minutes_omni,  # 2880 minutes (2 days)
@@ -311,18 +322,21 @@ def train():
     # set configuration
     num_historical_numeric=0
 
-    if madrigal_dataset.config['omni_indices_path'] is not None:
+    if madrigal_dataset.config['use_omni_indices'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_indices'].shape[1]
-    if madrigal_dataset.config['omni_magnetic_field_path'] is not None:
+    if madrigal_dataset.config['use_omni_magnetic_field'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_magnetic_field'].shape[1]
-    if madrigal_dataset.config['omni_solar_wind_path'] is not None:
+    if madrigal_dataset.config['use_omni_solar_wind'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_solar_wind'].shape[1]
-    if madrigal_dataset.config['celestrack_path'] is not None:
+    if madrigal_dataset.config['use_celestrack'] is True:
         num_historical_numeric+=madrigal_dataset[0]['celestrack'].shape[1]
-    if madrigal_dataset.config['set_sw_path'] is not None:
+    if madrigal_dataset.config['use_set_sw'] is True:
         num_historical_numeric+=madrigal_dataset[0]['set_sw'].shape[1]
-    if madrigal_dataset.config['jpld_path'] is not None:
+    if madrigal_dataset.config['use_jpld'] is True:
         num_historical_numeric+=madrigal_dataset[0]['jpld'].shape[1]
+        num_future_numeric=madrigal_dataset[0]['jpld'].shape[1]
+    else:
+        num_future_numeric=1
 
     print(f"Historical input features of the model: {num_historical_numeric}")
 
@@ -334,7 +348,7 @@ def train():
     if opt.model_type=='tft':
         data_props = {'num_historical_numeric': num_historical_numeric,
                     'num_static_numeric': input_dimension,
-                    'num_future_numeric': 1,
+                    'num_future_numeric': num_future_numeric,
                     }
 
         configuration = {
@@ -395,7 +409,7 @@ def train():
         wandb.config.update({
             'num_historical_numeric': num_historical_numeric,
             'num_static_numeric': input_dimension,
-            'num_future_numeric': madrigal_dataset[0]['jpld'].shape[1],
+            'num_future_numeric': num_future_numeric,
             'model_type': opt.model_type,
             'subset_type': opt.subset_type,
             'batch_size': opt.batch_size,
@@ -424,7 +438,7 @@ def train():
         # Save best model
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
-            save_path = opt.model_path or f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
+            save_path = opt.model_path or f"{opt.no_jpld}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
             torch.save(ts_ionopy_model.state_dict(), save_path)
             print(f"New best model saved: {save_path} (Val Loss: {validation_loss:.6f})")
 

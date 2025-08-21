@@ -109,7 +109,7 @@ class MadrigalDatasetTimeSeries(Dataset):
         print("Min TEC:", self.tec.min().item(), "Max TEC:", self.tec.max().item())
         print("Min dTEC:", self.dtec.min().item(), "Max dTEC:", self.dtec.max().item())
         # Add time series data here.            
-        if config["use_jpld"] is not None:
+        if config["use_jpld"] is True:
             print("\nLoading JPLD dataset.")
             self._add_time_series_data(
                 "jpld",
@@ -118,7 +118,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['jpld_resolution'],
                 ["all__dates_datetime__"],
             )
-        if config["use_omni_indices"] is not None:
+        if config["use_omni_indices"] is True:
             print("\nLoading Omni indices.")
             self._add_time_series_data(
                 "omni_indices",
@@ -127,7 +127,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['omni_resolution'],
                 ["all__dates_datetime__", "source__gaps_flag__", "omniweb__ae_index__[nT]", "omniweb__al_index__[nT]", "omniweb__au_index__[nT]"],
             )
-        if config['use_omni_solar_wind'] is not None:
+        if config['use_omni_solar_wind'] is True:
             print("\nLoading Omni Solar Wind.")
             self._add_time_series_data(
                 "omni_solar_wind",
@@ -136,7 +136,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['omni_resolution'],
                 ["all__dates_datetime__", "source__gaps_flag__"],
             )
-        if config['use_omni_magnetic_field'] is not None:
+        if config['use_omni_magnetic_field'] is True:
             print("\nLoading Omni Magnetic Field.")
             self._add_time_series_data(
                 "omni_magnetic_field",
@@ -146,7 +146,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 ["all__dates_datetime__", "source__gaps_flag__"],
             )
 
-        if config["set_sw_path"] is not None:
+        if config["use_set_sw"] is True:
             print("\nLoading SET Solar Wind data.")
             self._add_time_series_data(
                 "set_sw",
@@ -156,7 +156,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 ["all__dates_datetime__"],
             )
         
-        if config["celestrack_path"] is not None:
+        if config["use_celestrack"] is True:
             print("\nLoading Celestrack data.")
             self._add_time_series_data(
                 "celestrack",
