@@ -19,8 +19,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config, 
                 torch_type=torch.float32,
                 min_date=pd.to_datetime("2010-06-13 00:00:00"),
-                max_date=pd.to_datetime("2024-07-31 23:45:00"),
-                n_samples_mc=10000#number of samples for the Monte Carlo sampling for estimating the real std when changing units
+                max_date=pd.to_datetime("2024-07-31 23:45:00")
                 ):
 
         self.min_date = min_date
@@ -93,8 +92,7 @@ class MadrigalDatasetTimeSeries(Dataset):
         print("Input features shape:", self.input_features.shape)
         tec = self.data['madrigal__tec__[TECU]'].values
         self.tec = torch.tensor((np.log1p(tec)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
-        #first order approx to have the std in normalized units:
-        #but we first replace to the NaN of the DTEC the median (e.g. if the std is not known, the median std over the whole thing is used)
+        #now the std of the TEC:
         dtec=self.data['madrigal__dtec__[TECU]'].values
         #we replace to the NaN of the DTEC the median (e.g. if the std is not known, the median std over the whole thing is used)
         dtec[np.isnan(dtec)] = DTEC_MEDIAN #we replace NaN with the median
@@ -103,8 +101,6 @@ class MadrigalDatasetTimeSeries(Dataset):
         self.dtec = torch.tensor(np.log1p(dtec), dtype=self.torch_type)
         #let's now normalize the dtec min max from -1 to 1 assuming the min is 0 and max is 1.609
         self.dtec = 2*(self.dtec - 0.)/(np.log1p(10.)-0.)-1.
-        #self.dtec = (self.dtec - DTEC_MEAN_LOG1P) / DTEC_STD_LOG1P
-        #self.dtec = torch.tensor(dtec, dtype=self.torch_type)
 
         print("Before normalization:")
         print("Min TEC:", self.data['madrigal__tec__[TECU]'].min(), "Max TEC:", self.data['madrigal__tec__[TECU]'].max())
