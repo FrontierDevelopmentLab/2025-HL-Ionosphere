@@ -270,7 +270,7 @@ def train():
             project="ionopy",
             entity="ionocast",
             config=vars(opt),
-            name=f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}",
+            name=f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
         )
         print("W&B is active")
     
@@ -424,7 +424,7 @@ def train():
         # Save best model
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
-            save_path = opt.model_path or f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}.pth"
+            save_path = opt.model_path or f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
             torch.save(ts_ionopy_model.state_dict(), save_path)
             print(f"New best model saved: {save_path} (Val Loss: {validation_loss:.6f})")
 
