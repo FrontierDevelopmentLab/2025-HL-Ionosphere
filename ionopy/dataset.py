@@ -21,7 +21,17 @@ class MadrigalDatasetTimeSeries(Dataset):
                 min_date=pd.to_datetime("2010-06-13 00:00:00"),
                 max_date=pd.to_datetime("2024-07-31 23:45:00")
                 ):
-
+        """
+        Initializes the MadrigalDatasetTimeSeries dataset.
+        Parameters:
+        -----------
+            - config (`dict`): Configuration dictionary containing paths and parameters for the dataset.
+            - torch_type (`torch.dtype`): The data type to use for the tensors. Default 
+                                            is `torch.float32`.
+            - min_date (`pd.Timestamp`): The minimum date for filtering the dataset. Default is "2010-06-13 00:00:00".
+            - max_date (`pd.Timestamp`): The maximum date for filtering the dataset. Default is
+                "2024-07-31 23:45:00".
+        """
         self.min_date = min_date
         self.max_date = max_date
         print("\nMadrigalDatasetTimeSeries initialized with min_date:", self.min_date, "and max_date:", self.max_date)

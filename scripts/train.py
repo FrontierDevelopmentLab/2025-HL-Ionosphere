@@ -183,7 +183,7 @@ def run_epoch(ts_ionopy_model, dataloader, device, opt, scheduler, optimizer, ep
 
         if opt.wandb_inactive is False:
             wandb.log({
-                'loss': loss_nn.item(),
+                f'{prefix}_loss': loss_nn.item(),
                 f'{prefix}_rmse_loss_mean_unnormalized': rmse_loss_mean_unnormalized.item(),
                 f'{prefix}_rmse_loss_std_unnormalized': rmse_loss_std_unnormalized.item(),
                 f'{prefix}_mae_loss_mean_unnormalized': mae_loss_mean_unnormalized,
@@ -208,11 +208,11 @@ def run_epoch(ts_ionopy_model, dataloader, device, opt, scheduler, optimizer, ep
     curr_lr=scheduler.optimizer.param_groups[0]["lr"]
     print(f"Epoch {epoch}, Average {prefix} Loss: {loss:.8f}, Average {prefix} RMSE Loss for mean & std: {mean_rmse_loss_mean:.8f}, {mean_rmse_loss_std:.8f}")
     if opt.wandb_inactive is False:
-        wandb.log({f'{prefix}_loss_epoch': loss, 
-                    f'{prefix}_rmse_loss_mean_unnormalized': mean_rmse_loss_mean,
-                    f'{prefix}_rmse_loss_std_unnormalized': mean_rmse_loss_std,
-                    f'{prefix}_mae_loss_mean_unnormalized': mean_mae_loss_mean,
-                    f'{prefix}_mae_loss_std_unnormalized': mean_mae_loss_std,
+        wandb.log({f'{prefix}_epoch_loss_epoch': loss, 
+                    f'{prefix}_epoch_mse_loss_mean_unnormalized': mean_rmse_loss_mean,
+                    f'{prefix}_epoch_rmse_loss_std_unnormalized': mean_rmse_loss_std,
+                    f'{prefix}_epoch_mae_loss_mean_unnormalized': mean_mae_loss_mean,
+                    f'{prefix}_epoch_mae_loss_std_unnormalized': mean_mae_loss_std,
                     'epoch': epoch,
                     'learning_rate': curr_lr})
     # Histogram of RMSEs
