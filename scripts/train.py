@@ -253,6 +253,8 @@ def train():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for initialization')
     parser.add_argument('--lag_days_proxies', type=float, default=144, help='Lag in days for the SET and Celestrack proxies')
     parser.add_argument('--proxies_resolution', type=int, default=1, help='Resolution in days for the SET and Celestrack proxies')
+    parser.add_argument('--lag_days_timed', type=int, default=144, help='Lag in days for the TIMED SEE Level 3 data')
+    parser.add_argument('--timed_resolution', type=int, default=1, help='Resolution in days for the TIMED SEE Level 3 data')
     parser.add_argument('--lag_minutes_omni', type=int, default=8640, help='Lag in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
     parser.add_argument('--omni_resolution', type=int, default=60, help='Resolution in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
     parser.add_argument('--lag_minutes_jpld', type=int, default=8640, help='Lag in minutes for the JPLD data')
@@ -267,6 +269,7 @@ def train():
     parser.add_argument('--lstm_layers', type=int, default=2, help='Number of LSTM layers of the TFT or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--attention_heads', type=int, default=4, help='Number of attention heads for the TFT')
     parser.add_argument('--wandb_inactive', action='store_true', help='Flag to activate/deactivate weights and biases')
+    parser.add_argument('--no_timed', action='store_false', help='Flag to include/exclude TIMED SEE Level 3 data in the dataset')
     parser.add_argument('--no_jpld', action='store_false', help='Flag to include/exclude JPLD data in the dataset')
     parser.add_argument('--no_omni_indices', action='store_false', help='Flag to include/exclude OMNI indices data in the dataset')
     parser.add_argument('--no_omni_magnetic_field', action='store_false', help='Flag to include/exclude OMNI magnetic field data in the dataset')
@@ -281,7 +284,7 @@ def train():
             project="ionopy",
             entity="ionocast",
             config=vars(opt),
-            name=f"{opt.no_jpld}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
+            name=f"{opt.no_jpld}{opt.no_timed}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
         )
         print("W&B is active")
     
@@ -304,6 +307,8 @@ def train():
             'omni_magnetic_field_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_magnetic_field.csv',
             'omni_solar_wind_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_solar_wind.csv',
             'jpld_path': f'{opt.bucket_dir}/jpld/subset_lat_lon/jpld_vtec_15min.csv',
+            'timed_path': f'{opt.bucket_dir}/karman-2025/data/timed_see_level3_data/timed_see_level3.csv',
+            'use_timed': opt.no_timed,
             'use_celestrack': opt.no_celestrack,
             'use_set_sw': opt.no_set_sw,
             'use_jpld': opt.no_jpld,
@@ -316,6 +321,8 @@ def train():
             'omni_resolution':opt.omni_resolution,  # 1 minute
             'lag_minutes_jpld':opt.lag_minutes_jpld,  # 2880 minutes (2 days)
             'jpld_resolution':opt.jpld_resolution,  # 1 minute
+            'lag_days_timed':opt.lag_days_timed,  # 144 days
+            'timed_resolution':opt.timed_resolution,  # 1 day
     }
     madrigal_dataset = MadrigalDatasetTimeSeries(config, torch_type=dtype)
 
@@ -337,6 +344,8 @@ def train():
         num_future_numeric=madrigal_dataset[0]['jpld'].shape[1]
     else:
         num_future_numeric=1
+    if madrigal_dataset.config['use_timed'] is True:
+        num_historical_numeric+=madrigal_dataset[0]['timed'].shape[1]
 
     print(f"Historical input features of the model: {num_historical_numeric}")
 
@@ -438,7 +447,7 @@ def train():
         # Save best model
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
-            save_path = opt.model_path or f"{opt.no_jpld}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
+            save_path = opt.model_path or f"{opt.no_jpld}{opt.no_timed}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
             torch.save(ts_ionopy_model.state_dict(), save_path)
             print(f"New best model saved: {save_path} (Val Loss: {validation_loss:.6f})")
 

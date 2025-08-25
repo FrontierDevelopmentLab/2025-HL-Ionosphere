@@ -19,7 +19,8 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config, 
                 torch_type=torch.float32,
                 min_date=pd.to_datetime("2010-06-13 00:00:00"),
-                max_date=pd.to_datetime("2024-07-31 23:45:00")
+                max_date=pd.to_datetime("2024-07-31 23:45:00"),
+                features_to_exclude_timed=None
                 ):
         """
         Initializes the MadrigalDatasetTimeSeries dataset.
@@ -100,6 +101,7 @@ class MadrigalDatasetTimeSeries(Dataset):
 
         self.input_features = torch.stack(self.input_features).T
         print("Input features shape:", self.input_features.shape)
+        self.features_to_exclude_timed = features_to_exclude_timed
         tec = self.data['madrigal__tec__[TECU]'].values
         self.tec = torch.tensor((np.log1p(tec)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
         #now the std of the TEC:
@@ -119,6 +121,19 @@ class MadrigalDatasetTimeSeries(Dataset):
         print("Min TEC:", self.tec.min().item(), "Max TEC:", self.tec.max().item())
         print("Min dTEC:", self.dtec.min().item(), "Max dTEC:", self.dtec.max().item())
         # Add time series data here.            
+        if config["use_timed"] is True:
+            print("\nLoading TIMED SEE Level 3 dataset.")
+            if self.features_to_exclude_timed is not None:
+                self.features_to_exclude_timed+=["all__dates_datetime__"]
+            else:
+                self.features_to_exclude_timed=["all__dates_datetime__"]
+            self._add_time_series_data(
+                "timed",
+                config["timed_path"],
+                config['lag_days_timed'],
+                config['timed_resolution'],
+                self.features_to_exclude_timed,
+            )
         if config["use_jpld"] is True:
             print("\nLoading JPLD dataset.")
             self._add_time_series_data(
@@ -279,7 +294,7 @@ class MadrigalDatasetTimeSeries(Dataset):
             solar_activity_classification = [solar_activity_bins_classification[v] for v in solar_activity_classification]
             self.time_series_data[data_name]["solar_activity_classification"] = solar_activity_classification
 
-        elif data_name.startswith("celestrack"):
+        elif data_name in ["celestrack", "timed"]:
             #ap average
             tmp=pd.read_csv(data_path)
             self.time_series_data[data_name]["data"] = tmp
@@ -299,7 +314,6 @@ class MadrigalDatasetTimeSeries(Dataset):
             #                                                                                     )) &
             #                                                                                     (self.time_series_data[data_name]["data"].index <= self.max_date)
             #                                                                                 ]
-            self.ap_average=self.time_series_data[data_name]["data"]['celestrack__ap_average__'].values
 
             #let's now 
 
@@ -311,6 +325,8 @@ class MadrigalDatasetTimeSeries(Dataset):
             self.time_series_data[data_name]["date_start"] = min(self.time_series_data[data_name]["data"].index)
             self.time_series_data[data_name]["column_names"] = self.time_series_data[data_name]["data"].columns
             self.time_series_data[data_name]["features_names"] = [f'{column}_yeojohnson_zscore' for column in self.time_series_data[data_name]["data"].columns]
+            if data_name.startswith("celestrack"):
+                self.ap_average=self.time_series_data[data_name]["data"]['celestrack__ap_average__'].values
 
             scaler = PowerTransformer(method='yeo-johnson', standardize=True)
             vals = self.time_series_data[data_name]["data"].values
@@ -325,18 +341,19 @@ class MadrigalDatasetTimeSeries(Dataset):
 
             #self.time_series_data[data_name]["data_matrix"] = self.time_series_data[data_name]["data"].values
 
-            ap_values_bins = np.array([0, 39, 67, 111, 179, 300, 4001])
-            ap_values_classification={0:'G0', 
-                                        1:'G1', 
-                                        2:'G2', 
-                                        3:'G3', 
-                                        4:'G4', 
-                                        5:'G5'}
-            storm_classification = np.digitize(self.ap_average, ap_values_bins)-1
-            storm_classification = [ap_values_classification[v] for v in storm_classification]
-            ap_average = torch.tensor(self.ap_average, dtype=self.torch_type)
-            self.time_series_data[data_name]["storm_classification"] = storm_classification
-            self.time_series_data[data_name]["ap_average"] = ap_average
+            if data_name.startswith("celestrack"):
+                ap_values_bins = np.array([0, 39, 67, 111, 179, 300, 4001])
+                ap_values_classification={0:'G0', 
+                                            1:'G1', 
+                                            2:'G2', 
+                                            3:'G3', 
+                                            4:'G4', 
+                                            5:'G5'}
+                storm_classification = np.digitize(self.ap_average, ap_values_bins)-1
+                storm_classification = [ap_values_classification[v] for v in storm_classification]
+                ap_average = torch.tensor(self.ap_average, dtype=self.torch_type)
+                self.time_series_data[data_name]["storm_classification"] = storm_classification
+                self.time_series_data[data_name]["ap_average"] = ap_average
     
     def _set_indices(self, test_month_idx, validation_month_idx, custom=None):
         """
