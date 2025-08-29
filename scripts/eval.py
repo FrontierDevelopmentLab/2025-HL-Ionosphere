@@ -331,7 +331,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     jpld_original = combined_seq_data_original[:, 0]
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
-    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
+    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 300)
 
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
 
