@@ -958,13 +958,23 @@ def main():
         elif args.mode == 'test':
             print('*** Testing mode\n')
 
-            if not args.model_file:
-                raise ValueError("A --model_file must be specified for testing mode.")
+            if args.model_type == 'IonCastPersistence-ablation-JPLD':
+                # Create persistence model directly without loading from file
+                print('Creating IonCastPersistence-ablation-JPLD model for testing')
+                total_channels = 1  # JPLD (1)
+                name = 'IonCastPersistence-ablation-JPLD'
+                model = IonCastPersistence(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                model = model.to(device)
+                model.eval()
+            else:
+                if not args.model_file:
+                    raise ValueError("A --model_file must be specified for testing mode when not using persistence model.")
+                
+                print(f'Loading model from {args.model_file}')
+                model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
+                model.eval()
+                model = model.to(device)
             
-            print(f'Loading model from {args.model_file}')
-            model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
-            model.eval()
-            model = model.to(device)
             if not args.test_event_id:
                 print("No --test_event_id provided. Exiting test mode.")
                 return
@@ -1001,6 +1011,10 @@ def main():
                         dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
                         dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
                         dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
+                        # Ablation models use only JPLD dataset
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
+                        dataset = Sequences(datasets=[dataset_jpld], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
                     else:
                         raise ValueError(f'Unsupported model: {model.name}')
 
@@ -1019,7 +1033,12 @@ def main():
                         test_fixed_lead_time_event_ids.append(event_id_returned_test)
 
                     # Force cleanup
-                    del dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set, dataset
+                    del dataset_jpld
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',  'IonCastLSTM-ablation-JPLDSunMoon']:
+                        del dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set
+                    elif model.name == 'IonCastLSTMSDO':
+                        del dataset_sunmoon, dataset_sdocore
+                    del dataset
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                 
