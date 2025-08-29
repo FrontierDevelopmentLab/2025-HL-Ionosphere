@@ -12,17 +12,27 @@ from tqdm import tqdm
 TEC_MEAN_LOG1P = 2.34
 TEC_STD_LOG1P = 0.82
 
-DTEC_MEAN_LOG1P = 0.679265
-DTEC_STD_LOG1P = 0.30878955
+DTEC_MEDIAN = 0.9271219968795776
 
 class MadrigalDatasetTimeSeries(Dataset):
     def __init__(self, 
                 config, 
-                torch_type,
+                torch_type=torch.float32,
                 min_date=pd.to_datetime("2010-06-13 00:00:00"),
-                max_date=pd.to_datetime("2024-07-31 23:45:00")
+                max_date=pd.to_datetime("2024-07-31 23:45:00"),
+                features_to_exclude_timed=None
                 ):
-
+        """
+        Initializes the MadrigalDatasetTimeSeries dataset.
+        Parameters:
+        -----------
+            - config (`dict`): Configuration dictionary containing paths and parameters for the dataset.
+            - torch_type (`torch.dtype`): The data type to use for the tensors. Default 
+                                            is `torch.float32`.
+            - min_date (`pd.Timestamp`): The minimum date for filtering the dataset. Default is "2010-06-13 00:00:00".
+            - max_date (`pd.Timestamp`): The maximum date for filtering the dataset. Default is
+                "2024-07-31 23:45:00".
+        """
         self.min_date = min_date
         self.max_date = max_date
         print("\nMadrigalDatasetTimeSeries initialized with min_date:", self.min_date, "and max_date:", self.max_date)
@@ -36,12 +46,16 @@ class MadrigalDatasetTimeSeries(Dataset):
         print("Loading Madrigal dataset with config:\n", config)
         # Ensure all dataframes are sorted for merge_asof
         self.data=pd.read_csv(config['madrigal_path'])
+        print("Madrigal data loaded with shape:", self.data.shape)
         self.data = self.data[(pd.to_datetime(self.data['all__dates_datetime__'])>=self.min_date) & (pd.to_datetime(self.data['all__dates_datetime__'])<=self.max_date)]
+        #let's discard TEC values below 0.1:
+        print("Discarding Madrigal TEC values < 0.1")
+        mask = self.data['madrigal__tec__[TECU]'].values > 0.1
+        self.data = self.data[mask]
         self.data.reset_index(drop=True, inplace=True)
         dates=pd.DatetimeIndex(self.data['all__dates_datetime__'].values)
         self.data['all__dates_datetime__']=dates
         self.data = self.data.sort_values('all__dates_datetime__').reset_index(drop=True)
-        print("Madrigal data loaded with shape:", self.data.shape)
         print("Now removing 0 TEC values...")
         self.data=self.data[self.data['madrigal__tec__[TECU]'].values>0]
         self.data.reset_index(drop=True, inplace=True)
@@ -87,15 +101,40 @@ class MadrigalDatasetTimeSeries(Dataset):
 
         self.input_features = torch.stack(self.input_features).T
         print("Input features shape:", self.input_features.shape)
-        self.tec = torch.tensor((np.log1p(self.data['madrigal__tec__[TECU]'].values)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
-        self.dtec = torch.tensor(np.log1p(self.data['madrigal__dtec__[TECU]'].values), dtype=self.torch_type)
+        self.features_to_exclude_timed = features_to_exclude_timed
+        tec = self.data['madrigal__tec__[TECU]'].values
+        self.tec = torch.tensor((np.log1p(tec)-TEC_MEAN_LOG1P)/TEC_STD_LOG1P, dtype=self.torch_type)
+        #now the std of the TEC:
+        dtec=self.data['madrigal__dtec__[TECU]'].values
         #we replace to the NaN of the DTEC the median (e.g. if the std is not known, the median std over the whole thing is used)
-        self.dtec[torch.isnan(self.dtec)]=torch.median(self.dtec[~torch.isnan(self.dtec)])
-        #let's now normalize the dtec:
-        self.dtec = (self.dtec - DTEC_MEAN_LOG1P) / DTEC_STD_LOG1P
+        dtec[np.isnan(dtec)] = DTEC_MEDIAN #we replace NaN with the median
+        #let's also replace the ones above 10 with 10.:
+        dtec = np.clip(dtec, 0., 10.) #we clip the values to be between 0 and 10
+        self.dtec = torch.tensor(np.log1p(dtec), dtype=self.torch_type)
+        #let's now normalize the dtec min max from -1 to 1 assuming the min is 0 and max is 1.609
+        self.dtec = 2*(self.dtec - 0.)/(np.log1p(10.)-0.)-1.
 
+        print("Before normalization:")
+        print("Min TEC:", self.data['madrigal__tec__[TECU]'].min(), "Max TEC:", self.data['madrigal__tec__[TECU]'].max())
+        print("Min dTEC:", self.data['madrigal__dtec__[TECU]'].min(), "Max dTEC:", self.data['madrigal__dtec__[TECU]'].max())
+        print("After normalization:")
+        print("Min TEC:", self.tec.min().item(), "Max TEC:", self.tec.max().item())
+        print("Min dTEC:", self.dtec.min().item(), "Max dTEC:", self.dtec.max().item())
         # Add time series data here.            
-        if config["use_jpld"] is not None:
+        if config["use_timed"] is True:
+            print("\nLoading TIMED SEE Level 3 dataset.")
+            if self.features_to_exclude_timed is not None:
+                self.features_to_exclude_timed+=["all__dates_datetime__"]
+            else:
+                self.features_to_exclude_timed=["all__dates_datetime__"]
+            self._add_time_series_data(
+                "timed",
+                config["timed_path"],
+                config['lag_days_timed'],
+                config['timed_resolution'],
+                self.features_to_exclude_timed,
+            )
+        if config["use_jpld"] is True:
             print("\nLoading JPLD dataset.")
             self._add_time_series_data(
                 "jpld",
@@ -104,7 +143,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['jpld_resolution'],
                 ["all__dates_datetime__"],
             )
-        if config["use_omni_indices"] is not None:
+        if config["use_omni_indices"] is True:
             print("\nLoading Omni indices.")
             self._add_time_series_data(
                 "omni_indices",
@@ -113,7 +152,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['omni_resolution'],
                 ["all__dates_datetime__", "source__gaps_flag__", "omniweb__ae_index__[nT]", "omniweb__al_index__[nT]", "omniweb__au_index__[nT]"],
             )
-        if config['use_omni_solar_wind'] is not None:
+        if config['use_omni_solar_wind'] is True:
             print("\nLoading Omni Solar Wind.")
             self._add_time_series_data(
                 "omni_solar_wind",
@@ -122,7 +161,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 config['omni_resolution'],
                 ["all__dates_datetime__", "source__gaps_flag__"],
             )
-        if config['use_omni_magnetic_field'] is not None:
+        if config['use_omni_magnetic_field'] is True:
             print("\nLoading Omni Magnetic Field.")
             self._add_time_series_data(
                 "omni_magnetic_field",
@@ -132,7 +171,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 ["all__dates_datetime__", "source__gaps_flag__"],
             )
 
-        if config["set_sw_path"] is not None:
+        if config["use_set_sw"] is True:
             print("\nLoading SET Solar Wind data.")
             self._add_time_series_data(
                 "set_sw",
@@ -142,7 +181,7 @@ class MadrigalDatasetTimeSeries(Dataset):
                 ["all__dates_datetime__"],
             )
         
-        if config["celestrack_path"] is not None:
+        if config["use_celestrack"] is True:
             print("\nLoading Celestrack data.")
             self._add_time_series_data(
                 "celestrack",
@@ -255,7 +294,7 @@ class MadrigalDatasetTimeSeries(Dataset):
             solar_activity_classification = [solar_activity_bins_classification[v] for v in solar_activity_classification]
             self.time_series_data[data_name]["solar_activity_classification"] = solar_activity_classification
 
-        elif data_name.startswith("celestrack"):
+        elif data_name in ["celestrack", "timed"]:
             #ap average
             tmp=pd.read_csv(data_path)
             self.time_series_data[data_name]["data"] = tmp
@@ -275,7 +314,6 @@ class MadrigalDatasetTimeSeries(Dataset):
             #                                                                                     )) &
             #                                                                                     (self.time_series_data[data_name]["data"].index <= self.max_date)
             #                                                                                 ]
-            self.ap_average=self.time_series_data[data_name]["data"]['celestrack__ap_average__'].values
 
             #let's now 
 
@@ -287,6 +325,8 @@ class MadrigalDatasetTimeSeries(Dataset):
             self.time_series_data[data_name]["date_start"] = min(self.time_series_data[data_name]["data"].index)
             self.time_series_data[data_name]["column_names"] = self.time_series_data[data_name]["data"].columns
             self.time_series_data[data_name]["features_names"] = [f'{column}_yeojohnson_zscore' for column in self.time_series_data[data_name]["data"].columns]
+            if data_name.startswith("celestrack"):
+                self.ap_average=self.time_series_data[data_name]["data"]['celestrack__ap_average__'].values
 
             scaler = PowerTransformer(method='yeo-johnson', standardize=True)
             vals = self.time_series_data[data_name]["data"].values
@@ -301,18 +341,19 @@ class MadrigalDatasetTimeSeries(Dataset):
 
             #self.time_series_data[data_name]["data_matrix"] = self.time_series_data[data_name]["data"].values
 
-            ap_values_bins = np.array([0, 39, 67, 111, 179, 300, 4001])
-            ap_values_classification={0:'G0', 
-                                        1:'G1', 
-                                        2:'G2', 
-                                        3:'G3', 
-                                        4:'G4', 
-                                        5:'G5'}
-            storm_classification = np.digitize(self.ap_average, ap_values_bins)-1
-            storm_classification = [ap_values_classification[v] for v in storm_classification]
-            ap_average = torch.tensor(self.ap_average, dtype=self.torch_type)
-            self.time_series_data[data_name]["storm_classification"] = storm_classification
-            self.time_series_data[data_name]["ap_average"] = ap_average
+            if data_name.startswith("celestrack"):
+                ap_values_bins = np.array([0, 39, 67, 111, 179, 300, 4001])
+                ap_values_classification={0:'G0', 
+                                            1:'G1', 
+                                            2:'G2', 
+                                            3:'G3', 
+                                            4:'G4', 
+                                            5:'G5'}
+                storm_classification = np.digitize(self.ap_average, ap_values_bins)-1
+                storm_classification = [ap_values_classification[v] for v in storm_classification]
+                ap_average = torch.tensor(self.ap_average, dtype=self.torch_type)
+                self.time_series_data[data_name]["storm_classification"] = storm_classification
+                self.time_series_data[data_name]["ap_average"] = ap_average
     
     def _set_indices(self, test_month_idx, validation_month_idx, custom=None):
         """

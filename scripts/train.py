@@ -22,6 +22,214 @@ import time
 from torch import optim
 from torch.utils.data import RandomSampler, SequentialSampler
 import random
+torch.set_float32_matmul_precision('medium')  # or 'high'
+
+def set_seed(seed: int = 42):
+    """Ensure reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def prepare_dataloaders(dataset, opt, seed=0):
+    """Create train/validation/test loaders with proper seeding."""
+    g = torch.Generator()
+    g.manual_seed(seed)
+
+    train_sampler = RandomSampler(dataset.train_dataset(), generator=g)
+    val_sampler = SequentialSampler(dataset.validation_dataset())
+    test_sampler = SequentialSampler(dataset.test_dataset())
+
+    def worker_init_fn(worker_id):
+        worker_seed = seed + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    train_loader = torch.utils.data.DataLoader(
+        dataset.train_dataset(),
+        batch_size=opt.batch_size,
+        pin_memory=True,
+        num_workers=opt.num_workers,
+        sampler=train_sampler,
+        drop_last=False,
+        worker_init_fn=worker_init_fn,
+        generator=g
+    )
+    val_loader = torch.utils.data.DataLoader(
+        dataset.validation_dataset(),
+        batch_size=opt.batch_size,
+        pin_memory=True,
+        num_workers=opt.num_workers,
+        sampler=val_sampler,
+        drop_last=False,
+        worker_init_fn=worker_init_fn,
+        generator=g
+    )
+    test_loader = torch.utils.data.DataLoader(
+        dataset.test_dataset(),
+        batch_size=opt.batch_size,
+        pin_memory=True,
+        num_workers=opt.num_workers,
+        sampler=test_sampler,
+        drop_last=False,
+        worker_init_fn=worker_init_fn,
+        generator=g
+    )
+
+    return train_loader, val_loader, test_loader
+
+def run_epoch(ts_ionopy_model, dataloader, device, opt, scheduler, optimizer, epoch, mse_loss, quantiles_tensor, table, train=True):
+    if train:    
+        ts_ionopy_model.train()
+        prefix='train'
+    else:
+        ts_ionopy_model.eval()
+        prefix='val'
+    
+    count=0
+    loss = 0.
+
+    mean_rmse_loss_mean=0.
+    mean_rmse_loss_std=0.
+    mean_mae_loss_mean=0.
+    mean_mae_loss_std=0.
+
+    rmses_mean = []
+    rmses_std = []
+    #if it's validation we need torch no grad:
+    if not train:
+        torch.set_grad_enabled(False)
+    else:
+        torch.set_grad_enabled(True)
+    for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
+        historical_ts_numeric = []
+        future_ts_numeric = None
+        for key in batch:
+            if key not in {'date', 'inputs', 'tec', 'dtec'}:    
+                if key in batch:
+                    historical_ts_numeric.append(batch[key][:, :-1, :])
+            if key == 'jpld':
+                future_ts_numeric = batch['jpld'][:, -1, :].unsqueeze(1).to(device)
+        if historical_ts_numeric:  # Only stack if not empty
+            historical_ts_numeric = torch.cat(historical_ts_numeric, dim=2).to(device)
+        minibatch = {
+                'static_feats_numeric': batch['inputs'].to(device),
+                'historical_ts_numeric': historical_ts_numeric,
+                'target': batch['tec'].to(device)
+                }
+        if future_ts_numeric is not None:
+            minibatch['future_ts_numeric'] = future_ts_numeric.to(device)
+        else:
+            #pass zeros in cases where there is no future time series data available:
+            minibatch['future_ts_numeric'] = torch.zeros(historical_ts_numeric.shape[0], 1, historical_ts_numeric.shape[2], device=device)
+        #let's store the normalized and unnormalized target density:
+        tec_log1p = minibatch['target'] * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
+        tec_madrigal = torch.expm1(tec_log1p) 
+
+        dtec_log1p = (np.log1p(10.)-0.)* (batch['dtec'].to(device) + 1) / 2
+        dtec_madrigal = torch.expm1(dtec_log1p)  # Unnormalize dTEC
+
+        if opt.model_type=='tft':
+            batch_out=ts_ionopy_model(minibatch)                    
+            #now the quantiles:
+            predicted_quantiles = batch_out['predicted_quantiles']#it's of shape batch_size x future_steps x num_quantiles
+            target_nn_median = predicted_quantiles[:, :, 0]
+            #target_nn_std is always in -1,1:
+            target_nn_std = torch.tanh(predicted_quantiles[:, :, 1])
+
+            #make the output always positive:
+
+            #let's also track the non-normalized predictions
+            #target_nn_median_unnormalized = target_nn_median * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
+            #target_nn_median_unnormalized = torch.expm1(target_nn_median_unnormalized)
+            target_nn_median_unnormalized = torch.expm1(target_nn_median * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P)
+            #let's undo the min/max normalization of the std as well:
+            target_nn_std_unnormalized = torch.expm1((np.log1p(10.) - 0.) * (target_nn_std + 1) / 2)
+
+            #target_nn_median_unnormalized = predicted_quantiles_unnormalized[:, :, 1].squeeze()
+            #q_loss, q_risk, _ = tft_loss.get_quantiles_loss_and_q_risk(outputs=target_nn_median.detach(),
+            #                                                                targets=minibatch['target'],
+            #                                                                desired_quantiles=quantiles_tensor)
+        else:
+            raise ValueError('Invalid model type. Only tft is supported')
+        if opt.loss_type == 'mse':    
+            mse_loss_mean = mse_loss(target_nn_median.squeeze(), minibatch['target'])
+            mse_loss_std = mse_loss(target_nn_std.squeeze(), batch['dtec'].to(device))
+            loss_nn = mse_loss_mean + mse_loss_std
+        else:
+            raise ValueError('Invalid loss type. Only mse and kl are supported')
+        if train:
+            optimizer.zero_grad(set_to_none=True)
+            loss_nn.backward()
+            optimizer.step()
+        loss += loss_nn.item()
+        # print(f"Shapes for mean: {target_nn_median_unnormalized.shape}, {tec_madrigal.shape}")
+        # print(f"Shapes for std: {target_nn_std_unnormalized.shape}, {tec_madrigal.shape}")
+
+        rmse_loss_mean_unnormalized = torch.sqrt(mse_loss(target_nn_median_unnormalized.detach().squeeze(), tec_madrigal.detach()))
+        rmse_loss_std_unnormalized = torch.sqrt(mse_loss(target_nn_std_unnormalized.detach().squeeze(), dtec_madrigal.detach()))
+        rmses_mean.append(rmse_loss_mean_unnormalized.item())
+        rmses_std.append(rmse_loss_std_unnormalized.item())
+        mean_rmse_loss_mean+= rmse_loss_mean_unnormalized.item()
+        mean_rmse_loss_std+= rmse_loss_std_unnormalized.item()
+
+        mae_loss_mean_unnormalized = mae_loss(target_nn_median_unnormalized.detach().squeeze(), tec_madrigal.detach()).item()
+        mae_loss_std_unnormalized = mae_loss(target_nn_std_unnormalized.detach().squeeze(), dtec_madrigal.detach()).item()
+        mean_mae_loss_mean+= mae_loss_mean_unnormalized
+        mean_mae_loss_std+= mae_loss_std_unnormalized
+
+
+        if opt.wandb_inactive is False:
+            wandb.log({
+                f'{prefix}_loss': loss_nn.item(),
+                f'{prefix}_rmse_loss_mean_unnormalized': rmse_loss_mean_unnormalized.item(),
+                f'{prefix}_rmse_loss_std_unnormalized': rmse_loss_std_unnormalized.item(),
+                f'{prefix}_mae_loss_mean_unnormalized': mae_loss_mean_unnormalized,
+                f'{prefix}_mae_loss_std_unnormalized': mae_loss_std_unnormalized,
+                'minibatch': count,
+            })
+        #every 100 epochs, print the losses:
+        if (count+1) % 100 == 0:
+            print(f"Epoch {epoch+1}, Minibatch {count+1}, {prefix} Loss: {loss_nn.item():.8f}, "
+                    f"{prefix} RMSE Loss Mean Unnormalized: {rmse_loss_mean_unnormalized.item():.8f}, "
+                    f"{prefix} RMSE Loss Std Unnormalized: {rmse_loss_std_unnormalized.item():.8f}, "
+                    f"{prefix} MAE Loss Mean Unnormalized: {mae_loss_mean_unnormalized:.8f}, "
+                    f"{prefix} MAE Loss Std Unnormalized: {mae_loss_std_unnormalized:.8f}")
+        count+=1
+    loss /= len(dataloader)
+    mean_rmse_loss_mean /= len(dataloader)
+    mean_rmse_loss_std /= len(dataloader)
+    mean_mae_loss_mean /= len(dataloader)
+    mean_mae_loss_std /= len(dataloader)
+
+    scheduler.step()
+    curr_lr=scheduler.optimizer.param_groups[0]["lr"]
+    print(f"Epoch {epoch}, Average {prefix} Loss: {loss:.8f}, Average {prefix} RMSE Loss for mean & std: {mean_rmse_loss_mean:.8f}, {mean_rmse_loss_std:.8f}")
+    if opt.wandb_inactive is False:
+        wandb.log({f'{prefix}_epoch_loss_epoch': loss, 
+                    f'{prefix}_epoch_rmse_loss_mean_unnormalized': mean_rmse_loss_mean,
+                    f'{prefix}_epoch_rmse_loss_std_unnormalized': mean_rmse_loss_std,
+                    f'{prefix}_epoch_mae_loss_mean_unnormalized': mean_mae_loss_mean,
+                    f'{prefix}_epoch_mae_loss_std_unnormalized': mean_mae_loss_std,
+                    'epoch': epoch,
+                    'learning_rate': curr_lr})
+    # Histogram of RMSEs
+    wandb.log({f"{prefix}_rmse_mean_hist_ep{epoch+1}": wandb.Histogram(rmses_mean)})
+    wandb.log({f"{prefix}_rmse_std_hist_ep{epoch+1}": wandb.Histogram(rmses_std)})
+
+    # Add to table
+    if table is not None:
+        table.add_data(
+            epoch + 1, 
+            loss, 
+            mean_rmse_loss_mean,
+            mean_mae_loss_mean, 
+            mean_rmse_loss_std,
+            mean_mae_loss_std
+        )
+    return loss
 
 def train():
     print('Ionopy Model Training -> Forecasting the ionosphere vTEC using Madrigal data as ground truth')
@@ -38,13 +246,15 @@ def train():
     parser.add_argument('--subset_type', type=int, default=5,  choices=[5, 10, 20, 30, 40], help='Which Madrigal data to use, possible choices are: 5, 10, 20, 30, 40 million points')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
     parser.add_argument('--model_path', type=str, default='', help='Path to the model to load. If None, a new model is created')
-    parser.add_argument('--lr', type=float, default=0.0004, help='Learning rate for the optimizer')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--run_name', default='', help='Run name to be stored in wandb')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train the model')
     parser.add_argument('--num_workers', type=int, default=24, help='Number of workers for the dataloader')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for initialization')
     parser.add_argument('--lag_days_proxies', type=float, default=144, help='Lag in days for the SET and Celestrack proxies')
     parser.add_argument('--proxies_resolution', type=int, default=1, help='Resolution in days for the SET and Celestrack proxies')
+    parser.add_argument('--lag_days_timed', type=int, default=144, help='Lag in days for the TIMED SEE Level 3 data')
+    parser.add_argument('--timed_resolution', type=int, default=1, help='Resolution in days for the TIMED SEE Level 3 data')
     parser.add_argument('--lag_minutes_omni', type=int, default=8640, help='Lag in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
     parser.add_argument('--omni_resolution', type=int, default=60, help='Resolution in minutes for the OMNIweb data (indices, magnetic field, solar wind)')
     parser.add_argument('--lag_minutes_jpld', type=int, default=8640, help='Lag in minutes for the JPLD data')
@@ -52,21 +262,29 @@ def train():
     # parser.add_argument('--min_date', type=str, default='2000-07-29 00:59:47', help='Min date to consider for the dataset')
     # parser.add_argument('--max_date', type=str, default='2024-05-31 23:59:32', help='Max date to consider for the dataset')
     parser.add_argument('--model_type', type=str, default='tft', choices=['tft'],help='Time series model to be used')
+    parser.add_argument('--loss_type', type=str, default='mse', choices=['mse'],help='Loss to be used (MS is currently supported)')
     parser.add_argument('--bucket_dir', type=str, default='/home/ga00693/gcs-bucket', help='Path to the directory where the ionosphere-data bucket is mounted')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for the TFT model')
     parser.add_argument('--state_size', type=int, default=64, help='State size for the TFT model or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--lstm_layers', type=int, default=2, help='Number of LSTM layers of the TFT or the LSTM model, depending which one is chosen as model_type')
     parser.add_argument('--attention_heads', type=int, default=4, help='Number of attention heads for the TFT')
     parser.add_argument('--wandb_inactive', action='store_true', help='Flag to activate/deactivate weights and biases')
+    parser.add_argument('--no_timed', action='store_false', help='Flag to include/exclude TIMED SEE Level 3 data in the dataset')
+    parser.add_argument('--no_jpld', action='store_false', help='Flag to include/exclude JPLD data in the dataset')
+    parser.add_argument('--no_omni_indices', action='store_false', help='Flag to include/exclude OMNI indices data in the dataset')
+    parser.add_argument('--no_omni_magnetic_field', action='store_false', help='Flag to include/exclude OMNI magnetic field data in the dataset')
+    parser.add_argument('--no_omni_solar_wind', action='store_false', help='Flag to include/exclude OMNI solar wind data in the dataset')
+    parser.add_argument('--no_set_sw', action='store_false', help='Flag to include/exclude SET SW data in the dataset')
+    parser.add_argument('--no_celestrack', action='store_false', help='Flag to include/exclude Celestrack data in the dataset')
     opt = parser.parse_args()
 
     timestamp_training = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
     if opt.wandb_inactive is False:
         wandb.init(
-            project="Ionosphere",
-            entity="Ionosphere",
+            project="ionopy",
+            entity="ionocast",
             config=vars(opt),
-            name=f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}",
+            name=f"{opt.no_jpld}{opt.no_timed}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}",
         )
         print("W&B is active")
     
@@ -74,18 +292,13 @@ def train():
     print('Config:')
     pprint.pprint(vars(opt), depth=2, width=1)
     print()
-    if opt.torch_type=='float32':
-        torch_type=torch.float32
-    elif opt.torch_type=='float64':
-        torch_type=torch.float64
-    else:
-        raise ValueError('Invalid torch type. Only float32 and float64 are supported')
-    torch.set_default_dtype(torch_type)
-    if opt.device=='':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        device = torch.device(opt.device)
-    print("Using: ", device)
+    device = torch.device(opt.device if opt.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
+    dtype = torch.float32 if opt.torch_type == 'float32' else torch.float64
+    torch.set_default_dtype(dtype)
+    print(f"Using device: {device}, dtype: {dtype}")
+
+    # Seed everything
+    set_seed(opt.seed)
 
     config={'madrigal_path': f'{opt.bucket_dir}/madrigal_data/processed/gps_data_tarr/csv_subsets/subset_tec_{opt.subset_type}mln.csv',
             'set_sw_path': f'{opt.bucket_dir}/karman-2025/data/sw_data/set_sw.csv',
@@ -94,37 +307,45 @@ def train():
             'omni_magnetic_field_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_magnetic_field.csv',
             'omni_solar_wind_path': f'{opt.bucket_dir}/karman-2025/data/omniweb_data/merged_omni_solar_wind.csv',
             'jpld_path': f'{opt.bucket_dir}/jpld/subset_lat_lon/jpld_vtec_15min.csv',
-            'use_celestrack': True,
-            'use_set_sw': True,
-            'use_jpld': True,
-            'use_omni_indices': True,
-            'use_omni_magnetic_field': True,
-            'use_omni_solar_wind': True,
+            'timed_path': f'{opt.bucket_dir}/karman-2025/data/timed_see_level3_data/timed_see_level3.csv',
+            'use_timed': opt.no_timed,
+            'use_celestrack': opt.no_celestrack,
+            'use_set_sw': opt.no_set_sw,
+            'use_jpld': opt.no_jpld,
+            'use_omni_indices': opt.no_omni_indices,
+            'use_omni_magnetic_field': opt.no_omni_magnetic_field,
+            'use_omni_solar_wind': opt.no_omni_solar_wind,
             'lag_days_proxies':opt.lag_days_proxies, # 81 days
             'proxies_resolution':opt.proxies_resolution,  # 1 day
             'lag_minutes_omni':opt.lag_minutes_omni,  # 2880 minutes (2 days)
             'omni_resolution':opt.omni_resolution,  # 1 minute
             'lag_minutes_jpld':opt.lag_minutes_jpld,  # 2880 minutes (2 days)
             'jpld_resolution':opt.jpld_resolution,  # 1 minute
+            'lag_days_timed':opt.lag_days_timed,  # 144 days
+            'timed_resolution':opt.timed_resolution,  # 1 day
     }
-    madrigal_dataset = MadrigalDatasetTimeSeries(config,
-                                                torch_type=torch_type)
-    
+    madrigal_dataset = MadrigalDatasetTimeSeries(config, torch_type=dtype)
+
     # set configuration
     num_historical_numeric=0
 
-    if madrigal_dataset.config['omni_indices_path'] is not None:
+    if madrigal_dataset.config['use_omni_indices'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_indices'].shape[1]
-    if madrigal_dataset.config['omni_magnetic_field_path'] is not None:
+    if madrigal_dataset.config['use_omni_magnetic_field'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_magnetic_field'].shape[1]
-    if madrigal_dataset.config['omni_solar_wind_path'] is not None:
+    if madrigal_dataset.config['use_omni_solar_wind'] is True:
         num_historical_numeric+=madrigal_dataset[0]['omni_solar_wind'].shape[1]
-    if madrigal_dataset.config['celestrack_path'] is not None:
+    if madrigal_dataset.config['use_celestrack'] is True:
         num_historical_numeric+=madrigal_dataset[0]['celestrack'].shape[1]
-    if madrigal_dataset.config['set_sw_path'] is not None:
+    if madrigal_dataset.config['use_set_sw'] is True:
         num_historical_numeric+=madrigal_dataset[0]['set_sw'].shape[1]
-    if madrigal_dataset.config['jpld_path'] is not None:
+    if madrigal_dataset.config['use_jpld'] is True:
         num_historical_numeric+=madrigal_dataset[0]['jpld'].shape[1]
+        num_future_numeric=madrigal_dataset[0]['jpld'].shape[1]
+    else:
+        num_future_numeric=1
+    if madrigal_dataset.config['use_timed'] is True:
+        num_historical_numeric+=madrigal_dataset[0]['timed'].shape[1]
 
     print(f"Historical input features of the model: {num_historical_numeric}")
 
@@ -136,7 +357,7 @@ def train():
     if opt.model_type=='tft':
         data_props = {'num_historical_numeric': num_historical_numeric,
                     'num_static_numeric': input_dimension,
-                    'num_future_numeric': 1,
+                    'num_future_numeric': num_future_numeric,
                     }
 
         configuration = {
@@ -144,7 +365,7 @@ def train():
                             {
                                 'dropout': opt.dropout,
                                 'state_size': opt.state_size,
-                                'output_quantiles': [0.5], #[0.1, 0.5, 0.9],
+                                'output_quantiles': [0.5, 0.75], #[0.1, 0.5, 0.9],
                                 'lstm_layers': opt.lstm_layers,
                                 'attention_heads': opt.attention_heads,
                             },
@@ -156,6 +377,10 @@ def train():
         ts_ionopy_model = tft.TemporalFusionTransformer(OmegaConf.create(configuration))
         # weight init
         ts_ionopy_model.apply(weight_init)
+        if torch.__version__ >= '2.0':
+            print("Compiling model with torch.compile()...")
+            ts_ionopy_model = torch.compile(ts_ionopy_model, backend='inductor')
+
     else:
         raise ValueError('Invalid model type. Only tft is supported')
 
@@ -178,70 +403,22 @@ def train():
                                                                                                                         2019: {"validation":6, "test":10},#quiet period
                                                                                                                         2022: {"validation":0, "test":1},
                                                                                                                         2024: {"validation":4,"test":5}})
-    train_dataset = madrigal_dataset.train_dataset()
-    validation_dataset = madrigal_dataset.validation_dataset()
-    test_dataset = madrigal_dataset.test_dataset()
-    print(f'Training dataset example: {train_dataset[0].items()}')
-
-    train_sampler = RandomSampler(train_dataset, num_samples=len(train_dataset))
-    validation_sampler = RandomSampler(validation_dataset, num_samples=len(validation_dataset))
-    test_sampler = SequentialSampler(test_dataset)
-
+    
     optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, list(ts_ionopy_model.parameters())),
         lr=opt.lr,
         amsgrad=True,
     )
 
-    #scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[25,50,75,100,125,150,175,200,225,230,240,250,260,270], gamma=0.8, verbose=False)
-    criterion=torch.nn.MSELoss()
-
     # And the dataloader
     #seed them
-    g = torch.Generator()
-    g.manual_seed(0)
-    random.seed(opt.seed)
-    np.random.seed(opt.seed)
-    torch.manual_seed(opt.seed)
-    torch.cuda.manual_seed_all(opt.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    train_loader, validation_loader, test_loader = prepare_dataloaders(madrigal_dataset, opt, seed=opt.seed)
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=opt.batch_size,
-        pin_memory=True,
-        num_workers=opt.num_workers,
-        sampler=train_sampler,
-        drop_last=True,
-        generator=g
-    )
-    validation_loader = torch.utils.data.DataLoader(
-        validation_dataset,
-        batch_size=opt.batch_size,
-        pin_memory=True,
-        num_workers=opt.num_workers,
-        sampler=validation_sampler,
-        drop_last=True,
-        generator=g
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=opt.batch_size,
-        pin_memory=True,
-        num_workers=opt.num_workers,
-        sampler=test_sampler,
-        drop_last=True,
-        generator=g
-    )
-    criterion=torch.nn.MSELoss()
-    quantiles_tensor= torch.tensor([0.5], dtype=torch_type, device=device)  # For TFT, we use the median quantile
-    best_val_loss = np.inf
     if opt.wandb_inactive is False:
         wandb.config.update({
             'num_historical_numeric': num_historical_numeric,
             'num_static_numeric': input_dimension,
-            'num_future_numeric': 1,
+            'num_future_numeric': num_future_numeric,
             'model_type': opt.model_type,
             'subset_type': opt.subset_type,
             'batch_size': opt.batch_size,
@@ -252,182 +429,27 @@ def train():
             'lstm_layers': opt.lstm_layers,
             'attention_heads': opt.attention_heads
         })
-        table = wandb.Table(columns=["Epoch", "Validation Loss", "Training Loss", "Validation RMSE", "Training RMSE", "Validation MAE", "Training MAE"])
+        table_training = wandb.Table(columns=["Epoch", "Training Loss", "Training Mean RMSE", "Training Mean MAE", "Training Std RMSE", "Training Std MAE"])
+        table_validation = wandb.Table(columns=["Epoch", "Validation Loss", "Validation Mean RMSE", "Validation Mean MAE",  "Validation Std RMSE", "Validation Std MAE"])
     # CosineAnnealingLR scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.epochs, eta_min=1e-6)
+
+    mse_loss=torch.nn.MSELoss()
+    quantiles_tensor= torch.tensor([0.5, 0.75], device=device)  # For TFT, we use the median quantile
+    best_val_loss = np.inf
+
     for epoch in range(opt.epochs):
-        ts_ionopy_model.train()
-        count=0
-        train_loss = 0.
-        train_rmse_loss_unnormalized = 0.
-        train_mae_unnormalized = 0.
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{opt.epochs}"):
-            historical_ts_numeric = []
-            for key in batch:
-                if key not in {'date', 'inputs', 'tec', 'dtec'}:    
-                    if key in batch:
-                        historical_ts_numeric.append(batch[key][:, :-1, :])
-            if historical_ts_numeric:  # Only stack if not empty
-                historical_ts_numeric = torch.cat(historical_ts_numeric, dim=2).to(device)
-            future_ts_numeric=batch['jpld'][:,-1,:].unsqueeze(1).to(device)
-            minibatch = {
-                    'static_feats_numeric': batch['inputs'].to(device),
-                    'historical_ts_numeric': historical_ts_numeric,
-                    'future_ts_numeric':  future_ts_numeric,#batch size x future steps x num features
-                    'target': batch['tec'].to(device)
-                    }
-                        
-            #let's store the normalized and unnormalized target density:
-            tec_log1p = minibatch['target'] * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
-            tec_madrigal = torch.expm1(tec_log1p) 
-            if opt.model_type=='tft':
-                batch_out=ts_ionopy_model(minibatch)                    
-                #now the quantiles:
-                predicted_quantiles = batch_out['predicted_quantiles']#it's of shape batch_size x future_steps x num_quantiles
-                target_nn_median=predicted_quantiles[:, :, 0].squeeze()
-                q_loss, q_risk, _ = tft_loss.get_quantiles_loss_and_q_risk(outputs=predicted_quantiles,
-                                                                                targets=minibatch['target'],
-                                                                                desired_quantiles=quantiles_tensor)
-            else:
-                raise ValueError('Invalid model type. Only tft is supported')
-            loss_nn = criterion(target_nn_median, minibatch['target'])
+        #first we run training:
+        _ = run_epoch(ts_ionopy_model, train_loader, device, opt, scheduler, optimizer, epoch, mse_loss, quantiles_tensor, table=table_training, train=True)
 
-            optimizer.zero_grad(set_to_none=True)
-            loss_nn.backward()
-            optimizer.step()
-
-            #let's also track the non-normalized loss, without actually computing any gradients:
-            target_nn_median_unnormalized = target_nn_median * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
-            target_nn_median_unnormalized = torch.expm1(target_nn_median_unnormalized)
-            loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
-            #let's also record it to keep track of the average:
-            train_loss += loss_nn.item()
-            mae_value=mae_loss(target_nn_median_unnormalized.detach(), tec_madrigal.detach()).item()
-            train_mae_unnormalized += mae_value
-            train_rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
-            if opt.wandb_inactive is False:
-                wandb.log({
-                    'train_loss': loss_nn.item(),
-                    'train_loss_unnormalized': loss_nn_unnormalized.item(),
-                    'train_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
-                    'train_train_mae_unnormalized': mae_value,
-                    'train_q_loss': q_loss.item(),
-                    'train_q_risk': q_risk.item(),
-                    'train_minibatch': count
-                })
-            #every 100 epochs, print the losses:
-            if (count+1) % 100 == 0:
-                print(f"Epoch {count}, Train Loss: {loss_nn.item():.6f}, RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Train Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
-            count+=1
-        train_loss /= len(train_loader)
-        train_rmse_loss_unnormalized /= len(train_loader)
-        train_mae_unnormalized /= len(train_loader)
-        scheduler.step()
-        curr_lr=scheduler.optimizer.param_groups[0]["lr"]
-        print(f"Epoch {epoch}, Average Train Loss: {train_loss:.8f}, Average Train RMSE Loss: {train_rmse_loss_unnormalized:.8f}")
-        if opt.wandb_inactive is False:
-            wandb.log({'train_loss_epoch': train_loss, 
-                       'train_rmse_epoch': train_rmse_loss_unnormalized,
-                       'train_mae_epoch': train_mae_unnormalized,
-                       'epoch': epoch,
-                       'learning_rate': curr_lr})
-        #scheduler.step()
-        #validation
-        ts_ionopy_model.eval()
-        with torch.no_grad():
-            validation_loss = 0.0
-            validation_rmse_loss_unnormalized = 0.0
-            validation_mae_unnormalized = 0.0
-            count=0
-            val_rmses=[]
-            for batch in tqdm(validation_loader, desc=f"Validation Epoch {epoch+1}/{opt.epochs}"):
-                historical_ts_numeric = []
-                for key in batch:
-                    if key not in {'date', 'inputs', 'tec', 'dtec'}:    
-                        if key in batch:
-                            historical_ts_numeric.append(batch[key][:, :-1, :])
-                if historical_ts_numeric:
-                    historical_ts_numeric = torch.cat(historical_ts_numeric, dim=2).to(device)
-                future_ts_numeric=batch['jpld'][:,-1,:].unsqueeze(1).to(device)
-                minibatch = {
-                        'static_feats_numeric': batch['inputs'].to(device),
-                        'historical_ts_numeric': historical_ts_numeric,
-                        'future_ts_numeric':  future_ts_numeric,#batch size x future steps x num features
-                        'target': batch['tec'].to(device)
-                        }
-                #let's store the normalized and unnormalized target density:
-                tec_log1p = minibatch['target'] * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
-                tec_madrigal = torch.expm1(tec_log1p)
-                if opt.model_type=='tft':
-                    batch_out=ts_ionopy_model(minibatch)
-                    #now the quantiles:
-                    predicted_quantiles = batch_out['predicted_quantiles']
-                    target_nn_median=predicted_quantiles[:, :, 0].squeeze()
-                    q_loss, q_risk, _ = tft_loss.get_quantiles_loss_and_q_risk(outputs=target_nn_median,
-                                                                                targets=minibatch['target'],
-                                                                                desired_quantiles=quantiles_tensor)
-                else:
-                    raise ValueError('Invalid model type. Only tft is supported')
-                loss_nn = criterion(target_nn_median, minibatch['target'])
-                #let's also track the non-normalized loss, without actually computing any gradients:
-                target_nn_median_unnormalized = target_nn_median * ionopy.dataset.TEC_STD_LOG1P + ionopy.dataset.TEC_MEAN_LOG1P
-                target_nn_median_unnormalized = torch.expm1(target_nn_median_unnormalized)
-                loss_nn_unnormalized = criterion(target_nn_median_unnormalized.detach(), tec_madrigal.detach())
-                #let's also record it to keep track of the average:
-                validation_loss += loss_nn.item()
-                validation_rmse_loss_unnormalized += np.sqrt(loss_nn_unnormalized.item())
-                mae_value=mae_loss(target_nn_median_unnormalized.detach(), tec_madrigal.detach()).item()
-                validation_mae_unnormalized += mae_value
-                val_rmses.append(validation_rmse_loss_unnormalized)
-                if opt.wandb_inactive is False:
-                    wandb.log({
-                        'validation_loss': loss_nn.item(),
-                        'validation_loss_unnormalized': loss_nn_unnormalized.item(),
-                        'validation_rmse_unnormalized': np.sqrt(loss_nn_unnormalized.item()),
-                        'validation_validation_mae_unnormalized': mae_value,
-                        'validation_q_loss': q_loss.item(),
-                        'validation_q_risk': q_risk.item(),
-                        'validation_minibatch': count
-                    })
-                #every 100 epochs, print the losses:
-                if (count+1) % 100 == 0:
-                    print(f"minibatch {count}, Validation Loss: {loss_nn.item():.6f}, Validation RMSE Loss: {np.sqrt(loss_nn_unnormalized.item())}, Validation Loss Unnormalized: {loss_nn_unnormalized.item():.6f}, Q Loss: {q_loss.item():.6f}, Q Risk: {q_risk.item():.6f}")
-                count+=1
-        #let's create a W&B histogram on the val_losses:
-        validation_loss /= len(validation_loader)
-        validation_rmse_loss_unnormalized /= len(validation_loader)
-        validation_mae_unnormalized /= len(validation_loader)
-        print(f"Epoch {epoch+1}, Average Validation Loss: {validation_loss:.8f}, Average Validation RMSE Loss: {validation_rmse_loss_unnormalized:.8f}")
-        if opt.wandb_inactive is False:
-            try:
-                wandb.log({f'validation_rmse_histogram_{epoch+1}': wandb.Histogram(val_rmses, num_bins=100, title='Validation RMSE')})
-            except Exception as e:
-                print(f"Error logging histogram: {e}")
-            wandb.log({'validation_loss_epoch': validation_loss, 
-                        'validation_rmse_epoch': validation_rmse_loss_unnormalized,
-                        'validation_mae_epoch': validation_mae_unnormalized})
-            try:
-                wandb.log({f'validation_rmse_histogram_{epoch+1}': wandb.Histogram(val_rmses, num_bins=100, title='Validation RMSE')})
-                table.add_data(epoch+1, 
-                               validation_loss, 
-                               train_loss, 
-                               validation_rmse_loss_unnormalized, 
-                               train_rmse_loss_unnormalized, 
-                               validation_mae_unnormalized, 
-                               train_mae_unnormalized)
-            except Exception as e:
-                print(f"Error logging: {e}")
-
-
-        #save the model if the validation loss is lower than the best validation loss
+        #then validation:
+        validation_loss = run_epoch(ts_ionopy_model, validation_loader, device, opt, scheduler, optimizer, epoch, mse_loss, quantiles_tensor, table=table_validation, train=False)
+        # Save best model
         if validation_loss < best_val_loss:
-            old_best = best_val_loss
             best_val_loss = validation_loss
-            print(f"Validation loss improved from {old_best:.8f} to {validation_loss:.8f}, saving model")
-            if opt.model_path != '':
-                torch.save(ts_ionopy_model.state_dict(), opt.model_path)
-            else:
-                torch.save(ts_ionopy_model.state_dict(), f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}.pth")
+            save_path = opt.model_path or f"{opt.no_jpld}{opt.no_timed}{opt.no_set_sw}{opt.no_celestrack}{opt.no_omni_indices}{opt.no_omni_magnetic_field}{opt.no_omni_solar_wind}_{opt.model_type}_{opt.subset_type}mln_{timestamp_training}_Batch{opt.batch_size}_LSTM{opt.lstm_layers}_Att{opt.attention_heads}_SS{opt.state_size}.pth"
+            torch.save(ts_ionopy_model.state_dict(), save_path)
+            print(f"New best model saved: {save_path} (Val Loss: {validation_loss:.6f})")
 
 if __name__ == "__main__":
     time_start = time.time()
