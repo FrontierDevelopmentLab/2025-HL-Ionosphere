@@ -987,7 +987,7 @@ def main():
                     buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
                     
                     print(f'\n--- Preparing data for Event: {event_id} ---')
-                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',  'IonCastLSTM-ablation-JPLDSunMoon']:
                         # Other models use all 5 datasets
                         dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
                         dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
