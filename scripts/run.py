@@ -952,7 +952,7 @@ def main():
                                 shutil.rmtree(best_model_dir)
                             os.makedirs(best_model_dir, exist_ok=True)
                             for file in os.listdir(args.target_dir):
-                                if file.startswith(file_name_prefix) and (file.endswith('.pdf') or file.endswith('.png') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
+                                if file.startswith(os.path.basename(file_name_prefix)) and (file.endswith('.pdf') or file.endswith('.png') or file.endswith('.mp4') or file.endswith('.pth') or file.endswith('.csv')):
                                     shutil.copyfile(os.path.join(args.target_dir, file), os.path.join(best_model_dir, file))
 
         elif args.mode == 'test':
