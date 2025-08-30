@@ -84,6 +84,14 @@ class MadrigalDatasetTimeSeries(Dataset):
         self.input_features_names += ['sid_sin', 'sid_cos']
         #now the latitude:
         self.latitudes = torch.tensor(np.deg2rad(self.data['all__latitudes__[deg]'].values), dtype=self.torch_type)
+        #let's create indices that highlight -> low latitude zone (<30 deg), mid-latitude zone (30-60 deg), and high-lat zone (>60 deg)
+        latitude_bins_classification={0:'Low latitude (<30 deg)', 
+                                    1:'Mid latitude (30-60 deg)', 
+                                    2:'High latitude (>60 deg)'}
+        latitude_bins = np.deg2rad(np.array([30, 60, 91]))
+        latitude_classification = np.digitize(abs(self.latitudes.numpy()), latitude_bins)
+        latitude_classification = [latitude_bins_classification[v] for v in latitude_classification]    
+        self.latitude_classification = latitude_classification
         self.input_features.append( 2 * (self.latitudes - (-np.pi/2)) / (np.pi/2 - (-np.pi/2)) - 1)
         self.input_features_names += ['latitudes_normalized']
         #self.latitudes_normalized = 2 * (self.latitudes - (-np.pi/2)) / (np.pi/2 - (-np.pi/2)) - 1
@@ -113,13 +121,14 @@ class MadrigalDatasetTimeSeries(Dataset):
         self.dtec = torch.tensor(np.log1p(dtec), dtype=self.torch_type)
         #let's now normalize the dtec min max from -1 to 1 assuming the min is 0 and max is 1.609
         self.dtec = 2*(self.dtec - 0.)/(np.log1p(10.)-0.)-1.
-
         print("Before normalization:")
         print("Min TEC:", self.data['madrigal__tec__[TECU]'].min(), "Max TEC:", self.data['madrigal__tec__[TECU]'].max())
         print("Min dTEC:", self.data['madrigal__dtec__[TECU]'].min(), "Max dTEC:", self.data['madrigal__dtec__[TECU]'].max())
         print("After normalization:")
         print("Min TEC:", self.tec.min().item(), "Max TEC:", self.tec.max().item())
         print("Min dTEC:", self.dtec.min().item(), "Max dTEC:", self.dtec.max().item())
+
+
         # Add time series data here.            
         if config["use_timed"] is True:
             print("\nLoading TIMED SEE Level 3 dataset.")
@@ -444,6 +453,7 @@ class MadrigalDatasetTimeSeries(Dataset):
         sample["inputs"] = self.input_features[idx]
         sample["tec"] = self.tec[idx]
         sample["dtec"] = self.dtec[idx]
+        sample["latitude_classification"] = self.latitude_classification[idx]
 
         for data_name, data in self.time_series_data.items():
             ####IMPORTANT -> first row, is old data, last row is new data.
@@ -467,5 +477,9 @@ class MadrigalDatasetTimeSeries(Dataset):
             )
 
             sample[data_name] = data["data"][lagged_index : (now_index + 1), :]
-
+            #if it's celestrack or SET, also return the storm classification and/or the solar activity classification:
+            if data_name.startswith("celestrack"):
+                sample["storm_classification"] = data["storm_classification"][now_index]
+            if data_name.startswith("set"):
+                sample["solar_activity_classification"] = data["solar_activity_classification"][now_index]
         return sample
