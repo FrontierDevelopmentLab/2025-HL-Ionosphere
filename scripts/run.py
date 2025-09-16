@@ -300,6 +300,8 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_probabilistic': getattr(model, 'probabilistic', False),
             'model_dropout': getattr(model, 'dropout', 0.0),
             'model_mc_dropout': getattr(model, 'mc_dropout', False),
+            'model_context_window': getattr(model, 'context_window', None),
+            'model_prediction_window': getattr(model, 'prediction_window', None),
             'model_name': 'SphericalFourierNeuralOperatorModel'
         }
     else:
@@ -350,9 +352,25 @@ _lat_grid = np.load('lat_grid.npy')   # (180, 360)
 _lon_grid = np.load('lon_grid.npy')   # (180, 360)
 
 def _load_qd_grid_for_year(year):
-    qd_lat = np.load(f'qd_lat_{year}.npy')
-    qd_lon = np.load(f'qd_lon_{year}.npy')
-    return qd_lat, qd_lon
+    """Return QD grids if available, else gracefully fall back to geographic lat/lon."""
+    try:
+        qd_lat = _np.load(f'qd_lat_{year}.npy').astype(_np.float32)
+        qd_lon = _np.load(f'qd_lon_{year}.npy').astype(_np.float32)
+        return qd_lat, qd_lon
+    except Exception:
+        # Fallback to geographic if QD files are missing
+        return _lat_grid.astype(_np.float32), _lon_grid.astype(_np.float32)
+    
+def _quantize_degrees_to_heads(deg_grids: _np.ndarray, n_heads: int) -> _np.ndarray:
+    """
+    Map sun-locked longitude degrees in [0,360) to head indices [0, n_heads-1].
+    Works for any n_heads (not only 360).
+    """
+    mul = float(n_heads) / 360.0
+    idx = _np.floor(deg_grids * mul).astype(_np.int64)
+    return _np.clip(idx, 0, n_heads - 1)
+
+
 
 def add_fourier_positional_encoding(x, coord_grids, n_harmonics=1, concat_original_coords=True):
     """
@@ -487,10 +505,13 @@ def load_model(file_name, device):
             out_shapes=checkpoint.get('model_out_shapes', {"vtec": (1, "grid")}),
             probabilistic=checkpoint.get('model_probabilistic', False),
             dropout=checkpoint.get('model_dropout', 0.0),
-            mc_dropout=checkpoint.get('model_mc_dropout', False)
+            mc_dropout=checkpoint.get('model_mc_dropout', False),
+            # windows (fallbacks keep old checkpoints working)
+            context_window=checkpoint.get('model_context_window', 4),
+            prediction_window=checkpoint.get('model_prediction_window', 1),
         )
-        # Ensure downstream checks work:
         model.name = 'SphericalFourierNeuralOperatorModel'
+
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -886,8 +907,12 @@ def main():
                     model = SphericalFourierNeuralOperatorModel(
                         in_channels=in_channels,
                         trunk_width=64, trunk_depth=8, modes_lat=32, modes_lon=64,
-                        aux_dim=0, tasks=("vtec",), out_shapes={"vtec": (args.prediction_window, "grid")},
-                        probabilistic=True, dropout=0.2, mc_dropout=True
+                        aux_dim=0,
+                        tasks=("vtec",),
+                        out_shapes={"vtec": (1, "grid")},  # per-step channels; horizon handled autoregressively
+                        probabilistic=True, dropout=0.2, mc_dropout=True,
+                        context_window=args.context_window,
+                        prediction_window=args.prediction_window,
                     )
                     model.name = 'SphericalFourierNeuralOperatorModel'
                 else:
@@ -965,54 +990,96 @@ def main():
                             celestrak_seq = celestrak_seq.to(device)
                             omniweb_seq = omniweb_seq.to(device)
                             set_seq = set_seq.to(device)
+
                             H, W = 180, 360
                             celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
                             omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
                             set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+
                             combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
-                            x_last = combined_seq[:, args.context_window - 1, :, :, :]  # (B,C,H,W)
-                            y = jpld_seq[:, args.context_window, 0:1, :, :]
+                            B, T, Ctot, H, W = combined_seq.shape
+                            assert T >= args.context_window + args.prediction_window, \
+                                "Sequence too short for context+prediction"
 
-                            # build per-sample sun-locked & QD grids
-                            B = x_last.shape[0]
-                            sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
-                            step_idx = max(0, args.context_window - 1)
-                            for b in range(B):
-                                dtb = _safe_time_at(times, b, step_idx)
-                                subsolar_lon = _get_subsolar_longitude(dtb)
-                                sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
-                                qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
-                                sunlocked_grids.append(sunlocked_lon_grid)
-                                qd_lat_list.append(qd_lat_f)
-                                qd_lon_list.append(qd_lon_f)
-                            sunlocked_grids = np.stack(sunlocked_grids, axis=0)
-                            coord_grids = [
-                                np.repeat(_lat_grid[None, ...], B, axis=0),
-                                np.repeat(_lon_grid[None, ...], B, axis=0),
-                                np.stack(qd_lat_list, axis=0),
-                                np.stack(qd_lon_list, axis=0),
-                                sunlocked_grids,
-                            ]
-                            x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
-                            sunlocked_idx = torch.tensor(sunlocked_grids.astype(int), dtype=torch.long, device=device)
+                            # ---- true multi-step AR rollout over P steps ----
+                            P = args.prediction_window
+                            cur = combined_seq[:, args.context_window - 1].clone()     # (B, Ctot, H, W)
+                            total_loss = 0.0
+                            rmse_steps = []
 
-                            out = model(x_input, sunlocked_idx)
-                            if isinstance(out, dict) and 'vtec' in out:
-                                pred, logvar = out['vtec']
-                                times_target = [_safe_time_at(times, b, args.context_window) for b in range(B)]
-                                slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
-                                loss, jpld_l, aux_l, _ = _sfno_weighted_loss(
-                                    pred, logvar, y, iteration,
-                                    jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
-                                    times=times_target, slots_per_day=slots_per_day, delta_minutes=args.delta_minutes, tol_slots=1
-                                )
-                                rmse_t = _rmse_tecu(pred[:, 0:1], y)
-                                jpld_rmse_t = rmse_t
-                            else:
-                                pred = out
-                                loss = torch.mean((pred - y) ** 2)
-                                rmse_t = _rmse_tecu(pred, y)
-                                jpld_rmse_t = rmse_t
+                            # constants used by physics loss if present
+                            slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
+
+                            for step in range(P):
+                                step_idx = args.context_window - 1 + step
+
+                                # per-sample sun-locked & QD grids for THIS step
+                                sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                                for b in range(B):
+                                    dtb = _safe_time_at(times, b, step_idx)
+                                    subsolar_lon = _get_subsolar_longitude(dtb)
+                                    sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                                    qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                                    sunlocked_grids.append(sunlocked_lon_grid)
+                                    qd_lat_list.append(qd_lat_f)
+                                    qd_lon_list.append(qd_lon_f)
+                                sunlocked_grids = np.stack(sunlocked_grids, axis=0)
+
+                                coord_grids = [
+                                    np.repeat(_lat_grid[None, ...], B, axis=0),
+                                    np.repeat(_lon_grid[None, ...], B, axis=0),
+                                    np.stack(qd_lat_list, axis=0),
+                                    np.stack(qd_lon_list, axis=0),
+                                    sunlocked_grids,
+                                ]
+
+                                # re-append PE every step; input is ONE FRAME (+PE) -> channel count stays constant
+                                x_input = add_fourier_positional_encoding(cur, coord_grids,
+                                                                        n_harmonics=args.n_harmonics,
+                                                                        concat_original_coords=True)
+                                n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
+                                sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
+                                sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
+
+
+                                out = model(x_input, sunlocked_idx)
+                                if isinstance(out, dict) and 'vtec' in out:
+                                    pred, logvar = out['vtec']             # (B,1,H,W) each
+                                    yhat = pred
+                                else:
+                                    pred = out
+                                    logvar = None
+                                    yhat = pred
+
+                                # target at t = context + step
+                                y_t = jpld_seq[:, args.context_window + step, 0:1, :, :]
+
+                                # step loss (physics-aware if available)
+                                if isinstance(out, dict) and 'vtec' in out:
+                                    times_target = [_safe_time_at(times, b, args.context_window + step) for b in range(B)]
+                                    loss_step, _, _, _ = _sfno_weighted_loss(
+                                        pred, logvar, y_t, iteration,
+                                        jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
+                                        times=times_target, slots_per_day=slots_per_day,
+                                        delta_minutes=args.delta_minutes, tol_slots=1
+                                    )
+                                else:
+                                    loss_step = torch.mean((pred - y_t) ** 2)
+
+                                total_loss = total_loss + loss_step
+                                rmse_steps.append(_rmse_tecu(pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t))
+
+                                # build next-step frame:
+                                # - keep exogenous channels from ground truth at t = context+step
+                                # - replace VTEC (channel 0) with our prediction -> true autoregression
+                                next_frame = combined_seq[:, args.context_window + step].clone()   # (B, Ctot, H, W)
+                                next_frame[:, 0:1] = yhat
+                                cur = next_frame
+
+                            loss = total_loss / float(P)
+                            rmse_t = torch.stack(rmse_steps).mean()
+                            jpld_rmse_t = rmse_t
+
 
                         else:
                             raise ValueError('Unknown model type: {}'.format(model.name if hasattr(model, "name") else args.model_type))
@@ -1091,60 +1158,85 @@ def main():
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
                                 jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device)
                                 celestrak_seq = celestrak_seq.to(device); omniweb_seq = omniweb_seq.to(device); set_seq = set_seq.to(device)
+
                                 H, W = 180, 360
                                 celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
                                 omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
                                 set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
-                                x_last = combined_seq[:, args.context_window - 1, :, :, :]
-                                y = jpld_seq[:, args.context_window, 0:1, :, :]
 
-                                B = x_last.shape[0]
-                                sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
-                                step_idx = max(0, args.context_window - 1)
-                                for b in range(B):
-                                    dtb = _safe_time_at(times, b, step_idx)
-                                    subsolar_lon = _get_subsolar_longitude(dtb)
-                                    sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
-                                    qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
-                                    sunlocked_grids.append(sunlocked_lon_grid)
-                                    qd_lat_list.append(qd_lat_f)
-                                    qd_lon_list.append(qd_lon_f)
-                                sunlocked_grids = np.stack(sunlocked_grids, axis=0)
-                                coord_grids = [
-                                    np.repeat(_lat_grid[None, ...], B, axis=0),
-                                    np.repeat(_lon_grid[None, ...], B, axis=0),
-                                    np.stack(qd_lat_list, axis=0),
-                                    np.stack(qd_lon_list, axis=0),
-                                    sunlocked_grids,
-                                ]
-                                x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
-                                sunlocked_idx = torch.tensor(sunlocked_grids.astype(int), dtype=torch.long, device=device)
+                                B, T, Ctot, H, W = combined_seq.shape
+                                assert T >= args.context_window + args.prediction_window
 
-                                out = model(x_input, sunlocked_idx)
-                                if isinstance(out, dict) and 'vtec' in out:
-                                    pred, logvar = out['vtec']
-                                    times_target = [_safe_time_at(times, b, args.context_window) for b in range(B)]
-                                    slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
-                                    loss, _, _, _ = _sfno_weighted_loss(
-                                        pred, logvar, y, iteration,
-                                        jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
-                                        times=times_target, slots_per_day=slots_per_day, delta_minutes=args.delta_minutes, tol_slots=1
-                                    )
-                                    rmse_t = _rmse_tecu(pred[:, 0:1], y)
-                                    jpld_rmse_t = rmse_t
-                                else:
-                                    pred = out
-                                    loss = torch.mean((pred - y) ** 2)
-                                    rmse_t = _rmse_tecu(pred, y)
-                                    jpld_rmse_t = rmse_t
+                                P = args.prediction_window
+                                cur = combined_seq[:, args.context_window - 1].clone()
+                                total_loss = 0.0
+                                rmse_steps = []
+                                slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
 
-                            else:
-                                raise ValueError('Unknown model name: {}'.format(model.name))
+                                for step in range(P):
+                                    step_idx = args.context_window - 1 + step
+                                    sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                                    for b in range(B):
+                                        dtb = _safe_time_at(times, b, step_idx)
+                                        subsolar_lon = _get_subsolar_longitude(dtb)
+                                        sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                                        qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                                        sunlocked_grids.append(sunlocked_lon_grid)
+                                        qd_lat_list.append(qd_lat_f)
+                                        qd_lon_list.append(qd_lon_f)
+                                    sunlocked_grids = np.stack(sunlocked_grids, axis=0)
 
-                            valid_loss += float(loss.detach().item())
-                            valid_rmse_loss += float(rmse_t.detach().item())
-                            valid_jpld_rmse_loss += float(jpld_rmse_t.detach().item())
+                                    coord_grids = [
+                                        np.repeat(_lat_grid[None, ...], B, axis=0),
+                                        np.repeat(_lon_grid[None, ...], B, axis=0),
+                                        np.stack(qd_lat_list, axis=0),
+                                        np.stack(qd_lon_list, axis=0),
+                                        sunlocked_grids,
+                                    ]
+                                    x_input = add_fourier_positional_encoding(cur, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+                                    n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
+                                    sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
+                                    sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
+
+
+                                    out = model(x_input, sunlocked_idx)
+                                    if isinstance(out, dict) and 'vtec' in out:
+                                        pred, logvar = out['vtec']
+                                        yhat = pred
+                                    else:
+                                        pred = out
+                                        logvar = None
+                                        yhat = pred
+
+                                    y_t = jpld_seq[:, args.context_window + step, 0:1, :, :]
+
+                                    if isinstance(out, dict) and 'vtec' in out:
+                                        times_target = [_safe_time_at(times, b, args.context_window + step) for b in range(B)]
+                                        loss_step, _, _, _ = _sfno_weighted_loss(
+                                            pred, logvar, y_t, iteration,
+                                            jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
+                                            times=times_target, slots_per_day=slots_per_day,
+                                            delta_minutes=args.delta_minutes, tol_slots=1
+                                        )
+                                    else:
+                                        loss_step = torch.mean((pred - y_t) ** 2)
+
+                                    total_loss = total_loss + loss_step
+                                    rmse_steps.append(_rmse_tecu(pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t))
+
+                                    next_frame = combined_seq[:, args.context_window + step].clone()
+                                    next_frame[:, 0:1] = yhat
+                                    cur = next_frame
+
+                                loss = total_loss / float(P)
+                                rmse_t = torch.stack(rmse_steps).mean()
+                                jpld_rmse_t = rmse_t
+
+                                valid_loss += float(loss.detach().item())
+                                valid_rmse_loss += float(rmse_t.detach().item())
+                                valid_jpld_rmse_loss += float(jpld_rmse_t.detach().item())
+
                     valid_loss /= len(valid_loader)
                     valid_rmse_loss /= len(valid_loader)
                     valid_jpld_rmse_loss /= len(valid_loader)

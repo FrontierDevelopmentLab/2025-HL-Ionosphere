@@ -1,24 +1,35 @@
 import cartopy.crs as ccrs
 import matplotlib
+matplotlib.use('Agg')  # must be set BEFORE importing pyplot
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from tqdm import tqdm
-import imageio
+
+# Optional deps (safe fallbacks)
+try:
+    import imageio
+except Exception:
+    imageio = None
+
 import numpy as np
 import datetime
 import torch
 import os
 import csv
 import pandas as pd
-import seaborn as sns
 import random
+
+# seaborn is optional; if missing we fall back to pure matplotlib in scatter plot
+try:
+    import seaborn as sns
+except Exception:
+    sns = None
 
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
 from model_lstmsdo import IonCastLSTMSDO
 
-matplotlib.use('Agg')
 
 # Two main types of evaluation for an autoregressive model
 # Long-horizon forecast: Predicting a sequence of images starting from a given date, using the model's autoregressive capabilities.
@@ -191,15 +202,21 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
-        raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD or IonCastLSTM-ablation-JPLDSunMoon or IonCastLinear-ablation-JPLD or IonCastPersistence-ablation-JPLD')
+    SUPPORTED = [
+        'IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO',
+        'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon',
+        'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD',
+        'SphericalFourierNeuralOperatorModel'
+    ]
+    if getattr(model, 'name', model.__class__.__name__) not in SUPPORTED:
+        raise ValueError(f'Model {getattr(model,"name",None)} not supported; must be one of {SUPPORTED}')
+
     if date_start > date_end:
         raise ValueError(f'date_start ({date_start}) must be before date_end ({date_end})')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
         raise ValueError(f'date_forecast_start ({date_forecast_start}) must be at least context_window ({model.context_window}) * delta_minutes ({args.delta_minutes}) after date_start ({date_start})')
     if date_forecast_start >= date_end:
         raise ValueError(f'date_forecast_start ({date_forecast_start}) must be before date_end ({date_end})')
-    # date_forecast_start must be an integer multiple of args.delta_minutes from date_start
     if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
         raise ValueError(f'date_forecast_start ({date_forecast_start}) must be an integer multiple of args.delta_minutes ({args.delta_minutes}) from date_start ({date_start})')
 
@@ -217,182 +234,210 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     sequence_end_date = date_end
     sequence_length = int((sequence_end_date - sequence_start_date).total_seconds() / 60 / args.delta_minutes)
     sequence_dates = [sequence_start_date + datetime.timedelta(minutes=args.delta_minutes * i) for i in range(sequence_length)]
-    # find the index of the date_forecast_start in the list sequence
     if date_forecast_start not in sequence_dates:
         raise ValueError('date_forecast_start must be in the sequence')
     sequence_forecast_start_index = sequence_dates.index(date_forecast_start)
-    sequence_prediction_window = sequence_length - (sequence_forecast_start_index) # TODO: should this be sequence_length - (sequence_forecast_start_index + 1)
+    sequence_prediction_window = sequence_length - sequence_forecast_start_index
     sequence_forecast_dates = sequence_dates[sequence_forecast_start_index:]
     if verbose:
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
-    if model.name in ['IonCastLSTM', 'IonCastConvLSTM', 'IonCastLinear']:
-        sequence_data = dataset.get_sequence_data(sequence_dates)
-        jpld_seq_data = sequence_data[0]  # Original data
-        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-        celestrak_seq_data = sequence_data[2]  # CelesTrak data
-        
-        # Handle device detection for models with no parameters (like persistence)
+    # -------------------------
+    # Load per-dataset sequences
+    # -------------------------
+    sequence_data = dataset.get_sequence_data(sequence_dates)
+    # Expect order: JPLD, SunMoon, (CelesTrak), (OMNIWeb), (SET), [optionally SDO latent]
+    jpld_seq_data = sequence_data[0]  # (T, C_jpld, 180, 360)
+    device = None
+    try:
+        device = next(model.parameters()).device
+    except Exception:
         try:
-            device = next(model.parameters()).device
-        except StopIteration:
-            # Model has no parameters, try buffers or default to CPU
-            try:
-                device = next(model.buffers()).device
-            except StopIteration:
-                device = torch.device('cpu')
-        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
-        celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
-        omniweb_seq_data = sequence_data[3]  # OMNIWeb data
-        omniweb_seq_data = omniweb_seq_data.to(device)  # sequence_length, channels, 180, 360
-        set_seq_data = sequence_data[4]  # SET data
-        set_seq_data = set_seq_data.to(device)  # sequence_length, channels, 180, 360
+            device = next(model.buffers()).device
+        except Exception:
+            device = torch.device('cpu')
 
-        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)  # Combine along the channel dimension
+    jpld_seq_data = jpld_seq_data.to(device)
 
-        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+    # Helper to move tensors if present
+    def _to_dev(x):
+        return x.to(device) if isinstance(x, torch.Tensor) else x
+
+    # Build combined sequence depending on model family
+    name = getattr(model, 'name', model.__class__.__name__)
+
+    if name in ['IonCastLSTM', 'IonCastConvLSTM', 'IonCastLinear']:
+        sunmoon_seq_data  = _to_dev(sequence_data[1])
+        celestrak_seq_data = _to_dev(sequence_data[2])
+        omniweb_seq_data   = _to_dev(sequence_data[3])
+        set_seq_data       = _to_dev(sequence_data[4])
+
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data), dim=1)
+        combined_seq_data_context  = combined_seq_data[:sequence_forecast_start_index]
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-    elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
-        sequence_data = dataset.get_sequence_data(sequence_dates)
-        jpld_seq_data = sequence_data[0]  # Original data
-        
-        # Handle device detection for models with no parameters (like persistence)
-        try:
-            device = next(model.parameters()).device
-        except StopIteration:
-            # Model has no parameters, try buffers or default to CPU
-            try:
-                device = next(model.buffers()).device
-            except StopIteration:
-                device = torch.device('cpu')
-        
-        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
 
+        jpld_forecast = combined_seq_data_forecast[:, 0]   # (P, H, W)
+        jpld_original = combined_seq_data_original[:, 0]   # (P, H, W)
+
+    elif name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
         combined_seq_data = jpld_seq_data
-
-        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_context  = combined_seq_data[:sequence_forecast_start_index]
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
-    elif model.name in ['IonCastLSTM-ablation-JPLDSunMoon']:
-        sequence_data = dataset.get_sequence_data(sequence_dates)
-        jpld_seq_data = sequence_data[0]  # Original data
-        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-        
-        # Handle device detection for models with no parameters (like persistence)
-        try:
-            device = next(model.parameters()).device
-        except StopIteration:
-            # Model has no parameters, try buffers or default to CPU
-            try:
-                device = next(model.buffers()).device
-            except StopIteration:
-                device = torch.device('cpu')
-        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
 
-        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
+        jpld_forecast = combined_seq_data_forecast[:, 0]
+        jpld_original = combined_seq_data_original[:, 0]
 
-        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
-        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)        
-    
-    elif model.name in ['IonCastLSTMSDO']:
-        sequence_data = dataset.get_sequence_data(sequence_dates)
-        jpld_seq_data = sequence_data[0]  # Original data
-        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
-        sdo_seq_data = sequence_data[2]  # SDO context data
-        
-        # Handle device detection for models with no parameters (like persistence)
-        try:
-            device = next(model.parameters()).device
-        except StopIteration:
-            # Model has no parameters, try buffers or default to CPU
-            try:
-                device = next(model.buffers()).device
-            except StopIteration:
-                device = torch.device('cpu')
-        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
-        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
-        sdo_seq_data = sdo_seq_data.to(device) # sequence_length, sdo_latent_dim
+    elif name in ['IonCastLSTM-ablation-JPLDSunMoon']:
+        sunmoon_seq_data  = _to_dev(sequence_data[1])
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)
+        combined_seq_data_context  = combined_seq_data[:sequence_forecast_start_index]
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
 
-        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
-        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
-        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        jpld_forecast = combined_seq_data_forecast[:, 0]
+        jpld_original = combined_seq_data_original[:, 0]
 
-        sdo_seq_data_context = sdo_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+    elif name == 'IonCastLSTMSDO':
+        sunmoon_seq_data  = _to_dev(sequence_data[1])
+        sdo_seq_data      = _to_dev(sequence_data[2])  # (T, sdo_latent_dim)
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)
+        combined_seq_data_context  = combined_seq_data[:sequence_forecast_start_index]
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]
+        sdo_seq_data_context       = sdo_seq_data[:sequence_forecast_start_index]
+        combined_seq_data_forecast = model.predict(
+            combined_seq_data_context.unsqueeze(0), sdo_seq_data_context.unsqueeze(0),
+            prediction_window=sequence_prediction_window
+        ).squeeze(0)
 
-        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), sdo_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+        jpld_forecast = combined_seq_data_forecast[:, 0]
+        jpld_original = combined_seq_data_original[:, 0]
+
+    elif name == 'SphericalFourierNeuralOperatorModel':
+        # Full multi-source sequence (image channels only)
+        sunmoon_seq_data   = _to_dev(sequence_data[1])
+        celestrak_seq_data = _to_dev(sequence_data[2])
+        omniweb_seq_data   = _to_dev(sequence_data[3])
+        set_seq_data       = _to_dev(sequence_data[4])
+
+        combined_seq_data = torch.cat(
+            (jpld_seq_data, sunmoon_seq_data, celestrak_seq_data, omniweb_seq_data, set_seq_data),
+            dim=1
+        )  # (T, C_total, 180, 360)
+
+        combined_seq_data_context  = combined_seq_data[:sequence_forecast_start_index]   # (Tc, C, H, W)
+        combined_seq_data_original = jpld_seq_data[sequence_forecast_start_index:, 0:1]  # (P, 1, H, W) – JPLD only
+
+        # SFNO predict expects (B, Tc, C, H, W) + times for sun-locked/QD; use sequence_dates
+        preds = model.predict(
+            combined_seq_data_context.unsqueeze(0),                   # (1, Tc, C, H, W)
+            prediction_window=sequence_prediction_window,
+            times=sequence_dates,                                     # <-- key for sun-locked/QD
+            n_harmonics=getattr(args, 'n_harmonics', 1)
+        )  # (1, P, 1, H, W)
+        combined_seq_data_forecast = preds.squeeze(0)                 # (P, 1, H, W)
+
+        jpld_forecast = combined_seq_data_forecast[:, 0]              # (P, H, W)
+        jpld_original = combined_seq_data_original[:, 0]              # (P, H, W)
+
     else:
-        raise ValueError(f'Model not supported for forecasting: {model.name}')
+        raise ValueError(f'Model not supported for forecasting: {name}')
 
-    jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
-    jpld_original = combined_seq_data_original[:, 0]
-
+    # Unnormalize and clamp to a sane range
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original)
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 300)
 
-    return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
-
+    return (jpld_forecast, jpld_original,
+            jpld_forecast_unnormalized, jpld_original_unnormalized,
+            # For channel-wise video saving, fall back to what's available
+            (combined_seq_data_original if name not in ['SphericalFourierNeuralOperatorModel'] else jpld_seq_data[sequence_forecast_start_index:, 0:1]),
+            (combined_seq_data_forecast if name not in ['SphericalFourierNeuralOperatorModel'] else combined_seq_data_forecast),
+            sequence_start_date, sequence_forecast_dates, sequence_prediction_window)
 
 def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
     """
     Create a scatter plot with marginal histograms comparing ground truth vs predicted values.
-    
-    Parameters:
-        gt (np.ndarray): Ground truth values (1D array, flattened across all pixels & frames)
-        pred (np.ndarray): Predicted values (1D array, flattened across all pixels & frames)  
-        file_name (str): Path to save the plot
-        max_points (int): Maximum number of points to plot for performance
-        title (str): Title for the plot
+    Works even if seaborn is unavailable.
     """
     print(f'Saving scatter plot to {file_name}')
-    
-    # Sample data for performance if needed
+
+    # Sample for speed if needed
     n_total = len(gt)
     if n_total > max_points:
-        random.seed(42)  # For reproducible sampling
-        sample_indices = random.sample(range(n_total), max_points)
-        gt_sampled = gt[sample_indices]
-        pred_sampled = pred[sample_indices]
+        rng = np.random.default_rng(42)
+        idx = rng.choice(n_total, size=max_points, replace=False)
+        gt_sampled = gt[idx]
+        pred_sampled = pred[idx]
     else:
         gt_sampled = gt
         pred_sampled = pred
-    
-    # Create DataFrame for seaborn
-    df = pd.DataFrame({'Ground Truth (TECU)': gt_sampled, 'Predicted (TECU)': pred_sampled})
-    
-    # Use seaborn jointplot - much faster and cleaner
-    g = sns.jointplot(
-        data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
-        kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True)
-    )
-    
-    # Add light grid for better readability
-    g.ax_joint.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
-    
-    # Add reference line (perfect prediction) - subtle styling
-    max_val = max(np.max(gt_sampled), np.max(pred_sampled))
-    min_val = min(np.min(gt_sampled), np.min(pred_sampled))
-    g.ax_joint.plot([min_val, max_val], [min_val, max_val], 
-                   color='black', linestyle='-', linewidth=1.5, alpha=0.7, 
-                   label='Perfect Prediction')
-    g.ax_joint.legend()
-    
-    # Add correlation coefficient (compute on sampled data for speed)
+
+    if sns is not None:
+        # --- seaborn path ---
+        df = pd.DataFrame({'Ground Truth (TECU)': gt_sampled, 'Predicted (TECU)': pred_sampled})
+        g = sns.jointplot(
+            data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
+            kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True)
+        )
+        g.ax_joint.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+
+        min_val = float(np.min([gt_sampled.min(), pred_sampled.min()]))
+        max_val = float(np.max([gt_sampled.max(), pred_sampled.max()]))
+        g.ax_joint.plot([min_val, max_val], [min_val, max_val], color='black', linestyle='-', linewidth=1.2, alpha=0.8)
+
+        corr = np.corrcoef(gt_sampled, pred_sampled)[0, 1]
+        g.ax_joint.text(0.05, 0.95, f'R = {corr:.3f}', transform=g.ax_joint.transAxes,
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        if title:
+            g.fig.subplots_adjust(top=0.9)
+            g.fig.suptitle(title, fontsize=12, y=0.95)
+        plt.savefig(file_name, dpi=150, bbox_inches='tight')
+        plt.close()
+        return
+
+    # --- matplotlib-only path ---
+    from matplotlib.gridspec import GridSpec
+
+    fig = plt.figure(figsize=(9, 9))
+    gs = GridSpec(4, 4, figure=fig)
+    ax_scatter = fig.add_subplot(gs[1:4, 0:3])
+    ax_histx   = fig.add_subplot(gs[0,   0:3], sharex=ax_scatter)
+    ax_histy   = fig.add_subplot(gs[1:4, 3],   sharey=ax_scatter)
+
+    # scatter
+    ax_scatter.scatter(gt_sampled, pred_sampled, s=6, alpha=0.35)
+    ax_scatter.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    ax_scatter.set_xlabel('Ground Truth (TECU)')
+    ax_scatter.set_ylabel('Predicted (TECU)')
+
+    # 1:1 line
+    min_val = float(np.min([gt_sampled.min(), pred_sampled.min()]))
+    max_val = float(np.max([gt_sampled.max(), pred_sampled.max()]))
+    ax_scatter.plot([min_val, max_val], [min_val, max_val], lw=1.2, color='black', alpha=0.8)
+
+    # histograms
+    ax_histx.hist(gt_sampled, bins=50, alpha=0.7, edgecolor='black')
+    ax_histy.hist(pred_sampled, bins=50, orientation='horizontal', alpha=0.7, edgecolor='black')
+
+    # tidy axes
+    plt.setp(ax_histx.get_xticklabels(), visible=False)
+    plt.setp(ax_histx.get_yticklabels(), visible=False)
+    plt.setp(ax_histy.get_xticklabels(), visible=False)
+    plt.setp(ax_histy.get_yticklabels(), visible=False)
+
+    # correlation
     corr = np.corrcoef(gt_sampled, pred_sampled)[0, 1]
-    g.ax_joint.text(0.05, 0.95, f'R = {corr:.3f}', transform=g.ax_joint.transAxes, 
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    # Add title if provided
+    ax_scatter.text(0.02, 0.98, f'R = {corr:.3f}', transform=ax_scatter.transAxes,
+                    va='top', ha='left', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
     if title:
-        # Adjust figure spacing to accommodate title
-        g.fig.subplots_adjust(top=0.9)  # Make room for title
-        g.fig.suptitle(title, fontsize=12, y=0.95)
-    
+        fig.suptitle(title, fontsize=12, y=0.98)
+
+    plt.tight_layout()
     plt.savefig(file_name, dpi=150, bbox_inches='tight')
     plt.close()
+
 
 
 def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_scatter, args):
