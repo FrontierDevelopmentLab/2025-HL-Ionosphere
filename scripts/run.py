@@ -1,18 +1,47 @@
-import argparse
-import datetime
-import pprint
-import os
-import sys
-from matplotlib import pyplot as plt
+import argparse, datetime, pprint, os, sys, glob, shutil, random
+
+import numpy as np
 import torch
-from torch.utils.data import DataLoader, SubsetRandomSampler
 import torch.optim as optim
+from torch.utils.data import DataLoader, SubsetRandomSampler
+
 from tqdm import tqdm
+
 import matplotlib
+matplotlib.use('Agg')            # set backend BEFORE importing pyplot
 import matplotlib.pyplot as plt
-import glob
-import shutil
-import random
+
+
+# --- extra deps for SFNO & helpers ---
+
+# Optional deps used by SFNO helpers (safe to miss)
+try:
+    from skyfield.api import load as sf_load, wgs84
+    _SF_TS = sf_load.timescale()
+    _SF_EPH = sf_load('de421.bsp')
+    _SF_EARTH = _SF_EPH['earth']
+    _SF_SUN = _SF_EPH['sun']
+    def _get_subsolar_longitude(dt):
+        t = _SF_TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute)
+        subsolar = wgs84.subpoint(_SF_EARTH.at(t).observe(_SF_SUN))
+        return subsolar.longitude.degrees
+except Exception:
+    def _get_subsolar_longitude(dt):
+        # Fallback approximation if skyfield isn't available
+        return (dt.hour / 24.0) * 360.0 - 180.0
+
+# Optional advanced model + physics-informed loss
+try:
+    # (spelling is intentional in repo) -> class name is SphericalFourierNeuralOperatorModel
+    from model_sperhicalFNO_Advanced import SphericalFourierNeuralOperatorModel
+except Exception:
+    SphericalFourierNeuralOperatorModel = None
+
+try:
+    from physics_losses import geophysics_informed_loss
+except Exception:
+    geophysics_informed_loss = None
+
 
 from util import Tee
 try:
@@ -39,203 +68,429 @@ from dataloader_cached import CachedDataLoader
 from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4
 from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
+# --- Optional Spherical FNO (SFNO) support -----------------------------------
+try:
+    # file name is intentionally "model_sperhicalFNO_Advanced.py" in this repo
+    from model_sperhicalFNO_Advanced import SphericalFourierNeuralOperatorModel as _SFNO
+except Exception:
+    _SFNO = None
+
+import numpy as _np
+import torch as _torch
+
+# Lazy caches for lat/lon grids (npz or npy files expected in CWD)
+_lat_grid_np = None
+_lon_grid_np = None
+
+def _load_latlon():
+    global _lat_grid_np, _lon_grid_np
+    if _lat_grid_np is None or _lon_grid_np is None:
+        _lat_grid_np = _np.load('lat_grid.npy')   # shape (180, 360)
+        _lon_grid_np = _np.load('lon_grid.npy')   # shape (180, 360)
+    return _lat_grid_np, _lon_grid_np
+
+def _add_fourier_pe(x_last, lat_np, lon_np, n_harmonics: int):
+    """
+    x_last: (B, C, H, W) float tensor on device
+    lat_np/lon_np: numpy arrays (H, W) with degrees
+    returns: (B, C + pe_channels, H, W)
+    """
+    B, C, H, W = x_last.shape
+    device = x_last.device
+    lat = _torch.tensor(lat_np, dtype=_torch.float32, device=device).unsqueeze(0).expand(B, -1, -1)
+    lon = _torch.tensor(lon_np, dtype=_torch.float32, device=device).unsqueeze(0).expand(B, -1, -1)
+    # normalize each grid to [-pi, pi]
+    def _to_angle(g):
+        gmin = g.amin(dim=(1, 2), keepdim=True)
+        gmax = g.amax(dim=(1, 2), keepdim=True)
+        g = (g - gmin) / (gmax - gmin + 1e-8)
+        return g * (2 * _np.pi) - _np.pi
+    lat_a = _to_angle(lat)
+    lon_a = _to_angle(lon)
+
+    feats = [x_last]
+    # optionally include the raw angles
+    feats.append(lat_a.unsqueeze(1))
+    feats.append(lon_a.unsqueeze(1))
+    # harmonics
+    for k in range(1, max(1, int(n_harmonics)) + 1):
+        feats.append(_torch.sin(k * lat_a).unsqueeze(1))
+        feats.append(_torch.cos(k * lat_a).unsqueeze(1))
+        feats.append(_torch.sin(k * lon_a).unsqueeze(1))
+        feats.append(_torch.cos(k * lon_a).unsqueeze(1))
+    return _torch.cat(feats, dim=1)
+
+class _SFNOAdapter(_torch.nn.Module):
+    """
+    Thin wrapper so SFNO plugs into run.py with the same .loss() API as IonCast*.
+    - Uses the last context frame (+ simple Fourier positional encodings) as input
+    - Predicts the next JPLD frame (1-step) and trains with MSE
+    - Keeps the rest of the main-branch training/validation/eval code unchanged
+    """
+    def __init__(self, base_cfg: dict, context_window: int, prediction_window: int, n_harmonics: int):
+        super().__init__()
+        if _SFNO is None:
+            raise ImportError("SphericalFourierNeuralOperatorModel not available in this environment.")
+        self.base_cfg = dict(base_cfg)
+        self.sfno = _SFNO(**self.base_cfg)
+        self.context_window = int(context_window)
+        self.prediction_window = int(prediction_window)
+        self.n_harmonics = int(n_harmonics)
+        self.name = 'SphericalFourierNeuralOperatorModel'  # run.py uses this
+
+    def forward(self, x_input):
+        # Some SFNO variants accept a second arg (e.g., sun-locked grid).
+        try:
+            B, C, H, W = x_input.shape
+            sunlocked_zero = _torch.zeros((B, H, W), dtype=_torch.long, device=x_input.device)
+            return self.sfno(x_input, sunlocked_zero)
+        except TypeError:
+            return self.sfno(x_input)
+
+    def loss(self, combined_seq, jpld_weight: float = 1.0):
+        """
+        combined_seq: (B, T, C_total, H, W) where channel 0 is JPLD target
+        Trains 1-step ahead: target = t=context_window (next frame).
+        Returns: (loss_tensor, rmse_tensor, jpld_rmse_tensor)
+        """
+        assert combined_seq.dim() == 5, "Expected (B,T,C,H,W)"
+        B, T, Ctot, H, W = combined_seq.shape
+        assert T >= self.context_window + 1, "Need at least context_window + 1 frames"
+        # Inputs
+        x_last = combined_seq[:, self.context_window - 1, :, :, :]           # (B, C, H, W)
+        lat_np, lon_np = _load_latlon()
+        x_in = _add_fourier_pe(x_last, lat_np, lon_np, self.n_harmonics)      # (B, C+PE, H, W)
+        # Prediction
+        out = self.forward(x_in)
+        if isinstance(out, dict) and 'vtec' in out:
+            pred = out['vtec'][0] if isinstance(out['vtec'], (tuple, list)) else out['vtec']
+        else:
+            pred = out
+        # Target = next JPLD frame (assumes JPLD is channel 0 in combined tensor)
+        y = combined_seq[:, self.context_window, 0:1, :, :]
+        mse = _torch.mean((pred - y) ** 2)
+        rmse = mse.sqrt()
+        return mse, rmse, rmse  # (loss, rmse (all), jpld_rmse)
+# ---------------------------------------------------------------------------
+
+
 event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
 
-matplotlib.use('Agg')
 
 
-def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
+def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses,
+               train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses,
+               best_valid_rmse, file_name):
     print('Saving model to {}'.format(file_name))
-    # if isinstance(model, VAE1):
-    #     checkpoint = {
-    #         'model': 'VAE1',
-    #         'epoch': epoch,
-    #         'iteration': iteration,
-    #         'model_state_dict': model.state_dict(),
-    #         'optimizer_state_dict': optimizer.state_dict(),
-    #         'scheduler_state_dict': scheduler.state_dict(),
-    #         'train_losses': train_losses,
-    #         'valid_losses': valid_losses,
-    #         'model_z_dim': model.z_dim,
-    #     }
+    # Normalize model.name for downstream checks
+    if not hasattr(model, 'name'):
+        try:
+            model.name = model.__class__.__name__
+        except Exception:
+            model.name = 'Model'
+
     if isinstance(model, IonCastConvLSTM):
         checkpoint = {
             'model': 'IonCastConvLSTM',
-            'epoch': epoch,
-            'iteration': iteration,
+            'epoch': epoch, 'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'train_losses': train_losses,
-            'valid_losses': valid_losses,
-            'train_rmse_losses': train_rmse_losses,
-            'valid_rmse_losses': valid_rmse_losses,
-            'train_jpld_rmse_losses': train_jpld_rmse_losses,
-            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'best_valid_rmse': best_valid_rmse,
-            'model_input_channels': model.input_channels,
-            'model_output_channels': model.output_channels,
-            'model_hidden_dim': model.hidden_dim,
-            'model_num_layers': model.num_layers,
-            'model_context_window': model.context_window,
-            'model_prediction_window': model.prediction_window,
-            'model_dropout': model.dropout,
-            'model_name': model.name
+            'model_input_channels': model.input_channels, 'model_output_channels': model.output_channels,
+            'model_hidden_dim': model.hidden_dim, 'model_num_layers': model.num_layers,
+            'model_context_window': model.context_window, 'model_prediction_window': model.prediction_window,
+            'model_dropout': model.dropout, 'model_name': model.name
         }
     elif isinstance(model, IonCastLSTM):
         checkpoint = {
             'model': 'IonCastLSTM',
-            'epoch': epoch,
-            'iteration': iteration,
+            'epoch': epoch, 'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'train_losses': train_losses,
-            'valid_losses': valid_losses,
-            'train_rmse_losses': train_rmse_losses,
-            'valid_rmse_losses': valid_rmse_losses,
-            'train_jpld_rmse_losses': train_jpld_rmse_losses,
-            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'best_valid_rmse': best_valid_rmse,
-            'model_input_channels': model.input_channels,
-            'model_output_channels': model.output_channels,
-            'model_base_channels': model.base_channels,
-            'model_lstm_dim': model.lstm_dim,
-            'model_num_layers': model.num_layers,
-            'model_context_window': model.context_window,
-            'model_dropout': model.dropout,
-            'model_name': model.name
+            'model_input_channels': model.input_channels, 'model_output_channels': model.output_channels,
+            'model_base_channels': model.base_channels, 'model_lstm_dim': model.lstm_dim,
+            'model_num_layers': model.num_layers, 'model_context_window': model.context_window,
+            'model_dropout': model.dropout, 'model_name': model.name
         }
     elif isinstance(model, IonCastLinear):
         checkpoint = {
             'model': 'IonCastLinear',
-            'epoch': epoch,
-            'iteration': iteration,
+            'epoch': epoch, 'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'train_losses': train_losses,
-            'valid_losses': valid_losses,
-            'train_rmse_losses': train_rmse_losses,
-            'valid_rmse_losses': valid_rmse_losses,
-            'train_jpld_rmse_losses': train_jpld_rmse_losses,
-            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'best_valid_rmse': best_valid_rmse,
-            'model_input_channels': model.input_channels,
-            'model_output_channels': model.output_channels,
-            'model_context_window': model.context_window,
-            'model_name': model.name
+            'model_input_channels': model.input_channels, 'model_output_channels': model.output_channels,
+            'model_context_window': model.context_window, 'model_name': model.name
         }
     elif isinstance(model, IonCastPersistence):
         checkpoint = {
             'model': 'IonCastPersistence',
-            'epoch': epoch,
-            'iteration': iteration,
+            'epoch': epoch, 'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'train_losses': train_losses,
-            'valid_losses': valid_losses,
-            'train_rmse_losses': train_rmse_losses,
-            'valid_rmse_losses': valid_rmse_losses,
-            'train_jpld_rmse_losses': train_jpld_rmse_losses,
-            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'best_valid_rmse': best_valid_rmse,
-            'model_input_channels': model.input_channels,
-            'model_output_channels': model.output_channels,
-            'model_context_window': model.context_window,
-            'model_name': model.name
+            'model_input_channels': model.input_channels, 'model_output_channels': model.output_channels,
+            'model_context_window': model.context_window, 'model_name': model.name
         }
     elif isinstance(model, IonCastLSTMSDO):
         checkpoint = {
             'model': 'IonCastLSTMSDO',
-            'epoch': epoch,
-            'iteration': iteration,
+            'epoch': epoch, 'iteration': iteration,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'train_losses': train_losses,
-            'valid_losses': valid_losses,
-            'train_rmse_losses': train_rmse_losses,
-            'valid_rmse_losses': valid_rmse_losses,
-            'train_jpld_rmse_losses': train_jpld_rmse_losses,
-            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
             'best_valid_rmse': best_valid_rmse,
-            'model_input_channels': model.input_channels,
-            'model_output_channels': model.output_channels,
-            'model_base_channels': model.base_channels,
-            'model_lstm_dim': model.lstm_dim,
-            'model_num_layers': model.num_layers,
-            'model_context_window': model.context_window,
-            'model_dropout': model.dropout,
-            'model_sdo_dim': model.sdo_dim,
-            'model_sdo_num_layers': model.sdo_num_layers,
-            'model_name': model.name
+            'model_input_channels': model.input_channels, 'model_output_channels': model.output_channels,
+            'model_base_channels': model.base_channels, 'model_lstm_dim': model.lstm_dim,
+            'model_num_layers': model.num_layers, 'model_context_window': model.context_window,
+            'model_dropout': model.dropout, 'model_sdo_dim': model.sdo_dim,
+            'model_sdo_num_layers': model.sdo_num_layers, 'model_name': model.name
+        }
+    elif (SphericalFourierNeuralOperatorModel is not None) and isinstance(model, SphericalFourierNeuralOperatorModel):
+        # Be defensive about attributes; fall back if the SFNO implementation differs
+        in_proj = getattr(model, 'in_proj', None)
+        trunk_width = getattr(in_proj, 'out_channels', None) if in_proj is not None else None
+        in_channels = getattr(in_proj, 'in_channels', None) if in_proj is not None else None
+        blocks = getattr(model, 'blocks', [])
+        modes_lat = modes_lon = None
+        if blocks:
+            fourier = getattr(blocks[0], 'fourier', None)
+            if fourier is not None:
+                w = getattr(fourier, 'weight', None)
+                if w is not None and hasattr(w, 'shape') and len(w.shape) >= 4:
+                    modes_lat, modes_lon = int(w.shape[2]), int(w.shape[3])
+        checkpoint = {
+            'model': 'SphericalFourierNeuralOperatorModel',
+            'epoch': epoch, 'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses, 'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses, 'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses, 'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_in_channels': in_channels,
+            'model_trunk_width': trunk_width,
+            'model_trunk_depth': len(blocks),
+            'model_modes_lat': modes_lat,
+            'model_modes_lon': modes_lon,
+            'model_aux_dim': getattr(model, 'aux_dim', 0),
+            'model_tasks': getattr(model, 'tasks', ("vtec",)),
+            'model_out_shapes': getattr(model, 'out_shapes', {"vtec": (1, "grid")}),
+            'model_probabilistic': getattr(model, 'probabilistic', False),
+            'model_dropout': getattr(model, 'dropout', 0.0),
+            'model_mc_dropout': getattr(model, 'mc_dropout', False),
+            'model_name': 'SphericalFourierNeuralOperatorModel'
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
 
 
+
+# ================= SFNO helper utilities =================
+
+def _safe_time_at(times_obj, b, idx):
+    """Get a datetime for sample b at sequence idx from a batch-provided time container."""
+    def _to_dt(x):
+        if isinstance(x, datetime.datetime):
+            return x
+        if isinstance(x, str):
+            return datetime.datetime.fromisoformat(x)
+        return datetime.datetime.fromisoformat(str(x))
+    try:
+        tb = times_obj[b]
+    except Exception:
+        tb = times_obj
+    try:
+        import torch as _torch, numpy as _np
+        if isinstance(tb, (_torch.Tensor, _np.ndarray)):
+            if tb.ndim == 0: return _to_dt(tb.item())
+            if tb.ndim == 1: return _to_dt(tb[min(idx, tb.shape[0]-1)])
+            if tb.ndim == 2: return _to_dt(tb[0, min(idx, tb.shape[1]-1)])
+    except Exception:
+        pass
+    if isinstance(tb, (list, tuple)):
+        return _to_dt(tb[min(idx, len(tb)-1)])
+    return _to_dt(tb)
+
+def ensure_grid(tensor, target_channels, H=180, W=360):
+    """Reshape/expand (B,S,C[,H,W]) to (B,S,target_channels,H,W) if needed."""
+    while tensor.dim() > 3 and tensor.shape[-1] == 1 and tensor.shape[-2] == 1:
+        tensor = tensor.squeeze(-1).squeeze(-1)
+    if tensor.dim() == 3:
+        tensor = tensor.unsqueeze(-1).unsqueeze(-1)
+    if tensor.shape[2] != target_channels:
+        assert tensor.shape[2] >= target_channels, f"Input channels {tensor.shape[2]} < target {target_channels}"
+        tensor = tensor[:, :, :target_channels, :, :]
+    return tensor.expand(-1, -1, target_channels, H, W)
+
+# Grids and positional encodings
+_lat_grid = np.load('lat_grid.npy')   # (180, 360)
+_lon_grid = np.load('lon_grid.npy')   # (180, 360)
+
+def _load_qd_grid_for_year(year):
+    qd_lat = np.load(f'qd_lat_{year}.npy')
+    qd_lon = np.load(f'qd_lon_{year}.npy')
+    return qd_lat, qd_lon
+
+def add_fourier_positional_encoding(x, coord_grids, n_harmonics=1, concat_original_coords=True):
+    """
+    x: (B, C, H, W)
+    coord_grids: list of arrays shaped either (H,W) or (B,H,W)
+    returns: (B, C+enc, H, W)
+    """
+    B, C, H, W = x.shape
+    feats = [x]
+    for grid in coord_grids:
+        g = torch.as_tensor(grid, dtype=torch.float32, device=x.device)
+        if g.ndim == 2:
+            g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3 and g.shape[0] != B:
+            g = g.expand(B, -1, -1)
+        # normalize -> angle
+        gmin, gmax = g.amin(dim=(1,2), keepdim=True), g.amax(dim=(1,2), keepdim=True)
+        gnorm = (g - gmin) / (gmax - gmin + 1e-8)
+        theta = gnorm * 2 * np.pi - np.pi
+        if concat_original_coords:
+            feats.append(theta.unsqueeze(1))
+        for k in range(1, n_harmonics + 1):
+            feats.append(torch.sin(k * theta).unsqueeze(1))
+            feats.append(torch.cos(k * theta).unsqueeze(1))
+    return torch.cat(feats, dim=1)
+
+def _rmse_tecu(pred, target):
+    # Unnormalize via JPLD static method if available; else raw RMSE
+    try:
+        pred_u = JPLD.unnormalize(pred)
+        targ_u = JPLD.unnormalize(target)
+        return torch.sqrt(torch.mean((pred_u - targ_u) ** 2))
+    except Exception:
+        return torch.sqrt(torch.mean((pred - target) ** 2))
+
+# Physics-informed loss bridge (works whether physics_losses is present or not)
+def _sfno_weighted_loss(pred, logvar, y_jpld, iteration,
+                        jpld_weight=1.0, aux_weight=1.0, aux_target=None,
+                        times=None, slots_per_day=None, delta_minutes=15, tol_slots=1):
+    if geophysics_informed_loss is None:
+        base = torch.mean((pred[:, 0:1] - y_jpld) ** 2)
+        return base, base, torch.zeros((), device=pred.device), {'data': float(base.detach())}
+
+    if pred.dim() == 3: pred = pred.unsqueeze(1)
+    if logvar is not None and logvar.dim() == 3: logvar = logvar.unsqueeze(1)
+
+    C = pred.shape[1]
+    jpld_pred = pred[:, 0:1]
+    jpld_logv = logvar[:, 0:1] if logvar is not None else None
+    aux_pred  = pred[:, 1:] if C > 1 else None
+    aux_logv  = logvar[:, 1:] if (logvar is not None and C > 1) else None
+
+    if slots_per_day is None:
+        slots_per_day = max(1, int(round(1440.0 / float(delta_minutes))))
+
+    def _call_loss(p_, lv_, t_):
+        try:
+            return geophysics_informed_loss(p_, lv_, t_, iteration,
+                                            times=times, slots_per_day=slots_per_day, tol_slots=tol_slots)
+        except TypeError:
+            return geophysics_informed_loss(p_, lv_, t_, iteration)
+
+    jpld_loss = _call_loss(jpld_pred, jpld_logv, y_jpld)
+    aux_loss = torch.zeros((), device=pred.device)
+    if aux_pred is not None and aux_pred.shape[1] > 0 and aux_target is not None:
+        aux_loss = _call_loss(aux_pred, aux_logv, aux_target)
+
+    total = jpld_weight * jpld_loss + aux_weight * aux_loss
+    return total, jpld_loss, aux_loss, {'data': float(jpld_loss.detach()), 'aux': float(aux_loss.detach())}
+
+
 def load_model(file_name, device):
-    checkpoint = torch.load(file_name, weights_only=False)
-    # if checkpoint['model'] == 'VAE1':
-    #     model_z_dim = checkpoint['model_z_dim']
-    #     model = VAE1(z_dim=model_z_dim)
+    checkpoint = torch.load(file_name, map_location=device)
     if checkpoint['model'] == 'IonCastConvLSTM':
-        model_input_channels = checkpoint['model_input_channels']
-        model_output_channels = checkpoint['model_output_channels']
-        model_hidden_dim = checkpoint['model_hidden_dim']
-        model_num_layers = checkpoint['model_num_layers']
-        model_context_window = checkpoint['model_context_window']
-        model_prediction_window = checkpoint['model_prediction_window']
-        model_dropout = checkpoint['model_dropout']
-        model_name = checkpoint['model_name']
-        model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
-                                hidden_dim=model_hidden_dim, num_layers=model_num_layers,
-                                context_window=model_context_window, prediction_window=model_prediction_window,
-                                dropout=model_dropout, name=model_name)
+        model = IonCastConvLSTM(
+            input_channels=checkpoint['model_input_channels'],
+            output_channels=checkpoint['model_output_channels'],
+            hidden_dim=checkpoint.get('model_hidden_dim', 64),
+            num_layers=checkpoint.get('model_num_layers', 1),
+            context_window=checkpoint['model_context_window'],
+            prediction_window=checkpoint['model_prediction_window'],
+            dropout=checkpoint.get('model_dropout', 0.0),
+            name=checkpoint.get('model_name', 'IonCastConvLSTM')
+        )
     elif checkpoint['model'] == 'IonCastLSTM':
-        model_input_channels = checkpoint['model_input_channels']
-        model_output_channels = checkpoint['model_output_channels']
-        model_base_channels = checkpoint['model_base_channels']
-        model_lstm_dim = checkpoint['model_lstm_dim']
-        model_num_layers = checkpoint['model_num_layers']
-        model_context_window = checkpoint['model_context_window']
-        model_dropout = checkpoint['model_dropout']
-        model_name = checkpoint['model_name']
-        model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
-                            base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
-                            context_window=model_context_window, dropout=model_dropout, name=model_name)
+        model = IonCastLSTM(
+            input_channels=checkpoint['model_input_channels'],
+            output_channels=checkpoint['model_output_channels'],
+            base_channels=checkpoint['model_base_channels'],
+            lstm_dim=checkpoint['model_lstm_dim'],
+            num_layers=checkpoint['model_num_layers'],
+            context_window=checkpoint['model_context_window'],
+            dropout=checkpoint['model_dropout'],
+            name=checkpoint.get('model_name', 'IonCastLSTM')
+        )
     elif checkpoint['model'] == 'IonCastLinear':
-        model_input_channels = checkpoint['model_input_channels']
-        model_output_channels = checkpoint['model_output_channels']
-        model_context_window = checkpoint['model_context_window']
-        model_name = checkpoint['model_name']
-        model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
-                              context_window=model_context_window, name=model_name)
+        model = IonCastLinear(
+            input_channels=checkpoint['model_input_channels'],
+            output_channels=checkpoint['model_output_channels'],
+            context_window=checkpoint['model_context_window'],
+            name=checkpoint.get('model_name', 'IonCastLinear')
+        )
     elif checkpoint['model'] == 'IonCastPersistence':
-        model_input_channels = checkpoint['model_input_channels']
-        model_output_channels = checkpoint['model_output_channels']
-        model_context_window = checkpoint['model_context_window']
-        model_name = checkpoint['model_name']
-        model = IonCastPersistence(input_channels=model_input_channels, output_channels=model_output_channels,
-                                   context_window=model_context_window, name=model_name)
+        model = IonCastPersistence(
+            input_channels=checkpoint['model_input_channels'],
+            output_channels=checkpoint['model_output_channels'],
+            context_window=checkpoint['model_context_window'],
+            name=checkpoint.get('model_name', 'IonCastPersistence')
+        )
     elif checkpoint['model'] == 'IonCastLSTMSDO':
-        model_input_channels = checkpoint['model_input_channels']
-        model_output_channels = checkpoint['model_output_channels']
-        model_base_channels = checkpoint['model_base_channels']
-        model_lstm_dim = checkpoint['model_lstm_dim']
-        model_num_layers = checkpoint['model_num_layers']
-        model_context_window = checkpoint['model_context_window']
-        model_dropout = checkpoint['model_dropout']
-        model_sdo_dim = checkpoint['model_sdo_dim']
-        model_sdo_num_layers = checkpoint['model_sdo_num_layers']
-        model_name = checkpoint['model_name']
-        model = IonCastLSTMSDO(input_channels=model_input_channels, output_channels=model_output_channels,
-                                   base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
-                                   context_window=model_context_window, dropout=model_dropout, sdo_dim=model_sdo_dim,
-                                   sdo_num_layers=model_sdo_num_layers, name=model_name)
+        model = IonCastLSTMSDO(
+            input_channels=checkpoint['model_input_channels'],
+            output_channels=checkpoint['model_output_channels'],
+            base_channels=checkpoint['model_base_channels'],
+            lstm_dim=checkpoint['model_lstm_dim'],
+            num_layers=checkpoint['model_num_layers'],
+            context_window=checkpoint['model_context_window'],
+            dropout=checkpoint['model_dropout'],
+            sdo_dim=checkpoint['model_sdo_dim'],
+            sdo_num_layers=checkpoint['model_sdo_num_layers'],
+            name=checkpoint.get('model_name', 'IonCastLSTMSDO')
+        )
+    elif (SphericalFourierNeuralOperatorModel is not None) and checkpoint['model'] == 'SphericalFourierNeuralOperatorModel':
+        model = SphericalFourierNeuralOperatorModel(
+            in_channels=checkpoint.get('model_in_channels', 64),
+            trunk_width=checkpoint.get('model_trunk_width', 64),
+            trunk_depth=checkpoint.get('model_trunk_depth', 8),
+            modes_lat=checkpoint.get('model_modes_lat', 32),
+            modes_lon=checkpoint.get('model_modes_lon', 64),
+            aux_dim=checkpoint.get('model_aux_dim', 0),
+            tasks=tuple(checkpoint.get('model_tasks', ("vtec",))),
+            out_shapes=checkpoint.get('model_out_shapes', {"vtec": (1, "grid")}),
+            probabilistic=checkpoint.get('model_probabilistic', False),
+            dropout=checkpoint.get('model_dropout', 0.0),
+            mc_dropout=checkpoint.get('model_mc_dropout', False)
+        )
+        # Ensure downstream checks work:
+        model.name = 'SphericalFourierNeuralOperatorModel'
     else:
         raise ValueError('Unknown model type: {}'.format(checkpoint['model']))
 
@@ -248,11 +503,11 @@ def load_model(file_name, device):
     train_losses = checkpoint['train_losses']
     valid_losses = checkpoint['valid_losses']
     scheduler_state_dict = checkpoint['scheduler_state_dict']
-    train_rmse_losses = checkpoint['train_rmse_losses']
-    valid_rmse_losses = checkpoint['valid_rmse_losses']
-    train_jpld_rmse_losses = checkpoint['train_jpld_rmse_losses']
-    valid_jpld_rmse_losses = checkpoint['valid_jpld_rmse_losses']
-    best_valid_rmse = checkpoint['best_valid_rmse']
+    train_rmse_losses = checkpoint.get('train_rmse_losses', [])
+    valid_rmse_losses = checkpoint.get('valid_rmse_losses', [])
+    train_jpld_rmse_losses = checkpoint.get('train_jpld_rmse_losses', [])
+    valid_jpld_rmse_losses = checkpoint.get('valid_jpld_rmse_losses', [])
+    best_valid_rmse = checkpoint.get('best_valid_rmse', float('inf'))
 
     return model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse
 
@@ -284,7 +539,17 @@ def main():
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
     parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 60, 90, 120], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD'], default='IonCastLSTM', help='Type of model to use')
+    
+    
+    parser.add_argument('--model_type', type=str,
+    choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO',
+             'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon',
+             'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD',
+             'SphericalFourierNeuralOperatorModel'],
+    default='IonCastLSTM',
+    help='Type of model to use')
+
+    
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
@@ -298,6 +563,11 @@ def main():
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=1, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
     parser.add_argument('--dropout', type=float, default=0.15, help='Dropout rate for the model')
+
+    parser.add_argument('--aux_weight', type=float, default=1.0, help='Weight for auxiliary loss terms (SFNO)')
+    parser.add_argument('--n_harmonics', type=int, default=1, help='Fourier positional encoding harmonics (SFNO)')
+
+
     
     parser.add_argument('--jpld_weight', type=float, default=20.0, help='Weight for the JPLD loss in the total loss calculation')
     parser.add_argument('--save_all_models', action='store_true', help='If set, save all models during training, not just the last one')
@@ -415,7 +685,7 @@ def main():
             #     dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
             #     dataset_train = dataset_jpld_train
             #     dataset_valid = dataset_jpld_valid
-            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+            if args.model_type in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'SphericalFourierNeuralOperatorModel']:
                 dataset_jpld_train = JPLD(dataset_jpld_dir, date_start=date_start, date_end=date_end, date_exclusions=date_exclusions)
                 dataset_jpld_valid = JPLD(dataset_jpld_dir, date_start=dataset_sunmoon_valid.date_start, date_end=dataset_sunmoon_valid.date_end)
                 dataset_sunmoon_train = SunMoonGeometry(date_start=date_start, date_end=date_end, extra_time_steps=args.sun_moon_extra_time_steps)
@@ -479,14 +749,16 @@ def main():
             if args.cache_dir:
                 # use the hash of the entire args object as the directory suffix for the cached dataset
                 train_cache_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
+                _persist_kwargs = {}
+                if args.num_workers > 0:
+                    _persist_kwargs = dict(persistent_workers=True, prefetch_factor=4)
                 train_loader = CachedDataLoader(dataset_train, 
                                                 batch_size=args.batch_size, 
                                                 cache_dir=train_cache_dir, 
                                                 num_workers=args.num_workers, 
                                                 shuffle=True,
                                                 pin_memory=True,
-                                                persistent_workers=True,
-                                                prefetch_factor=4,
+                                                **_persist_kwargs,
                                                 name='train_loader')
 
                 valid_cache_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
@@ -496,20 +768,26 @@ def main():
                                                 num_workers=args.num_workers, 
                                                 shuffle=False,
                                                 pin_memory=True,
-                                                persistent_workers=True,
-                                                prefetch_factor=4,
+                                                **_persist_kwargs,
                                                 name='valid_loader')
             else:
                 # No on-disk caching
-                train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                common_kwargs = dict(batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True)
+                if args.num_workers > 0:
+                    common_kwargs.update(persistent_workers=True, prefetch_factor=4)
+
+                train_loader = DataLoader(dataset_train, shuffle=True, **common_kwargs)
 
                 if args.max_valid_samples is not None and len(dataset_valid) > args.max_valid_samples:
                     print('Using a random subset of {:,} samples for validation'.format(args.max_valid_samples))
                     indices = random.sample(range(len(dataset_valid)), args.max_valid_samples)
                     sampler = SubsetRandomSampler(indices)
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                    vl_kwargs = dict(**common_kwargs)
+                    vl_kwargs.pop('persistent_workers', None)
+                    vl_kwargs.pop('prefetch_factor', None)
+                    valid_loader = DataLoader(dataset_valid, sampler=sampler, **vl_kwargs)
                 else:
-                    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                    valid_loader = DataLoader(dataset_valid, shuffle=False, **common_kwargs)
 
             print()
 
@@ -524,46 +802,97 @@ def main():
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
                 scheduler.load_state_dict(scheduler_state_dict)
-                print('Next epoch    : {:,}'.format(epoch_start+1))
+                print('Next epoch    : {:,}'.format(epoch_start))
                 print('Next iteration: {:,}'.format(iteration+1))
             else:
                 print('Creating new model')
-                # if args.model_type == 'VAE1':
-                #     model = VAE1(z_dim=512, sigma_vae=False)
                 if args.model_type == 'IonCastConvLSTM':
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     name = 'IonCastConvLSTM'
-                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout, name=name)
+                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels,
+                                            context_window=args.context_window, prediction_window=args.prediction_window,
+                                            dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLSTM':
-                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                    total_channels = 58
                     name = 'IonCastLSTM'
-                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLSTM-ablation-JPLD':
-                    total_channels = 1  # JPLD (1)
+                    total_channels = 1
                     name = 'IonCastLSTM-ablation-JPLD'
-                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLSTM-ablation-JPLDSunMoon':
-                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
+                    total_channels = 37  # 1 (JPLD) + 36 (SunMoonGeometry default)
                     name = 'IonCastLSTM-ablation-JPLDSunMoon'
-                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, name=name)
+                    model = IonCastLSTM(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, dropout=args.dropout, name=name)
                 elif args.model_type == 'IonCastLinear':
-                    total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
+                    total_channels = 58
                     name = 'IonCastLinear'
-                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, name=name)
                 elif args.model_type == 'IonCastLinear-ablation-JPLD':
-                    total_channels = 1  # JPLD (1)
+                    total_channels = 1
                     name = 'IonCastLinear-ablation-JPLD'
-                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                    model = IonCastLinear(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, name=name)
                 elif args.model_type == 'IonCastPersistence-ablation-JPLD':
-                    total_channels = 1  # JPLD (1)
+                    total_channels = 1
                     name = 'IonCastPersistence-ablation-JPLD'
-                    model = IonCastPersistence(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                    model = IonCastPersistence(input_channels=total_channels, output_channels=total_channels,
+                                            context_window=args.context_window, name=name)
                 elif args.model_type == 'IonCastLSTMSDO':
-                    total_channels = 37  # JPLD (1) + SunMoonGeometry (36 with default extra_time_steps=1)
+                    total_channels = 37
                     name = 'IonCastLSTMSDO'
-                    model = IonCastLSTMSDO(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, dropout=args.dropout, sdo_dim=21504, name=name)
+                    model = IonCastLSTMSDO(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, dropout=args.dropout, sdo_dim=21504, name=name)
+                elif args.model_type == 'SphericalFourierNeuralOperatorModel':
+                    if SphericalFourierNeuralOperatorModel is None:
+                        raise ImportError('SphericalFourierNeuralOperatorModel not available')
+                    # Probe 1 batch to derive SFNO in_channels after positional encodings
+                    probe = next(iter(train_loader))
+                    jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = probe
+                    H, W = 180, 360
+                    celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
+                    omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
+                    set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+                    combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                    x_last = combined_seq[:, args.context_window - 1, :, :, :]         # (B, C, H, W)
+                    # Build sun-locked & QD grids per sample
+                    B = x_last.shape[0]
+                    sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                    step_idx = max(0, args.context_window - 1)
+                    for b in range(B):
+                        dtb = _safe_time_at(times, b, step_idx)
+                        subsolar_lon = _get_subsolar_longitude(dtb)
+                        sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                        qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                        sunlocked_grids.append(sunlocked_lon_grid)
+                        qd_lat_list.append(qd_lat_f)
+                        qd_lon_list.append(qd_lon_f)
+                    sunlocked_grids = np.stack(sunlocked_grids, axis=0)
+                    coord_grids = [
+                        np.repeat(_lat_grid[None, ...], B, axis=0),
+                        np.repeat(_lon_grid[None, ...], B, axis=0),
+                        np.stack(qd_lat_list, axis=0),
+                        np.stack(qd_lon_list, axis=0),
+                        sunlocked_grids,
+                    ]
+                    x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+                    in_channels = x_input.shape[1]
+                    print(f"[SFNO] Derived in_channels={in_channels}")
+                    # Instantiate SFNO (tweak hyperparams as you like)
+                    model = SphericalFourierNeuralOperatorModel(
+                        in_channels=in_channels,
+                        trunk_width=64, trunk_depth=8, modes_lat=32, modes_lon=64,
+                        aux_dim=0, tasks=("vtec",), out_shapes={"vtec": (args.prediction_window, "grid")},
+                        probabilistic=True, dropout=0.2, mc_dropout=True
+                    )
+                    model.name = 'SphericalFourierNeuralOperatorModel'
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
+
 
                 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
@@ -605,64 +934,123 @@ def main():
                             celestrak_seq = celestrak_seq.to(device)
                             omniweb_seq = omniweb_seq.to(device)
                             set_seq = set_seq.to(device)
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2) # Combine along the channel dimension
-
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
                         elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
                             jpld_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-
-                            loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
+                            loss, rmse_t, jpld_rmse_t = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
 
                         elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
                             jpld_seq, sunmoon_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
                             sunmoon_seq = sunmoon_seq.to(device)
-
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
-
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
                         elif model.name == 'IonCastLSTMSDO':
                             jpld_seq, sunmoon_seq, sdo_seq, _ = batch
                             jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
+                            sunmoon_seq = sunmoon_seq.to(device)  
                             sdo_seq = sdo_seq.to(device)
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                            sdo_context = sdo_seq[:, :args.context_window, :]
+                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
 
-                            # Combine JPLD and SunMoonGeometry for image channels
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Shape: (B, T, 37, H, W)
-                            
-                            # Use SDO sequence as context (Shape: (B, T, 21504))
-                            sdo_context = sdo_seq[:, :args.context_window, :]  # Use context window portion
+                        elif args.model_type == 'SphericalFourierNeuralOperatorModel':
+                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
+                            jpld_seq = jpld_seq.to(device)
+                            sunmoon_seq = sunmoon_seq.to(device)
+                            celestrak_seq = celestrak_seq.to(device)
+                            omniweb_seq = omniweb_seq.to(device)
+                            set_seq = set_seq.to(device)
+                            H, W = 180, 360
+                            celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
+                            omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
+                            set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                            x_last = combined_seq[:, args.context_window - 1, :, :, :]  # (B,C,H,W)
+                            y = jpld_seq[:, args.context_window, 0:1, :, :]
 
-                            loss, rmse, jpld_rmse = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
+                            # build per-sample sun-locked & QD grids
+                            B = x_last.shape[0]
+                            sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                            step_idx = max(0, args.context_window - 1)
+                            for b in range(B):
+                                dtb = _safe_time_at(times, b, step_idx)
+                                subsolar_lon = _get_subsolar_longitude(dtb)
+                                sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                                qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                                sunlocked_grids.append(sunlocked_lon_grid)
+                                qd_lat_list.append(qd_lat_f)
+                                qd_lon_list.append(qd_lon_f)
+                            sunlocked_grids = np.stack(sunlocked_grids, axis=0)
+                            coord_grids = [
+                                np.repeat(_lat_grid[None, ...], B, axis=0),
+                                np.repeat(_lon_grid[None, ...], B, axis=0),
+                                np.stack(qd_lat_list, axis=0),
+                                np.stack(qd_lon_list, axis=0),
+                                sunlocked_grids,
+                            ]
+                            x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+                            sunlocked_idx = torch.tensor(sunlocked_grids.astype(int), dtype=torch.long, device=device)
+
+                            out = model(x_input, sunlocked_idx)
+                            if isinstance(out, dict) and 'vtec' in out:
+                                pred, logvar = out['vtec']
+                                times_target = [_safe_time_at(times, b, args.context_window) for b in range(B)]
+                                slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
+                                loss, jpld_l, aux_l, _ = _sfno_weighted_loss(
+                                    pred, logvar, y, iteration,
+                                    jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
+                                    times=times_target, slots_per_day=slots_per_day, delta_minutes=args.delta_minutes, tol_slots=1
+                                )
+                                rmse_t = _rmse_tecu(pred[:, 0:1], y)
+                                jpld_rmse_t = rmse_t
+                            else:
+                                pred = out
+                                loss = torch.mean((pred - y) ** 2)
+                                rmse_t = _rmse_tecu(pred, y)
+                                jpld_rmse_t = rmse_t
+
                         else:
-                            raise ValueError('Unknown model type: {}'.format(args.model_type))
+                            raise ValueError('Unknown model type: {}'.format(model.name if hasattr(model, "name") else args.model_type))
+
                         
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         optimizer.step()
                         iteration += 1
 
-                        loss = loss.detach().item()
-                        rmse = rmse.detach().item()
-                        jpld_rmse = jpld_rmse.detach().item()
+                        # Standardize metrics to floats exactly once
+                        loss_val = float(loss.detach().item())
 
-                        train_losses.append((iteration, loss))
-                        train_rmse_losses.append((iteration, rmse))
-                        train_jpld_rmse_losses.append((iteration, jpld_rmse))
-                        # W&B train metrics
+                        def _to_float(x):
+                            import torch as _torch
+                            return float(x.detach().item()) if isinstance(x, _torch.Tensor) else float(x)
+
+                        rmse_val = _to_float(rmse_t)
+                        jpld_rmse_val = _to_float(jpld_rmse_t)
+
+                        train_losses.append((iteration, loss_val))
+                        train_rmse_losses.append((iteration, rmse_val))
+                        train_jpld_rmse_losses.append((iteration, jpld_rmse_val))
+
+                        # W&B
                         if wandb is not None and args.wandb_mode != 'disabled':
                             wandb.log({
-                                'train/loss': float(loss),
-                                'train/rmse': float(rmse),
-                                'train/jpld_rmse': float(jpld_rmse),
+                                'train/loss': loss_val,
+                                'train/rmse': rmse_val,
+                                'train/jpld_rmse': jpld_rmse_val,
                                 'train/epoch': epoch + 1,
                                 'train/iteration': iteration,
                                 'lr': optimizer.param_groups[0]['lr'],
                             }, step=iteration)
-                        pbar.set_description(f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss:.4f}, RMSE: {rmse:.4f}, JPLD RMSE: {jpld_rmse:.4f}')
+
+                        pbar.set_description(
+                            f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss_val:.4f}, RMSE: {rmse_val:.4f}, JPLD RMSE: {jpld_rmse_val:.4f}'
+                        )
                         pbar.update(1)
 
                 # Validation
@@ -676,47 +1064,87 @@ def main():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
                             if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
-                                jpld_seq = jpld_seq.to(device)
-                                sunmoon_seq = sunmoon_seq.to(device)
-                                celestrak_seq = celestrak_seq.to(device)
-                                omniweb_seq = omniweb_seq.to(device)
-                                set_seq = set_seq.to(device)
+                                jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device)
+                                celestrak_seq = celestrak_seq.to(device); omniweb_seq = omniweb_seq.to(device); set_seq = set_seq.to(device)
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
-                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)  # Combine along the channel dimension
-                                loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
                             elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
                                 jpld_seq, _ = batch
                                 jpld_seq = jpld_seq.to(device)
-
-                                loss, rmse, jpld_rmse = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
+                                loss, rmse_t, jpld_rmse_t = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
 
                             elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
                                 jpld_seq, sunmoon_seq, _ = batch
-                                jpld_seq = jpld_seq.to(device)
-                                sunmoon_seq = sunmoon_seq.to(device)
-
-                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Combine along the channel dimension
-
-                                loss, rmse, jpld_rmse = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                                jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device)
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
                             elif model.name == 'IonCastLSTMSDO':
                                 jpld_seq, sunmoon_seq, sdo_seq, _ = batch
-                                jpld_seq = jpld_seq.to(device)
-                                sunmoon_seq = sunmoon_seq.to(device)
-                                sdo_seq = sdo_seq.to(device)
+                                jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device); sdo_seq = sdo_seq.to(device)
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                                sdo_context = sdo_seq[:, :args.context_window, :]
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
 
-                                # Combine JPLD and SunMoonGeometry for image channels
-                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2) # Shape: (B, T, 37, H, W)
-                                
-                                # Use SDO sequence as context (Shape: (B, T, 21504))
-                                sdo_context = sdo_seq[:, :args.context_window, :]  # Use context window portion
+                            elif args.model_type == 'SphericalFourierNeuralOperatorModel':
+                                jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
+                                jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device)
+                                celestrak_seq = celestrak_seq.to(device); omniweb_seq = omniweb_seq.to(device); set_seq = set_seq.to(device)
+                                H, W = 180, 360
+                                celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
+                                omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
+                                set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                                x_last = combined_seq[:, args.context_window - 1, :, :, :]
+                                y = jpld_seq[:, args.context_window, 0:1, :, :]
 
-                                loss, rmse, jpld_rmse = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
+                                B = x_last.shape[0]
+                                sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                                step_idx = max(0, args.context_window - 1)
+                                for b in range(B):
+                                    dtb = _safe_time_at(times, b, step_idx)
+                                    subsolar_lon = _get_subsolar_longitude(dtb)
+                                    sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                                    qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                                    sunlocked_grids.append(sunlocked_lon_grid)
+                                    qd_lat_list.append(qd_lat_f)
+                                    qd_lon_list.append(qd_lon_f)
+                                sunlocked_grids = np.stack(sunlocked_grids, axis=0)
+                                coord_grids = [
+                                    np.repeat(_lat_grid[None, ...], B, axis=0),
+                                    np.repeat(_lon_grid[None, ...], B, axis=0),
+                                    np.stack(qd_lat_list, axis=0),
+                                    np.stack(qd_lon_list, axis=0),
+                                    sunlocked_grids,
+                                ]
+                                x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+                                sunlocked_idx = torch.tensor(sunlocked_grids.astype(int), dtype=torch.long, device=device)
+
+                                out = model(x_input, sunlocked_idx)
+                                if isinstance(out, dict) and 'vtec' in out:
+                                    pred, logvar = out['vtec']
+                                    times_target = [_safe_time_at(times, b, args.context_window) for b in range(B)]
+                                    slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
+                                    loss, _, _, _ = _sfno_weighted_loss(
+                                        pred, logvar, y, iteration,
+                                        jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
+                                        times=times_target, slots_per_day=slots_per_day, delta_minutes=args.delta_minutes, tol_slots=1
+                                    )
+                                    rmse_t = _rmse_tecu(pred[:, 0:1], y)
+                                    jpld_rmse_t = rmse_t
+                                else:
+                                    pred = out
+                                    loss = torch.mean((pred - y) ** 2)
+                                    rmse_t = _rmse_tecu(pred, y)
+                                    jpld_rmse_t = rmse_t
+
                             else:
                                 raise ValueError('Unknown model name: {}'.format(model.name))
-                            valid_loss += loss.item()
-                            valid_rmse_loss += rmse.item()
-                            valid_jpld_rmse_loss += jpld_rmse.item()
+
+                            valid_loss += float(loss.detach().item())
+                            valid_rmse_loss += float(rmse_t.detach().item())
+                            valid_jpld_rmse_loss += float(jpld_rmse_t.detach().item())
                     valid_loss /= len(valid_loader)
                     valid_rmse_loss /= len(valid_loader)
                     valid_jpld_rmse_loss /= len(valid_loader)
@@ -820,7 +1248,11 @@ def main():
                         # Plot model eval results
                         model.eval()
                         with torch.no_grad():
-                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
+                            if (model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLinear',
+                   'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon',
+                   'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD',
+                   'SphericalFourierNeuralOperatorModel']):
+
                                 # --- EVALUATION ON UNSEEN VALIDATION EVENTS ---
                                 saved_video_categories = set()
                                 metric_event_id = []
@@ -997,7 +1429,7 @@ def main():
                     buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
                     
                     print(f'\n--- Preparing data for Event: {event_id} ---')
-                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',  'IonCastLSTM-ablation-JPLDSunMoon']:
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
                         # Other models use all 5 datasets
                         dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
                         dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
@@ -1034,7 +1466,7 @@ def main():
 
                     # Force cleanup
                     del dataset_jpld
-                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',  'IonCastLSTM-ablation-JPLDSunMoon']:
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
                         del dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set
                     elif model.name == 'IonCastLSTMSDO':
                         del dataset_sunmoon, dataset_sdocore
