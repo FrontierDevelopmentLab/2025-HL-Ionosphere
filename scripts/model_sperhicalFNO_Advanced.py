@@ -162,85 +162,154 @@ def _build_step_coord_grids(B, H, W, step_times, n_heads: int):
 
 class SphericalFourierLayer(nn.Module):
     """
-    Spectral mixing layer.
-    - Default path uses rFFT2 on equirectangular lat/lon grids.
-    - Optional SHT hook: if `use_sht=True` and a backend is available, we could
-      dispatch to a real spherical-harmonic transform. We fall back gracefully.
+    Spectral mixing layer with two backends:
+      - rFFT2 path (Cartesian equirectangular)
+      - SHT path (spherical harmonic transform via torch_harmonics)
+
+    For SHT, we enforce DH bandlimit on an equiangular grid (W = 2*H).
+    Coefficients are truncated to (Ls, Ms) with triangular (ℓ >= m) mask.
     """
     def __init__(self, in_channels, out_channels, modes_lat, modes_lon, use_sht: bool = False):
         super().__init__()
-        self.weight = nn.Parameter(
-            torch.randn(in_channels, out_channels, modes_lat, modes_lon, 2) * 0.01
-        )
-        self.use_sht = bool(use_sht)
-        self._sht_backend = None     # 'torch_harmonics' | 's2fft' | None
-        self._sht_setup_done = False # lazily decided at first forward()
+        self.in_channels  = int(in_channels)
+        self.out_channels = int(out_channels)
+        self.modes_lat    = int(modes_lat)
+        self.modes_lon    = int(modes_lon)
+        self.use_sht      = bool(use_sht)
 
-    # ---- optional SHT hook (lazy) ----
-    def _maybe_setup_sht(self):
-        if self._sht_setup_done:
-            return
-        self._sht_setup_done = True
-        if not self.use_sht:
-            return
-        try:
-            import torch_harmonics  # noqa: F401
-            self._sht_backend = 'torch_harmonics'
-        except Exception:
+        # --- Discover grid now and enforce DH shape W = 2H ---
+        lat_np, lon_np = _load_latlon()
+        H, W = lat_np.shape
+        if W != 2 * H:
+            raise ValueError(f"SHT requires equiangular N×2N grid, got {H}×{W}")
+        self.H, self.W = int(H), int(W)
+
+        # --- rFFT weights (kept for rFFT backend) ---
+        self.weight_fft = nn.Parameter(
+            torch.randn(self.in_channels, self.out_channels, self.modes_lat, self.modes_lon, 2) * 0.01
+        )
+
+        # --- SHT setup ---
+        self._sht = None
+        self._isht = None
+        if self.use_sht:
             try:
-                import s2fft  # noqa: F401
-                self._sht_backend = 's2fft'
-            except Exception:
-                self._sht_backend = None
-                warnings.warn(
-                    "use_sht=True requested but no SHT backend found "
-                    "(torch_harmonics / s2fft). Falling back to rFFT2.",
-                    RuntimeWarning
-                )
+                import torch_harmonics as th
+            except Exception as e:
+                raise RuntimeError(
+                    "use_sht=True but torch_harmonics is not available. "
+                    "Install with `pip install torch-harmonics` or `conda install -c conda-forge torch-harmonics`."
+                ) from e
 
-    def compl_mul2d(self, x, w):
-        w = torch.view_as_complex(w)                     # (..., 2) -> complex
-        return torch.einsum("bchw,cohw->bohw", x, w)     # spectral matmul
+            # Modules (dtype/device set at forward)
+            self._sht  = th.RealSHT(self.H, self.W, grid="equiangular")
+            self._isht = th.InverseRealSHT(self.H, self.W, grid="equiangular")
 
-    def _fourier2_path(self, x):
-        """Safe rFFT2 path with runtime bandlimit guards."""
+            # DH exact bandlimit for N×2N grid:
+            dh_Lmax = self.H // 2 - 1
+            Lmax = max(0, min(dh_Lmax, self.modes_lat - 1))
+            Mmax = max(0, min(Lmax,    self.modes_lon - 1))
+            self._Ldim = self.H
+            self._Mdim = self.H + 1
+            self._Ls   = Lmax + 1
+            self._Ms   = Mmax + 1
+
+            # Triangular mask (ℓ >= m) over kept sub-block
+            l_idx = torch.arange(self._Ls).view(self._Ls, 1)
+            m_idx = torch.arange(self._Ms).view(1, self._Ms)
+            tri_mask = (l_idx >= m_idx)  # [Ls, Ms] bool
+            self.register_buffer("_mask_sub_tri", tri_mask, persistent=False)
+
+            # Complex weights for (ℓ,m) mixing, stored as real-imag pairs (complex64)
+            w = torch.zeros(self.in_channels, self.out_channels, self._Ls, self._Ms, 2, dtype=torch.float32)
+            w[..., 0].normal_(mean=0.0, std=0.01)
+            w[..., 1].normal_(mean=0.0, std=0.01)
+            tri = self._mask_sub_tri.unsqueeze(0).unsqueeze(0).unsqueeze(-1)  # [1,1,Ls,Ms,1]
+            w = w * tri                                                        # zero invalid m > ℓ
+            self.weight_sht = nn.Parameter(w)
+
+        # Disable AMP/TF32 only around SHT transforms (safe elsewhere)
+        self._disable_amp = dict(device_type="cuda", enabled=False)
+
+    # -------- rFFT path --------
+    def _fourier2_path(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
-        x_ft = torch.fft.rfft2(x, norm="ortho")                # (B,C,H,W//2+1)
-        # Runtime-safe bandlimits (Nyquist guards)
-        max_lat = min(self.weight.shape[2], H // 2)            # ≤ H//2
-        max_lon = min(self.weight.shape[3], x_ft.shape[-1])    # ≤ W//2+1
+        x_ft = torch.fft.rfft2(x, norm="ortho")
+        max_lat = min(self.weight_fft.shape[2], H // 2)
+        max_lon = min(self.weight_fft.shape[3], x_ft.shape[-1])
         x_ft = x_ft[:, :, :max_lat, :max_lon]
-        w = self.weight[:, :, :max_lat, :max_lon, :]           # (C,Co,L,M,2)
-        out_ft = self.compl_mul2d(x_ft, w)                     # (B,Co,L,M)
-        # Rebuild full rFFT spectrum with correct width
-        full_w = x_ft.shape[-1]                                # == W//2+1
-        out_ft_full = torch.zeros(
-            B, self.weight.shape[1], H, full_w, dtype=torch.cfloat, device=x.device
-        )
+        w    = torch.view_as_complex(self.weight_fft[:, :, :max_lat, :max_lon, :])
+        # (B,Cin,L,M) @ (Cin,Cout,L,M) -> (B,Cout,L,M)
+        out_ft = torch.einsum("bclm,colm->bolm", x_ft, w)
+        full_w = x_ft.shape[-1]
+        out_ft_full = torch.zeros(B, self.out_channels, H, full_w, dtype=torch.cfloat, device=x.device)
         out_ft_full[:, :, :max_lat, :max_lon] = out_ft
         return torch.fft.irfft2(out_ft_full, s=(H, W), norm="ortho")
 
-    def _sht_path_or_fallback(self, x):
+    # -------- SHT path (no in-place on views) --------
+    def _sht_path(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Placeholder for a true SHT path.
-        If an SHT backend is detected but unsupported grid/ops raise, we fallback.
+        x: [B, Cin, H, W] (real). Returns [B, Cout, H, W] (real).
+        SHT/ISHT in float64; mixing in complex64 to save memory.
         """
-        try:
-            # If needed, one could implement:
-            # - Real SHT to (l,m), truncate to (modes_lat, modes_lon),
-            # - complex-einsum with learned weights, inverse SHT back to grid.
-            # Without strict grid/library guarantees, we fallback safely.
-            raise NotImplementedError
-        except Exception:
-            # Fallback to safe rFFT2
-            return self._fourier2_path(x)
+        B, Cin, H, W = x.shape
+        assert H == self.H and W == self.W, f"Expected grid {self.H}x{self.W}, got {H}x{W}"
+        dev = x.device
 
-    def forward(self, x):
-        self._maybe_setup_sht()
-        if self.use_sht and (self._sht_backend is not None):
-            return self._sht_path_or_fallback(x)
+        # Move modules & mask
+        self._sht  = self._sht.to(device=dev,  dtype=torch.float64)
+        self._isht = self._isht.to(device=dev, dtype=torch.float64)
+        tri_mask   = self._mask_sub_tri.to(device=dev)
+
+        # SHT prefers float64; disable AMP/TF32 just for SHT/ISHT
+        from contextlib import nullcontext
+        autocast_ctx = torch.autocast(**self._disable_amp) if dev.type == "cuda" else nullcontext()
+
+        # --- forward SHT ---
+        with autocast_ctx:
+            x64 = x.to(torch.float64)
+            x_flat = x64.reshape(B * Cin, H, W).contiguous()
+            flm_all = self._sht(x_flat)  # [B*Cin, Ldim(=H), Mdim(=H+1)] complex128
+
+        flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
+        flm_sub = flm_all[:, :, :self._Ls, :self._Ms]                         # [B,Cin,Ls,Ms] c128
+        flm_sub = flm_sub * tri_mask.view(1, 1, self._Ls, self._Ms)           # mask invalid m>ℓ
+        flm_c   = flm_sub.to(torch.complex64)
+
+        # --- spectral mixing (complex) ---
+        w_cplx  = torch.view_as_complex(self.weight_sht)                      # [Cin,Cout,Ls,Ms] c64
+        out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)              # [B,Cout,Ls,Ms] c64
+
+        # Enforce m=0 purely real WITHOUT in-place on a view:
+        m0_real = out_sub[..., 0].real                                        # [B,Cout,Ls]
+        m0      = torch.complex(m0_real, torch.zeros_like(m0_real))           # [B,Cout,Ls] c64
+        if self._Ms > 1:
+            out_sub = torch.cat([m0.unsqueeze(-1), out_sub[..., 1:]], dim=-1) # new tensor
         else:
-            return self._fourier2_path(x)
+            out_sub = m0.unsqueeze(-1)
+
+        # Embed into full coefficient grid (no in-place on a view of a leaf tensor)
+        out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim,
+                               dtype=out_sub.dtype, device=dev)
+        out_full = out_full.index_put(
+            (torch.arange(B, device=dev).view(-1,1,1,1),
+             torch.arange(self.out_channels, device=dev).view(1,-1,1,1),
+             torch.arange(self._Ls, device=dev).view(1,1,-1,1),
+             torch.arange(self._Ms, device=dev).view(1,1,1,-1)),
+            out_sub * tri_mask.view(1,1,self._Ls,self._Ms),
+            accumulate=False
+        )
+
+        # --- inverse SHT ---
+        with autocast_ctx:
+            out_full_c128 = out_full.to(torch.complex128)
+            y64_flat = self._isht(out_full_c128.reshape(B * self.out_channels, self._Ldim, self._Mdim))
+        y = y64_flat.reshape(B, self.out_channels, H, W).to(dtype=x.dtype)
+        return y
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._sht_path(x) if self.use_sht else self._fourier2_path(x)
+
 
 
 class MCDropout(nn.Dropout):
@@ -268,20 +337,17 @@ class SFNOBlock(nn.Module):
         out = x1 + x2
         out = self.act(out)
         out = self.dropout(out)
-        out = out.permute(0, 2, 3, 1)
+        out = out.permute(0, 2, 3, 1).contiguous()
         out = self.norm(out)
         out = self.act(out)
-        out = out.permute(0, 3, 1, 2)
+        out = out.permute(0, 3, 1, 2).contiguous()
+
         return out
 
 
-########################################
-# 2. (Fixed) General Fourier Harmonic Positional Encoding
-########################################
-# Implemented above: add_fourier_positional_encoding(...)
 
 ########################################
-# 3. SFNO Model (last-frame + PE input; proper AR rollout)
+# 2. SFNO Model (last-frame + PE input; proper AR rollout)
 ########################################
 
 def _build_area_weights_tensor(device):
@@ -312,6 +378,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         prediction_window: int = 1,
         use_sht: bool = False,                # (6) SHT hook flag
         area_weighted_loss: bool = False,     # (5) optional spherical area weighting
+        sunlocked_chunk_size: int = 64,       # sunlcoked chunks
     ):
         super().__init__()
         self.trunk_width = trunk_width
@@ -324,6 +391,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.prediction_window = int(prediction_window)
         self.use_sht = bool(use_sht)
         self.area_weighted_loss = bool(area_weighted_loss)
+        self.sunlocked_chunk_size = int(max(1, min(n_sunlocked_heads, sunlocked_chunk_size)))
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)
@@ -364,45 +432,90 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
     def forward(self, x, sunlocked_lon_grid, aux=None):
         """
         x: (B, in_channels, H, W)  [one frame + PE]
-        sunlocked_lon_grid: (B,H,W) Long indices in [0, n_sunlocked_heads-1]
+        sunlocked_lon_grid: (B,H,W) long indices in [0, n_sunlocked_heads-1]
+        Vectorized sun-locked head selection:
+        - compute 1×1 conv for many heads at once (chunked),
+        - gather the correct head per pixel,
+        - no Python loops over heads or batch.
         """
+        import torch.nn.functional as F
+
+        # trunk
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x)
+
+        # optional aux
         if self.aux_proj is not None and aux is not None:
-            aux_emb = self.aux_proj(aux).unsqueeze(-1).unsqueeze(-1)
+            aux_emb = self.aux_proj(aux).unsqueeze(-1).unsqueeze(-1)  # (B,Wc,1,1)
             x = x + aux_emb
 
-        B, _, H, W = x.shape
+        B, Wc, H, W = x.shape
+        device, dtype = x.device, x.dtype
 
+        # normalize/expand indices
         if not torch.is_tensor(sunlocked_lon_grid):
-            sunlocked_lon_grid = torch.tensor(sunlocked_lon_grid, device=x.device)
+            sunlocked_lon_grid = torch.tensor(sunlocked_lon_grid, device=device)
         if sunlocked_lon_grid.dim() == 2:
             sunlocked_lon_grid = sunlocked_lon_grid.unsqueeze(0).expand(B, -1, -1)
-        sunlocked_lon_grid = sunlocked_lon_grid.to(dtype=torch.long).clamp(0, self.n_sunlocked_heads - 1)
+        sl_idx = sunlocked_lon_grid.to(dtype=torch.long).clamp_(0, self.n_sunlocked_heads - 1)  # (B,H,W)
 
         outs = {}
         for task in self.tasks:
-            out_dim = self.frame_channels[task]
-            out_channels = out_dim * (2 if self.probabilistic else 1)
-            outputs = torch.zeros((B, out_channels, H, W), device=x.device, dtype=x.dtype)
+            out_dim_per_step = self.frame_channels[task]
+            out_channels = out_dim_per_step * (2 if self.probabilistic else 1)
 
-            for head_idx in range(self.n_sunlocked_heads):
-                mask = (sunlocked_lon_grid == head_idx)  # (B,H,W)
-                if mask.any():
-                    out_sub = self.heads[task][head_idx](x)  # (B, out_channels, H, W)
-                    # scatter per-batch into masked pixels
-                    for b in range(B):
-                        mb = mask[b]
-                        if mb.any():
-                            outputs[b, :, mb] = out_sub[b, :, mb]
+            # ---- stack all head params for this task (keeps grads) ----
+            heads = self.heads[task]  # ModuleList of Conv2d (1×1)
+            # weights: (n_heads, out_ch, in_ch, 1, 1) -> (n_heads*out_ch, in_ch, 1,1)
+            w_full = torch.stack([h.weight for h in heads], dim=0).to(device=device, dtype=dtype)
+            w_full = w_full.view(self.n_sunlocked_heads * out_channels, Wc, 1, 1)
+            # bias: (n_heads*out_ch,)
+            if heads[0].bias is None:
+                b_full = torch.zeros(self.n_sunlocked_heads * out_channels, device=device, dtype=dtype)
+            else:
+                b_full = torch.cat([h.bias.to(device=device, dtype=dtype) for h in heads], dim=0)
 
+            # output buffer
+            selected = torch.zeros(B, out_channels, H, W, device=device, dtype=dtype)
+
+            # chunk over heads to cap memory
+            csz = int(self.sunlocked_chunk_size)
+            for h0 in range(0, self.n_sunlocked_heads, csz):
+                h1 = min(self.n_sunlocked_heads, h0 + csz)
+                c = h1 - h0  # heads in this chunk
+
+                # slice weights/bias for this chunk and convolve once
+                w_chunk = w_full[h0 * out_channels : h1 * out_channels]                 # (c*out_ch, Wc, 1, 1)
+                b_chunk = b_full[h0 * out_channels : h1 * out_channels]                 # (c*out_ch,)
+                y_chunk = F.conv2d(x, w_chunk, b_chunk)                                 # (B, c*out_ch, H, W)
+                y_chunk = y_chunk.view(B, c, out_channels, H, W)                        # (B, c, out_ch, H, W)
+
+                # for this chunk, where do indices land?
+                idx_rel = sl_idx - h0                                                   # (B,H,W), in [-, c-1]
+                mask = (idx_rel >= 0) & (idx_rel < c)                                   # (B,H,W) for positions owned by this chunk
+                if not mask.any().item():
+                    continue
+
+                # gather the chosen head within this chunk
+                # index shape must match input except for dim=1 (head dim)
+                idx_rel_clamped = idx_rel.clamp_(0, c - 1)
+                idx_g = idx_rel_clamped.unsqueeze(1).unsqueeze(2).expand(B, 1, out_channels, H, W)
+                picked = y_chunk.gather(dim=1, index=idx_g).squeeze(1)                  # (B, out_ch, H, W)
+
+                # write only where this chunk owns the pixel
+                m = mask.unsqueeze(1)                                                   # (B,1,H,W) -> broadcast over channels
+                selected = torch.where(m, picked, selected)
+
+            # package result
             if self.probabilistic:
-                mu, logvar = torch.split(outputs, out_dim, dim=1)
+                mu, logvar = torch.split(selected, out_dim_per_step, dim=1)
                 outs[task] = (mu, logvar)
             else:
-                outs[task] = outputs
+                outs[task] = selected
+
         return outs
+
 
     @staticmethod
     def gaussian_nll(mu, log_sigma, x):
@@ -615,7 +728,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         return torch.cat(preds, dim=1)                        # (B,P,1,H,W)
 
 ########################################
-# 4. Latitude Band Ensemble (smooth blend)
+# 3. Latitude Band Ensemble (smooth blend)
 ########################################
 
 class LatBandSFNOEnsemble(nn.Module):
@@ -670,7 +783,7 @@ class LatBandSFNOEnsemble(nn.Module):
             mask = (lat >= lat_min) & (lat < lat_max)
             band_weight = band_weight * mask
 
-            if band_weight.sum() == 0:
+            if band_weight.sum().item() == 0:
                 continue
 
             # Optionally weight inputs; also weight outputs
@@ -702,7 +815,7 @@ class LatBandSFNOEnsemble(nn.Module):
         return acc
 
 ########################################
-# 5. Deep Ensemble Wrapper
+# 4. Deep Ensemble Wrapper
 ########################################
 
 class DeepEnsemble(nn.Module):

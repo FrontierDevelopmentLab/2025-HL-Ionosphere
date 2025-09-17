@@ -587,6 +587,15 @@ def main():
 
     parser.add_argument('--aux_weight', type=float, default=1.0, help='Weight for auxiliary loss terms (SFNO)')
     parser.add_argument('--n_harmonics', type=int, default=1, help='Fourier positional encoding harmonics (SFNO)')
+    # --- Spectral backend selection ---
+    parser.add_argument(
+        "--spectral_backend",
+        type=str,
+        default="sht",
+        choices=["rfft", "sht"],
+        help="Spectral operator backend: 'rfft' (default) or 'sht' (torch_harmonics).",
+    )
+
 
 
     
@@ -608,7 +617,12 @@ def main():
     parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
 
     args = parser.parse_args()
-
+    # --- Resolve spectral backend switch (rFFT vs SHT) ---
+    try:
+        use_sht = (args.spectral_backend.lower() == 'sht')
+    except AttributeError:
+        # Back-compat: default to SHT if flag is absent in older CLIs
+        use_sht = True
     # --- W&B setup ---
     if args.wandb_disabled:
         args.wandb_mode = 'disabled'
@@ -906,15 +920,23 @@ def main():
                     # Instantiate SFNO (tweak hyperparams as you like)
                     model = SphericalFourierNeuralOperatorModel(
                         in_channels=in_channels,
-                        trunk_width=64, trunk_depth=8, modes_lat=32, modes_lon=64,
-                        aux_dim=0,
+                        trunk_width=getattr(args, "sfno_width", 64),
+                        trunk_depth=getattr(args, "sfno_depth", 8),
+                        modes_lat=getattr(args, "sfno_modes_lat", 32),
+                        modes_lon=getattr(args, "sfno_modes_lon", 64),
+                        aux_dim=getattr(args, "aux_dim", 0),
                         tasks=("vtec",),
-                        out_shapes={"vtec": (1, "grid")},  # per-step channels; horizon handled autoregressively
-                        probabilistic=True, dropout=0.2, mc_dropout=True,
+                        out_shapes={"vtec": (1, "grid")},            # per-step channels; horizon via AR
+                        probabilistic=True,
+                        dropout=getattr(args, "dropout", 0.2),
+                        mc_dropout=getattr(args, "mc_dropout", True),
+                        n_sunlocked_heads=getattr(args, "n_sunlocked_heads", 360),
                         context_window=args.context_window,
                         prediction_window=args.prediction_window,
+                        use_sht=use_sht,                              # <-- IMPORTANT: rFFT vs SHT
+                        area_weighted_loss=getattr(args, "area_weighted_loss", False),
                     )
-                    model.name = 'SphericalFourierNeuralOperatorModel'
+                    model.name = "SphericalFourierNeuralOperatorModel"
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
