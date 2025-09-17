@@ -168,14 +168,20 @@ class SphericalFourierLayer(nn.Module):
 
     For SHT, we enforce DH bandlimit on an equiangular grid (W = 2*H).
     Coefficients are truncated to (Ls, Ms) with triangular (ℓ >= m) mask.
+
+    If force_real_coeffs=True, we explicitly zero imaginary components
+    at locations that must be real (DC/Nyquist for rFFT, m=0 for SHT) and
+    optionally clamp tiny imaginary noise everywhere.
     """
-    def __init__(self, in_channels, out_channels, modes_lat, modes_lon, use_sht: bool = False):
+    def __init__(self, in_channels, out_channels, modes_lat, modes_lon,
+                 use_sht: bool = False, force_real_coeffs: bool = True):
         super().__init__()
         self.in_channels  = int(in_channels)
         self.out_channels = int(out_channels)
         self.modes_lat    = int(modes_lat)
         self.modes_lon    = int(modes_lon)
         self.use_sht      = bool(use_sht)
+        self.force_real   = bool(force_real_coeffs)
 
         # --- Discover grid now and enforce DH shape W = 2H ---
         lat_np, lon_np = _load_latlon()
@@ -232,25 +238,63 @@ class SphericalFourierLayer(nn.Module):
         self._disable_amp = dict(device_type="cuda", enabled=False)
 
     # -------- rFFT path --------
+    # -------- rFFT path --------
     def _fourier2_path(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Correct realness handling for 2D rFFT:
+        - Only the four special bins are strictly real: (0,0), (0, W/2), (H/2, 0), (H/2, W/2)
+        (Nyquist bins only when dimension is even).
+        - Zero-pad to full rFFT size (H, W//2+1) before irfft2.
+        - Optionally clamp tiny imaginary noise everywhere.
+        """
         B, C, H, W = x.shape
-        x_ft = torch.fft.rfft2(x, norm="ortho")
+        x_ft = torch.fft.rfft2(x, norm="ortho")  # (B, C, H, W//2+1)
+
         max_lat = min(self.weight_fft.shape[2], H // 2)
         max_lon = min(self.weight_fft.shape[3], x_ft.shape[-1])
-        x_ft = x_ft[:, :, :max_lat, :max_lon]
-        w    = torch.view_as_complex(self.weight_fft[:, :, :max_lat, :max_lon, :])
-        # (B,Cin,L,M) @ (Cin,Cout,L,M) -> (B,Cout,L,M)
-        out_ft = torch.einsum("bclm,colm->bolm", x_ft, w)
-        full_w = x_ft.shape[-1]
+
+        x_ft_crop = x_ft[:, :, :max_lat, :max_lon]
+        w = torch.view_as_complex(self.weight_fft[:, :, :max_lat, :max_lon, :])
+        out_ft_crop = torch.einsum("bclm,colm->bolm", x_ft_crop, w)  # (B, Cout, max_lat, max_lon)
+
+        # Zero-pad back to full rFFT grid size along last dim = W//2+1
+        full_w = W // 2 + 1
         out_ft_full = torch.zeros(B, self.out_channels, H, full_w, dtype=torch.cfloat, device=x.device)
-        out_ft_full[:, :, :max_lat, :max_lon] = out_ft
+        out_ft_full[:, :, :max_lat, :max_lon] = out_ft_crop
+
+        # Enforce realness ONLY at the provably real bins
+        def _make_real(ix, iy):
+            r = out_ft_full[:, :, ix, iy].real
+            out_ft_full[:, :, ix, iy] = torch.complex(r, torch.zeros_like(r))
+
+        _make_real(0, 0)
+        if W % 2 == 0:
+            _make_real(0, W // 2)
+        if H % 2 == 0:
+            _make_real(H // 2, 0)
+            if W % 2 == 0:
+                _make_real(H // 2, W // 2)
+
+        # Optionally clamp tiny imaginary noise elsewhere (numerical stability)
+        if self.force_real:
+            imag = out_ft_full.imag
+            out_ft_full = torch.complex(out_ft_full.real, imag.masked_fill(imag.abs() < 1e-7, 0.0))
+
         return torch.fft.irfft2(out_ft_full, s=(H, W), norm="ortho")
 
+
+    # -------- SHT path (no in-place on views) --------
     # -------- SHT path (no in-place on views) --------
     def _sht_path(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: [B, Cin, H, W] (real). Returns [B, Cout, H, W] (real).
         SHT/ISHT in float64; mixing in complex64 to save memory.
+
+        Realness rules:
+        - Input maps are real -> SHT coefficients should be consistent with a real field.
+        - Enforce m=0 purely real.
+        - If self.force_real: zero ALL imaginary parts after mixing to avoid complex noise
+          from learned weights (keeps gradients, just removes imag channel).
         """
         B, Cin, H, W = x.shape
         assert H == self.H and W == self.W, f"Expected grid {self.H}x{self.W}, got {H}x{W}"
@@ -274,21 +318,31 @@ class SphericalFourierLayer(nn.Module):
         flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
         flm_sub = flm_all[:, :, :self._Ls, :self._Ms]                         # [B,Cin,Ls,Ms] c128
         flm_sub = flm_sub * tri_mask.view(1, 1, self._Ls, self._Ms)           # mask invalid m>ℓ
-        flm_c   = flm_sub.to(torch.complex64)
+
+        # Cast to c64 and (optionally) drop any tiny imag residue from SHT numerics
+        flm_c = flm_sub.to(torch.complex64)
+        if self.force_real:
+            flm_c = torch.complex(flm_c.real, torch.zeros_like(flm_c.real))
 
         # --- spectral mixing (complex) ---
-        w_cplx  = torch.view_as_complex(self.weight_sht)                      # [Cin,Cout,Ls,Ms] c64
+        w_cplx = torch.view_as_complex(self.weight_sht)                       # [Cin,Cout,Ls,Ms] c64
+        if self.force_real:
+            w_cplx = torch.complex(w_cplx.real, torch.zeros_like(w_cplx.real))
         out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)              # [B,Cout,Ls,Ms] c64
 
-        # Enforce m=0 purely real WITHOUT in-place on a view:
+        # Enforce m=0 purely real
         m0_real = out_sub[..., 0].real                                        # [B,Cout,Ls]
         m0      = torch.complex(m0_real, torch.zeros_like(m0_real))           # [B,Cout,Ls] c64
         if self._Ms > 1:
-            out_sub = torch.cat([m0.unsqueeze(-1), out_sub[..., 1:]], dim=-1) # new tensor
+            out_sub = torch.cat([m0.unsqueeze(-1), out_sub[..., 1:]], dim=-1)
         else:
             out_sub = m0.unsqueeze(-1)
 
-        # Embed into full coefficient grid (no in-place on a view of a leaf tensor)
+        # Optionally force ALL coefficients to be real (eliminate complex noise)
+        if self.force_real:
+            out_sub = torch.complex(out_sub.real, torch.zeros_like(out_sub.real))
+
+        # Embed into full coefficient grid
         out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim,
                                dtype=out_sub.dtype, device=dev)
         out_full = out_full.index_put(
@@ -307,6 +361,7 @@ class SphericalFourierLayer(nn.Module):
         y = y64_flat.reshape(B, self.out_channels, H, W).to(dtype=x.dtype)
         return y
 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self._sht_path(x) if self.use_sht else self._fourier2_path(x)
 
@@ -321,14 +376,17 @@ class MCDropout(nn.Dropout):
 
 
 class SFNOBlock(nn.Module):
-    def __init__(self, width, modes_lat, modes_lon, dropout=0.0, mc_dropout=False, use_sht: bool = False):
+    def __init__(self, width, modes_lat, modes_lon, dropout=0.0, mc_dropout=False,
+                 use_sht: bool = False, force_real_coeffs: bool = True):
         super().__init__()
-        self.fourier = SphericalFourierLayer(width, width, modes_lat, modes_lon, use_sht=use_sht)
+        self.fourier = SphericalFourierLayer(width, width, modes_lat, modes_lon,
+                                             use_sht=use_sht, force_real_coeffs=force_real_coeffs)
         self.linear = nn.Conv2d(width, width, 1)
         self.dropout = MCDropout(dropout)
         self.dropout.mc = mc_dropout
-        self.norm = nn.LayerNorm(width)  # channel LN after HWC permute
+        self.norm = nn.LayerNorm(width)
         self.act = nn.GELU()
+
     def set_mc_dropout(self, mc=True):
         self.dropout.mc = mc
     def forward(self, x):
@@ -379,6 +437,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         use_sht: bool = False,                # (6) SHT hook flag
         area_weighted_loss: bool = False,     # (5) optional spherical area weighting
         sunlocked_chunk_size: int = 64,       # sunlcoked chunks
+        force_real_coeffs: bool = True,
     ):
         super().__init__()
         self.trunk_width = trunk_width
@@ -392,6 +451,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.use_sht = bool(use_sht)
         self.area_weighted_loss = bool(area_weighted_loss)
         self.sunlocked_chunk_size = int(max(1, min(n_sunlocked_heads, sunlocked_chunk_size)))
+        self.force_real_coeffs = bool(force_real_coeffs)
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)
@@ -409,7 +469,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
 
         self.in_proj = nn.Conv2d(in_channels, trunk_width, 1)
         self.blocks = nn.ModuleList([
-            SFNOBlock(trunk_width, modes_lat, modes_lon, dropout=dropout, mc_dropout=mc_dropout, use_sht=self.use_sht)
+            SFNOBlock(trunk_width, modes_lat, modes_lon, dropout=dropout, mc_dropout=mc_dropout, use_sht=self.use_sht, force_real_coeffs=self.force_real_coeffs)
             for _ in range(trunk_depth)
         ])
         self.aux_proj = nn.Linear(aux_dim, trunk_width) if aux_dim > 0 else None
