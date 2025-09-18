@@ -47,9 +47,79 @@ from util import Tee
 try:
     import wandb
 except ImportError:
-    wandb = None
+    wandb = None    
+
 from util import set_random_seed
 from util import md5_hash_str
+
+
+# --- Sweep helpers ------------------------------------------------------------
+SWEEP_OVERRIDABLE = {
+    # training knobs
+    "learning_rate": float,
+    "weight_decay": float,
+    "batch_size": int,
+    "epochs": int,
+    "dropout": float,
+    "context_window": int,
+    "prediction_window": int,
+    "date_dilation": int,
+
+    # SFNO knobs (already read with getattr(...) later)
+    "sfno_width": int,
+    "sfno_depth": int,
+    "sfno_modes_lat": int,
+    "sfno_modes_lon": int,
+    "n_sunlocked_heads": int,
+    "n_harmonics": int,
+    "spectral_backend": str,
+    "area_weighted_loss": bool,
+
+    # W&B quality-of-life
+    "wandb_mode": str,            # enforce "online" in sweeps
+    "wandb_project": str,         # keep consistent
+    "aux_dim": int,
+    "mc_dropout": bool,
+}
+
+def _apply_wandb_config_overrides(args):
+    """If running under a W&B Sweep, copy wandb.config values into argparse args."""
+    try:
+        import wandb as _wandb  # use same module
+    except Exception:
+        return args
+
+    if getattr(_wandb, "run", None) is None:
+        return args
+
+    cfg = dict(_wandb.config)  # FrozenOrderedDict -> plain dict
+    for k, caster in SWEEP_OVERRIDABLE.items():
+        if k in cfg and hasattr(args, k):
+            try:
+                setattr(args, k, caster(cfg[k]))
+            except Exception:
+                setattr(args, k, cfg[k])
+    return args
+
+
+def _materialize_target_dir_placeholders(target_dir: str):
+    """
+    Allow --target_dir like './sweeps/{wandb_run_id}' to fan out per run.
+    Safe when not in W&B.
+    """
+    try:
+        import wandb as _wandb
+        run_id  = getattr(getattr(_wandb, "run", None), "id", None)
+        run_name = getattr(getattr(_wandb, "run", None), "name", None)
+    except Exception:
+        run_id = run_name = None
+    if run_id:
+        return target_dir.format(wandb_run_id=run_id, wandb_run_name=(run_name or "unnamed"))
+    return target_dir
+# ------------------------------------------------------------------------------
+
+
+
 # from model_vae import VAE1
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
@@ -587,14 +657,29 @@ def main():
 
     parser.add_argument('--aux_weight', type=float, default=1.0, help='Weight for auxiliary loss terms (SFNO)')
     parser.add_argument('--n_harmonics', type=int, default=1, help='Fourier positional encoding harmonics (SFNO)')
+    parser.add_argument('--sfno_width', type=int, default=64)
+    parser.add_argument('--sfno_depth', type=int, default=8)
+    parser.add_argument('--sfno_modes_lat', type=int, default=32)
+    parser.add_argument('--sfno_modes_lon', type=int, default=64)
+    parser.add_argument('--n_sunlocked_heads', type=int, default=360)
+    parser.add_argument('--area_weighted_loss', action='store_true', help='Enable area-weighted loss in SFNO')
+
     # --- Spectral backend selection ---
     parser.add_argument(
         "--spectral_backend",
         type=str,
         default="sht",
         choices=["rfft", "sht"],
-        help="Spectral operator backend: 'rfft' (default) or 'sht' (torch_harmonics).",
+        help="Spectral operator backend: 'rfft' or 'sht' default (torch_harmonics).",
     )
+
+    # --- add near other SFNO args ---
+    parser.add_argument('--aux_dim', type=int, default=0,
+                        help='Number of auxiliary output channels for SFNO')
+    # Requires Python 3.9+ for BooleanOptionalAction
+    parser.add_argument('--mc_dropout', action=argparse.BooleanOptionalAction, default=True,
+                        help='Enable/disable MC dropout in SFNO (default: enabled)')
+
 
 
 
@@ -617,18 +702,10 @@ def main():
     parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
 
     args = parser.parse_args()
-    # --- Resolve spectral backend switch (rFFT vs SHT) ---
-    try:
-        use_sht = (args.spectral_backend.lower() == 'sht')
-    except AttributeError:
-        # Back-compat: default to SHT if flag is absent in older CLIs
-        use_sht = True
-    # --- W&B setup ---
+    # --- W&B setup (unchanged) ---
     if args.wandb_disabled:
         args.wandb_mode = 'disabled'
     wandb_config = vars(args).copy()
-    
-    # Initialize wandb
     if args.wandb_mode != 'disabled' and wandb is not None:
         wandb.init(
             project=args.wandb_project,
@@ -639,6 +716,17 @@ def main():
             dir=args.target_dir,
             mode=args.wandb_mode
         )
+
+    # If this run is controlled by a W&B Sweep, let sweep params override CLI args.
+    args = _apply_wandb_config_overrides(args)
+
+    # ✅ Recompute after overrides so sweeps can flip it.
+    use_sht = (getattr(args, "spectral_backend", "sht").lower() == "sht")
+
+
+    # If target_dir contains placeholders, resolve them now (works with or without sweeps)
+    args.target_dir = _materialize_target_dir_placeholders(args.target_dir)
+
     args_cache_affecting_keys = {'data_dir', 
                                  'jpld_dir', 
                                  'celestrak_file_name', 
@@ -1143,12 +1231,13 @@ def main():
                         pbar.update(1)
 
                 # Validation
-                if (not args.no_valid) and ((epoch+1) % args.valid_every_nth_epoch == 0):
+                if (not args.no_valid) and ((epoch + 1) % args.valid_every_nth_epoch == 0):
                     print('*** Validation')
                     model.eval()
                     valid_loss = 0.0
                     valid_rmse_loss = 0.0
                     valid_jpld_rmse_loss = 0.0
+
                     with torch.no_grad():
                         for batch in tqdm(valid_loader, desc='Validation', leave=False):
                             if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
@@ -1176,20 +1265,22 @@ def main():
                                 sdo_context = sdo_seq[:, :args.context_window, :]
                                 loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
 
-                            elif args.model_type == 'SphericalFourierNeuralOperatorModel':
+                            elif model.name == 'SphericalFourierNeuralOperatorModel':
                                 jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
                                 jpld_seq = jpld_seq.to(device); sunmoon_seq = sunmoon_seq.to(device)
                                 celestrak_seq = celestrak_seq.to(device); omniweb_seq = omniweb_seq.to(device); set_seq = set_seq.to(device)
 
+                                # Ensure fixed grid channel counts for exogenous data
                                 H, W = 180, 360
                                 celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
                                 omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
                                 set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+
                                 combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
-
                                 B, T, Ctot, H, W = combined_seq.shape
-                                assert T >= args.context_window + args.prediction_window
+                                assert T >= args.context_window + args.prediction_window, "Sequence too short for validation"
 
+                                # Autoregressive rollout over P prediction steps
                                 P = args.prediction_window
                                 cur = combined_seq[:, args.context_window - 1].clone()
                                 total_loss = 0.0
@@ -1221,7 +1312,6 @@ def main():
                                     sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
                                     sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
 
-
                                     out = model(x_input, sunlocked_idx)
                                     if isinstance(out, dict) and 'vtec' in out:
                                         pred, logvar = out['vtec']
@@ -1231,8 +1321,10 @@ def main():
                                         logvar = None
                                         yhat = pred
 
+                                    # Target = ground truth JPLD at t = context + step
                                     y_t = jpld_seq[:, args.context_window + step, 0:1, :, :]
 
+                                    # Physics-informed loss if available, else plain MSE
                                     if isinstance(out, dict) and 'vtec' in out:
                                         times_target = [_safe_time_at(times, b, args.context_window + step) for b in range(B)]
                                         loss_step, _, _, _ = _sfno_weighted_loss(
@@ -1247,6 +1339,7 @@ def main():
                                     total_loss = total_loss + loss_step
                                     rmse_steps.append(_rmse_tecu(pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t))
 
+                                    # Build next input frame: replace VTEC channel with prediction (AR)
                                     next_frame = combined_seq[:, args.context_window + step].clone()
                                     next_frame[:, 0:1] = yhat
                                     cur = next_frame
@@ -1255,17 +1348,25 @@ def main():
                                 rmse_t = torch.stack(rmse_steps).mean()
                                 jpld_rmse_t = rmse_t
 
-                                valid_loss += float(loss.detach().item())
-                                valid_rmse_loss += float(rmse_t.detach().item())
-                                valid_jpld_rmse_loss += float(jpld_rmse_t.detach().item())
+                            else:
+                                raise ValueError('Unknown model type: {}'.format(model.name if hasattr(model, "name") else args.model_type))
 
-                    valid_loss /= len(valid_loader)
-                    valid_rmse_loss /= len(valid_loader)
-                    valid_jpld_rmse_loss /= len(valid_loader)
+                            # ---- accumulate for ALL branches ----
+                            valid_loss += float(loss.detach().item())
+                            valid_rmse_loss += float(rmse_t.detach().item())
+                            valid_jpld_rmse_loss += float(jpld_rmse_t.detach().item())
+
+                    denom = max(1, len(valid_loader))
+                    valid_loss /= denom
+                    valid_rmse_loss /= denom
+                    valid_jpld_rmse_loss /= denom
+
                     valid_losses.append((iteration, valid_loss))
                     valid_rmse_losses.append((iteration, valid_rmse_loss))
                     valid_jpld_rmse_losses.append((iteration, valid_jpld_rmse_loss))
+
                     print(f'Validation Loss: {valid_loss:.4f}, Validation RMSE: {valid_rmse_loss:.4f}, Validation JPLD RMSE: {valid_jpld_rmse_loss:.4f}')
+
                     # W&B validation metrics
                     if wandb is not None and args.wandb_mode != 'disabled':
                         wandb.log({
@@ -1275,9 +1376,11 @@ def main():
                             'epoch': epoch + 1,
                             'iteration': iteration
                         }, step=iteration)
+
                     scheduler.step(valid_rmse_loss)
                     current_lr = optimizer.param_groups[0]['lr']
                     print(f'Current learning rate: {current_lr:.6f}')
+
 
                     if not args.no_eval:
                         file_name_prefix = os.path.join(args.target_dir, f'epoch-{epoch + 1:02d}-')

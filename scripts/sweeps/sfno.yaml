@@ -1,0 +1,115 @@
+program: run.py
+project: Ionosphere
+method: bayes
+
+metric:
+  name: valid/rmse
+  goal: minimize
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --mode
+  - train
+  - --model_type
+  - SphericalFourierNeuralOperatorModel
+  - --device
+  - cuda
+  - --data_dir
+  - /mnt/disks/disk-main-data-1
+  - --target_dir
+  - /mnt/disks/disk-main-data-1/sfno_sweep_SHT_2016_2020/{wandb_run_id}
+  - --date_start
+  - 2016-01-01T00:00:00
+  - --date_end
+  - 2020-01-01T00:00:00
+  - --delta_minutes
+  - "15"
+  - --date_dilation
+  - "10"
+  - --epochs
+  - "80"
+  - --batch_size
+  - "2"
+  - --learning_rate
+  - "2e-4"
+  - --weight_decay
+  - "1e-4"
+  - --num_workers
+  - "8"
+  - --context_window
+  - "24"
+  - --prediction_window
+  - "8"
+  - --spectral_backend
+  - sht
+  - --jpld_weight
+  - "1.0"
+  - --aux_weight
+  - "0.3"
+  - --valid_every_nth_epoch
+  - "5"
+  - --eval_mode
+  - all
+  - --lead_times
+  - "60"
+  - "180"
+  - --wandb_mode
+  - online
+  - --wandb_run_name
+  - shtpostFDL2_sweep
+  - --celestrak_file_name
+  - celestrak/kp_ap_processed_timeseries.csv
+  - --set_file_name
+  - set/karman-2025_data_sw_data_set_sw.csv
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  s: 2
+  eta: 2
+
+parameters:
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 3e-3
+  weight_decay:
+    values: [0.0, 1e-6, 1e-5, 1e-4]
+  batch_size:
+    values: [1, 2, 4, 8, 16, 32]
+  epochs:
+    values: [2, 4, 6]
+
+  dropout:
+    values: [0.1, 0.15, 0.2, 0.3]
+  n_harmonics:
+    values: [1, 2, 3, 6, 8, 10]
+
+  jpld_weight:
+    values: [0.8, 1.0, 2.0]
+  aux_weight:
+    values: [0.1, 0.2, 0.3, 0.5]
+  context_window:
+    values: [1, 4, 8, 12, 24]
+  prediction_window:
+    values: [1, 4, 8, 16]
+
+  spectral_backend:
+    values: ["rfft", "sht"]
+  sfno_width:
+    values: [48, 64, 96, 128]
+  sfno_depth:
+    values: [6, 8, 10, 12]
+  sfno_modes_lat:
+    values: [24, 32, 48]
+  sfno_modes_lon:
+    values: [48, 64, 96]
+  n_sunlocked_heads:
+    values: [180, 360]
+
+  date_dilation:
+    values: [1, 5, 10, 20, 50]
+  area_weighted_loss:
+    values: [false, true]
