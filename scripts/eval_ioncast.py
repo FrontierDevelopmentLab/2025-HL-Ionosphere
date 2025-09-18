@@ -22,7 +22,7 @@ from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
 from model_graphcast import IonCastGNN
-from graphcast_utils import stack_features
+from graphcast_utils import stack_features, sunlock_features, get_subsolar_points
 
 matplotlib.use('Agg')
 
@@ -263,10 +263,20 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     
     if isinstance(model, IonCastGNN):
         # Stack features will convert the sequence_dataset to output shape (B, T, C, H, W)
+        timestamps = sequence_data[-1] # Get the timestamp list
         sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
-        combined_seq_batch = stack_features(sequence_data, batched=False)
+        combined_seq_batch, image_indices = stack_features(sequence_data, batched=False)
 
+        combined_seq_batch = combined_seq_batch.to(model.device)
         combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
+
+        if args.sunlock_features:
+            subsolar_lats, subsolar_lons = get_subsolar_points(combined_seq_batch, timestamps, batched=False)
+            subsolar_lats, subsolar_lons = subsolar_lats.to(model.device), subsolar_lons.to(model.device)
+            combined_seq_batch = sunlock_features(combined_seq_batch, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
+
+            combined_seq_batch = combined_seq_batch.to(model.device)
+            combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32
 
         # Output context & forecast for all time steps, shape (B, T, C, H, W)
         if hasattr(model, "module"):

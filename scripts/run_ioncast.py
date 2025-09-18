@@ -21,11 +21,11 @@ from util import Tee
 from util import set_random_seed
 from util import md5_hash_str
 # from model_vae import VAE1
-from model_convlstm import IonCastConvLSTM
+from model_convlstm import IonCastConvLSTM 
 from model_lstm import IonCastLSTM
 from model_linear import IonCastLinear
 from model_graphcast import IonCastGNN
-from graphcast_utils import stack_features, calc_shapes_for_stack_features
+from graphcast_utils import stack_features, calc_shapes_for_stack_features, sunlock_features, get_subsolar_points
 from dataset_jpld import JPLD
 from dataset_sequences import Sequences
 from dataset_union import Union
@@ -338,6 +338,7 @@ def main():
     parser.add_argument('--ioncast_processor_layers', type=int, default=6, help='Number of processor layers for IonCastGNN model')
     parser.add_argument('--train_on_predicted_forcings', action='store_true', help='Train on predicted forcings for IonCastGNN model')
     parser.add_argument('--residual_target', action='store_true', help='Train on predicted forcings for IonCastGNN model')
+    parser.add_argument('--sunlock_features', action='store_true', help='Use sun-locked features (aka shift every image by the subsolar point longitude) for IonCastGNN model')
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
     parser.add_argument('--wandb_project', type=str, default='Ionosphere')
@@ -751,7 +752,7 @@ def main():
                         elif args.model_type == "IonCastGNN":
                             # Stack features will output shape (B, T, C, H, W)                          
                             batch_notimestamps = batch[:-1] # Remove timestamp list from batch  
-                            grid_nodes = stack_features(
+                            grid_nodes, image_indices = stack_features(
                                 batch_notimestamps, 
                                 image_size=FIXED_IMAGE_SIZE,
                                 batched=True
@@ -759,6 +760,16 @@ def main():
                             
                             grid_nodes = grid_nodes.to(device)
                             grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32        
+
+                            # Sun-lock features
+                            if args.sunlock_features:
+                                subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
+                                subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
+                                grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
+
+                                grid_nodes = grid_nodes.to(device)
+                                grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
+                            
                                             
                             if args.partition_size > 1:
                                 loss, rmse, jpld_rmse = model.module.loss(
@@ -830,14 +841,25 @@ def main():
                             elif args.model_type == "IonCastGNN":
                                 # Stack features will output shape (B, T, C, H, W)
                                 batch_notimestamps = batch[:-1] # Remove timestamp list from batch
-                                grid_nodes = stack_features(
+                                grid_nodes, image_indices = stack_features(
                                     batch_notimestamps, 
                                     image_size=FIXED_IMAGE_SIZE,
                                     batched=True
                                 )
 
                                 grid_nodes = grid_nodes.to(device)
-                                grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
+
+                                # Sun-lock features
+                                if args.sunlock_features:
+                                    subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
+                                    subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
+                                    grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
+
+                                    grid_nodes = grid_nodes.to(device)
+                                    grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
+
+                                    grid_nodes = grid_nodes.to(device)
+                                    grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
 
                                 if args.partition_size > 1:
                                     loss, rmse, jpld_rmse = model.module.loss(
@@ -1246,3 +1268,14 @@ if __name__ == '__main__':
 
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-residual --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cpu --model_file /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-residual/epoch-01-model.pth --lead_times 30 60 90 120 --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --model_file /home/jupyter/linnea_results/ioncastgnn-train-fulldataset/epoch-01-model.pth --lead_times 30 60 90 120 --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
+
+# 
+# Prev testing run
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:1 --model_file /home/jupyter/linnea_results/ioncastgnn-train-fulldataset/epoch-01-model.pth --lead_times 30 60 90 120 --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
+
+# 96 context run
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-dilation256_Aug22_context96_test --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:0 --model_file /home/jupyter/halil_debug/ioncastgnn-fulldataset-dilation256_Aug22_context96/epoch-06-model.pth --lead_times 60 120 --residual_target --wandb_run_name IonCastGNN --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
+
+# Sun locked run (add --sunlock_features flag)
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock-dilation256 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target -max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked --sunlock_features --date_dilation 256
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 4 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 4 --device cuda:0 --valid_event_id G0H3-201704230900 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 64000 --wandb_run_name IonCastGNN_sunlocked --sunlock_features
