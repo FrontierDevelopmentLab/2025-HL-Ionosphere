@@ -1,0 +1,42 @@
+wandb_version: 1
+
+area_weighted_loss:
+  value: true
+aux_weight:
+  value: 0.3
+batch_size:
+  value: 2
+context_window:
+  value: 1
+date_dilation:
+  value: 5
+delta_minutes:
+  value: 15
+dropout:
+  value: 0.15
+epochs:
+  value: 6
+jpld_weight:
+  value: 0.8
+learning_rate:
+  value: 0.0010419425602436075
+n_harmonics:
+  value: 6
+n_sunlocked_heads:
+  value: 360
+num_workers:
+  value: 1
+prediction_window:
+  value: 8
+sfno_depth:
+  value: 10
+sfno_modes_lat:
+  value: 32
+sfno_modes_lon:
+  value: 96
+sfno_width:
+  value: 48
+spectral_backend:
+  value: rfft
+weight_decay:
+  value: 0

@@ -193,7 +193,7 @@ def geophysics_informed_loss(
     )
 
     # Console + W&B logging every 100 iters
-    if iteration is not None and (iteration % 100 == 0):
+    if iteration is not None and (iteration % 1000 == 0):
         msg = (
             f"Iter {iteration} | "
             f"Prob: {probabilistic_loss.item():.4f} | "
