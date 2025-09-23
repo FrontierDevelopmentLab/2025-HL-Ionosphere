@@ -156,6 +156,7 @@ class IonCastGNN(nn.Module):
         device="cpu",
         context_window: int = 2,
         forcing_channels: Optional[Any] = None,
+        residual_target: bool = False
     ):
 
         super().__init__()
@@ -209,7 +210,10 @@ class IonCastGNN(nn.Module):
         self.activation_fn = activation_fn
         self.norm_type = norm_type
         self.input_res = input_res  # Input resolution (height, width)
-        
+        self.residual_target = residual_target # Whether the prediction target is the residual of the input grid nodes
+        self.partition_size = partition_size
+        self.partition_group_name = partition_group_name
+
         # Our parameters
         self.device = device
         self.context_window = context_window
@@ -341,7 +345,19 @@ class IonCastGNN(nn.Module):
             future_forcing_context = masked_grid[:, context_window+step, forcing_channels, :, :].detach().clone() # [B, len(forcing_channels), H, W]
             model_input = torch.cat([context_window_grid, future_forcing_context], dim=1) # [B, C * context_window + len(forcing_channels), H, W]
 
-            step_output = self(model_input) # [B, C, H, W]
+            if self.residual_target:
+                prev_inputs = masked_grid[:, context_window + step - 1, :, :, :] # [B, C, H, W]
+                step_output = self(model_input) + prev_inputs # NOTE: that this may give somewhat nonsensical 
+                                                              # predictions along forcing dimensions potentially
+                                                              # but this shoulndt matter since we mask out and dont
+                                                              # use the predictions along the forcing channels either
+                                                              # in training or testing (reason i think its a bit wonky 
+                                                              # for forcings is because the prev inputs we sum up at ]
+                                                              # this step will correspond to the forcings at t-2 of what 
+                                                              # were predicting  for forcings as we include 1 timestep 
+                                                              # ahead in forcings as context)
+            else:
+                step_output = self(model_input) # [B, C, H, W]
             
             # only fill in the non-forcing channels, if no forcing channels are passed in, all channels are filled with model output autoregressively
             # Update masked_grid with the step output
@@ -359,91 +375,9 @@ class IonCastGNN(nn.Module):
                                                     # when predicting x_t+1 but not hit an out of bounds error when we reached index T in the loop
 
         return masked_grid 
-
-    # def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
-    #     """ 
-    #     Computes the loss for the IonCastGraph model. 
-    #     In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
-    #     For vTEC predictions, we can use a simple MSE loss between the predicted and target grid nodes.
-    #     For now, loss is computed between all node features (vTEC, F10.7, cos(lat), etc)- this
-    #     is maybe not the best choice, and we might want to compute the loss only on the vTEC feature.
-
-    #     Parameters
-    #     ----------
-    #     grid_features : torch.Tensor
-    #         Input tensor of shape (B, T, C, H, W)
-    #     prediction_window : int, optional
-    #         Number of time steps to predict autoregressively. Default is 1.
-    #     train_on_predicted_forcings : bool, optional
-    #         If True, the model will be trained to predict the forcing channels autoregressively.
-    #         If False, the forcing channels will be provided as context for all time steps.
-    #     """
-    #     context_window = self.context_window
-
-    #     # Check if grid_features is at least context_window + prediction_window long
-    #     assert grid_features.shape[1] >= context_window + prediction_window, f"Expected grid_features to have at least context_window ({context_window}) + prediction_window ({prediction_window}) = {context_window + prediction_window} time steps, got {grid_features.shape[1]}"
-    #     grid_features = grid_features[:, 0:context_window + prediction_window, :, :, :] # [B, T, C, H, W] - this is the context window + prediction_window, so we can predict prediction_window after the context window, were throwing out the rest of the sequence, though in practice, the prediction_window passed into the loss is dynamic , increading over training iterations, so will eventually make use of entire sequence length
-    #     B, T, C, H, W = grid_features.shape
-
-    #     # Convert forcing_channels to a boolean mask
-    #     forcing_channels = self._get_forcing_mask(self.forcing_channels, C, grid_features.device)
-    #     # print(f"DEBUG:\n forcing_channels: {forcing_channels},\n self.forcing_channels: {self.forcing_channels},\n C: {C},\n grid_features.device: {grid_features.device}")
-        
-    #     # Separate out the autoregressive targets and forcing targets
-    #     # input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
-    #     autoreg_targets = grid_features[:, context_window:T+1, ~forcing_channels, :, :] # shape (B, T - context_window, C, H, W)
-    #     forcing_targets = grid_features[:, (context_window)+1:T+1, forcing_channels, :, :] # shape (B, T - context_window - 1, n_forcing_channels, H, W)
-
-    #     # pass in the mask list to predict from loss so that entries not used in the loss will be included in forcings
-    #     output_grid = self.predict(grid_features, context_window=context_window, train=train_on_predicted_forcings) # shape (B, T, C, H, W) 
-
-    #     # for the forcing_preds, since we use f_t+1 as context at time t, at time t, we compute the loss between the prediction of f_t+2 and the target of f_t+2,
-    #     autoreg_preds = output_grid[:, context_window:T+1, ~forcing_channels, :, :] # the reason to go from context_window to T+1 is that the first prediction is for time context_window, and the last prediction is for time T so this cuts out the extra T+1 output
-    #     forcing_preds = output_grid[:, (context_window)+1:T+1, forcing_channels, :, :] # the output grid should already go up to T+1 though this is only to make it more explicit
-    #     # forcing_preds = forcing_preds[:, :-1, :, :, :] # cut off the last time step to match the target shape, this could have been done in the line above though done here to clarify what is actually going on.
-    #                                                      # we wont have the target for f_T+1 even though the model predicts it, 
     
-    #     # assert shapes
-    #     assert output_grid.shape[1] == T, f"Expected output_grid to have context_window ({context_window}) + prediction_window ({prediction_window}) = {T} time steps, got {output_grid.shape[1]}"
 
-    #     # if channel_list is not None:
-    #     #     # If specific channels are provided, select them
-    #     #     assert autoreg_preds.shape[1] == prediction_window, f"Expected autoreg_preds to have {prediction_window} time steps, got {predictions_grid.shape[1]}"
-    #     #     autoreg_preds = autoreg_preds[:, :, channel_list, :, :]
-    #     #     all_targets = all_targets[:, :, channel_list, :, :]
-
-    #     JPLD_preds = autoreg_preds[:,:, 0:1, :, :] # JPLD is the first channel in the autoregressive predictions
-    #     JPLD_targets = autoreg_targets[:,:,0:1, :, :] # JPLD is the first channel in the autoregressive targets
-    #     B_jpld, T_jpld, C_jpld, H_jpld, W_jpld = JPLD_preds.shape
-
-    #     aux_preds = autoreg_preds[:,:, 1:, :, :] # aux is all other non-forcing channels in the autoregressive predictions
-    #     aux_targets = autoreg_targets[:,:, 1:, :, :] # aux is all other non-forcing channels in the autoregressive targets
-    #     B_aux, T_aux, C_aux, H_aux, W_aux = aux_preds.shape
-
-    #     jpld_recon_loss = nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='sum') # Sum over all pixels and channels
-    #     jpld_recon_loss = jpld_recon_loss / (B_jpld * T_jpld * C_jpld * H_jpld * W_jpld) # Average over batch size, channels, and time steps
-
-    #     aux_recon_loss = nn.functional.mse_loss(aux_preds, aux_targets, reduction='sum') # Sum over all pixels and channels
-    #     aux_recon_loss = aux_recon_loss / (B_aux * T_aux * C_aux * H_aux * W_aux) # Average over batch size, channels, and time steps
-
-    #     forcing_recon_loss = nn.functional.mse_loss(forcing_preds, forcing_targets, reduction='sum') # Sum over all pixels and channels
-    #     forcing_recon_loss = forcing_recon_loss / (forcing_preds.shape[0] * forcing_preds.shape[1] * forcing_preds.shape[2]) # Average over batch size, channels, and time steps
-    #     # print(f"DEBUG Loss:\n autoreg_recon_loss: {autoreg_recon_loss},\n forcing_reconn_loss: {forcing_recon_loss},\n autoreg_preds.shape: {autoreg_preds.shape},\n autoreg_targets.shape: {autoreg_targets.shape},\n forcing_preds.shape: {forcing_preds.shape},\n forcing_targets.shape: {forcing_targets.shape}")
-     
-    #     if train_on_predicted_forcings and forcing_preds.shape[1] != 0:
-    #         recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss + forcing_recon_loss # Combine the losses, could also weight them differently if needed
-    #     else: # Note I suspect this else is redundant as if train_on_predicted_forcings is false, forcing_recon_loss should be 0
-    #         recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss 
-
-    #     # Calculate RMSE and jpld_rmse
-    #     with torch.no_grad():
-    #         rmse = torch.sqrt(nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='mean'))
-    #         jpld_rmse = torch.sqrt(nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='mean'))
-
-    #     # For simplicity, we can return just the reconstruction loss
-    #     return recon_loss, rmse, jpld_rmse
-
-    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2, residual_target=False): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
+    def loss(self, grid_features, prediction_window=1, train_on_predicted_forcings=True, jpld_weight=2): # should pass in forcing_channels as an input? but in training we want to predict these, but in tesitng, want to include them in forecasting, so in loss we should actually not pass in any channels in keep unmasked for predict
         """ 
         Computes the loss for the IonCastGraph model. 
         In GraphCast the loss is https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/utils/graphcast/loss.py
@@ -475,10 +409,10 @@ class IonCastGNN(nn.Module):
         # pass in the mask list to predict from loss so that entries not used in the loss will be included in forcings
         output_grid = self.predict(grid_features, context_window=context_window, train=train_on_predicted_forcings) # shape (B, T, C, H, W) 
         
-        if residual_target:
-            temp_grids = torch.zeros_like(grid_features)
-            temp_grids[:, 1:, :, :, :] = torch.diff(grid_features, dim=1) # replace nodes with residuals, 
-            grid_features = temp_grids
+        # if residual_target:
+        #     temp_grids = torch.zeros_like(grid_features)
+        #     temp_grids[:, 1:, :, :, :] = torch.diff(grid_features, dim=1) # replace nodes with residuals, 
+        #     grid_features = temp_grids
 
         # Separate out the autoregressive targets and forcing targets
         # input_grid = grid_features[:, :context_window, :, :, :] # shape (B, context_window, C, H, W)
@@ -494,12 +428,6 @@ class IonCastGNN(nn.Module):
     
         # assert shapes
         assert output_grid.shape[1] == T, f"Expected output_grid to have context_window ({context_window}) + prediction_window ({prediction_window}) = {T} time steps, got {output_grid.shape[1]}"
-
-        # if channel_list is not None:
-        #     # If specific channels are provided, select them
-        #     assert autoreg_preds.shape[1] == prediction_window, f"Expected autoreg_preds to have {prediction_window} time steps, got {predictions_grid.shape[1]}"
-        #     autoreg_preds = autoreg_preds[:, :, channel_list, :, :]
-        #     all_targets = all_targets[:, :, channel_list, :, :]
 
         JPLD_preds = autoreg_preds[:,:, 0:1, :, :] # JPLD is the first channel in the autoregressive predictions
         JPLD_targets = autoreg_targets[:,:,0:1, :, :] # JPLD is the first channel in the autoregressive targets
@@ -525,6 +453,7 @@ class IonCastGNN(nn.Module):
             recon_loss = jpld_weight * jpld_recon_loss + aux_recon_loss 
 
         # Calculate RMSE and jpld_rmse
+        # TODO: Add latitude weighted RMSE, like GraphCast (see equation 20 in paper)
         with torch.no_grad():
             rmse = torch.sqrt(nn.functional.mse_loss(autoreg_preds, autoreg_targets, reduction='mean'))
             jpld_rmse = torch.sqrt(nn.functional.mse_loss(JPLD_preds, JPLD_targets, reduction='mean'))

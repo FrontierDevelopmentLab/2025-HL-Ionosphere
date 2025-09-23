@@ -4,11 +4,12 @@ import datetime
 
 
 class Sequences(Dataset):
-    def __init__(self, datasets, delta_minutes=15, sequence_length=4):
+    def __init__(self, datasets, delta_minutes=15, sequence_length=4, dilation=1):
         super().__init__()
         self.datasets = datasets
         self.delta_minutes = delta_minutes
         self.sequence_length = sequence_length
+        self.dilation = dilation
 
         self.date_start = max([dataset.date_start for dataset in self.datasets])
         self.date_end = min([dataset.date_end for dataset in self.datasets])
@@ -21,6 +22,7 @@ class Sequences(Dataset):
         print('Delta                   : {} minutes'.format(self.delta_minutes))
         print('Sequence length         : {}'.format(self.sequence_length))
         print('Sequence duration       : {} minutes'.format(self.delta_minutes*self.sequence_length))
+        print('Dilation                : {}'.format(self.dilation))
 
         self.sequences = self.find_sequences()
         if len(self.sequences) == 0:
@@ -84,6 +86,6 @@ class Sequences(Dataset):
             if sequence_available:
                 sequences.append(sequence)
             # Move to next sequence
-            sequence_start += datetime.timedelta(minutes=self.delta_minutes)
+            sequence_start += datetime.timedelta(minutes=self.delta_minutes * self.dilation)
         return sequences
 

@@ -427,7 +427,7 @@ def train():
             if opt.model_path is not None:
                 torch.save(ts_ionopy_model.state_dict(), opt.model_path)
             else:
-                torch.save(ts_ionopy_model.state_dict(), f"{opt.model_type}_model_best.pth")
+                torch.save(ts_ionopy_model.state_dict(), f"{opt.model_type}_{opt.subset_type}mln_{timestamp_training}.pth")
 
 if __name__ == "__main__":
     time_start = time.time()
