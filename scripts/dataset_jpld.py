@@ -124,7 +124,7 @@ class JPLDRaw(Dataset):
 
 # ionosphere-data/jpld/webdataset
 class JPLD(Dataset):
-    def __init__(self, data_dir, date_start=None, date_end=None, date_exclusions=None, normalize=True, rewind_minutes=50):
+    def __init__(self, data_dir, date_start=None, date_end=None, date_exclusions=None, normalize=True, rewind_minutes=50, delta_minutes=15):
         self.data_dir = data_dir
         self.normalize = normalize
         self.rewind_minutes = rewind_minutes
@@ -150,7 +150,7 @@ class JPLD(Dataset):
                 self.date_end = date_end
             else:
                 print('End date out of range, using default')
-        self.delta_minutes = 15
+        self.delta_minutes = delta_minutes
         total_minutes = int((self.date_end - self.date_start).total_seconds() / 60)
         total_steps = total_minutes // self.delta_minutes
         print('Start date : {}'.format(self.date_start))

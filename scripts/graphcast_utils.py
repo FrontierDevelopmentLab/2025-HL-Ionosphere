@@ -245,10 +245,12 @@ def circular_shift(batch, shift, dim=-1):
     shift_shape = [B, T] + [1] * (batch.ndim - 2)
     shift = shift.view(*shift_shape)
     shifted_indices = (indices + shift) % n  # shape [B, T, 1, 1, n] (if dim=-1)
-
+    
+    # as the shifts can and will be floats (subpixel shifting), i0 and i1 are the floor and ciel fo the shift 
+    # eg if shift = 3.2, i0 = 3, i1 = 4
     i0 = torch.floor(shifted_indices).long()
     i1 = (i0 + 1) % n
-    frac = shifted_indices - i0
+    frac = shifted_indices - i0 # frac is the subpixel amount to shift so if shift = 3.2, frac = 0.2
 
     # Prepare gather indices
     # Expand i0/i1 to match batch shape
@@ -259,9 +261,12 @@ def circular_shift(batch, shift, dim=-1):
     frac = frac.expand(*expand_shape)
 
     # Gather along the shifting dimension
-    img_i0 = torch.gather(batch, dim, i0)
-    img_i1 = torch.gather(batch, dim, i1)
-    shifted = (1 - frac) * img_i0 + frac * img_i1
+    img_i0 = torch.gather(batch, dim, i0) # the image(s) shifted by i0 pixels
+    img_i1 = torch.gather(batch, dim, i1) # the image(s) shifted by i1 pixels
+
+    # this produces a weighted average between the two integer shifts weighted by the subpixel shift (frac)
+    # so its a linear interpolation between the two integer shifts to get the subpixel shift.
+    shifted = (1 - frac) * img_i0 + frac * img_i1 
 
     return shifted
 

@@ -11,7 +11,7 @@ from warnings import warn
 
 
 class PandasDataset(Dataset):
-    def __init__(self, name, data_frame, column, delta_minutes, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None, return_as_image_size=None):
+    def __init__(self, name, data_frame, column, delta_minutes=15, date_start=None, date_end=None, normalize=True, rewind_minutes=15, date_exclusions=None, return_as_image_size=None):
         self.name = name
         self.data = data_frame
         self.column = column
@@ -69,14 +69,15 @@ class PandasDataset(Dataset):
                 print('End date out of range, using default')        
 
         # if not 'CRaTER' in self.name: # Very bad hack, need to fix this for CRaTER # NOTE CRaTER Not relevant for ionosphere datasets
-            # if the date of the first row of data after self.date_start does not end in minutes :00, :15, :30, or :45, move forward to the next minute that does
+        # if the date of the first row of data after self.date_start does not end in minutes :00, :self.delta_minutes, :self.delta_minutes*2, ..., move forward to the next minute that does
+        # Note: won't make sense if data has irregular cadences (i.e. this only adjusts the start date to the next available time that fits the cadence, it does not fill in missing data)
         time_out = 1000
-        while True: # Is this hardcoded 15 min value meant to equal the cadence?
+        while True: 
             first_row = self.data[self.data['Datetime'] >= self.date_start].iloc[0]
             first_row_date = first_row['Datetime']
-            if first_row_date.minute % 15 != 0:
+            if first_row_date.minute % self.delta_minutes != 0:
                 print('Adjust startdate(old): {}'.format(first_row_date))
-                first_row_date = first_row_date + datetime.timedelta(minutes=15 - (first_row_date.minute % 15))
+                first_row_date = first_row_date + datetime.timedelta(minutes=self.delta_minutes - (first_row_date.minute % self.delta_minutes))
                 print('Adjust startdate(new): {}'.format(first_row_date))
                 self.date_start = first_row_date
                 time_out -= 1

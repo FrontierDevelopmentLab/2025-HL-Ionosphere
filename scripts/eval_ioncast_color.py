@@ -22,7 +22,7 @@ from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
 from model_graphcast import IonCastGNN
-from graphcast_utils import stack_features, sunlock_features, get_subsolar_points
+from graphcast_utils import stack_features
 
 matplotlib.use('Agg')
 
@@ -263,20 +263,10 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     
     if isinstance(model, IonCastGNN):
         # Stack features will convert the sequence_dataset to output shape (B, T, C, H, W)
-        timestamps = sequence_data[-1] # Get the timestamp list
         sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
-        combined_seq_batch, image_indices = stack_features(sequence_data, batched=False)
+        combined_seq_batch = stack_features(sequence_data, batched=False)
 
-        combined_seq_batch = combined_seq_batch.to(model.device)
         combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
-
-        if args.sunlock_features:
-            subsolar_lats, subsolar_lons = get_subsolar_points(combined_seq_batch, timestamps, batched=False)
-            subsolar_lats, subsolar_lons = subsolar_lats.to(model.device), subsolar_lons.to(model.device)
-            combined_seq_batch = sunlock_features(combined_seq_batch, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
-
-            combined_seq_batch = combined_seq_batch.to(model.device)
-            combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32
 
         # Output context & forecast for all time steps, shape (B, T, C, H, W)
         if hasattr(model, "module"):
@@ -308,8 +298,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
 
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
-
-def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
+def plot_scatter_with_hist(gt, pred, file_name, timestamps=None, max_points=3000, title=None):
     """
     Create a scatter plot with marginal histograms comparing ground truth vs predicted values.
     
@@ -329,18 +318,28 @@ def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
         sample_indices = random.sample(range(n_total), max_points)
         gt_sampled = gt[sample_indices]
         pred_sampled = pred[sample_indices]
+        if timestamps is not None:
+            ts_sampled = timestamps[sample_indices]
     else:
         gt_sampled = gt
         pred_sampled = pred
-    
+        if timestamps is not None:
+            ts_sampled = timestamps
     # Create DataFrame for seaborn
     df = pd.DataFrame({'Ground Truth (TECU)': gt_sampled, 'Predicted (TECU)': pred_sampled})
-    
-    # Use seaborn jointplot - much faster and cleaner
-    g = sns.jointplot(
-        data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
-        kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True)
-    )
+    if timestamps is not None:
+        df["Timestamps"] = ts_sampled
+        # Use seaborn jointplot - much faster and cleaner
+        g = sns.jointplot(
+            data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
+            kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True), hue="Timestamps"
+        )
+    else:
+        # Use seaborn jointplot - much faster and cleaner
+        g = sns.jointplot(
+            data=df, x='Ground Truth (TECU)', y='Predicted (TECU)',
+            kind='scatter', alpha=0.4, height=8, marginal_kws=dict(bins=50, fill=True)
+        )
     
     # Add light grid for better readability
     g.ax_joint.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
@@ -466,12 +465,16 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     if save_scatter:
         # Generate scatter plot with marginal histograms
         scatter_file_name = file_name.replace('.mp4', '-scatter.pdf')
-        
+        forecast_mins_ahead_numeric = np.array([(j + 1) * 15 for j in range(sequence_prediction_window)]) # [T,]
+        H, W = jpld_forecast_unnormalized.shape[-2:]
+        T = forecast_mins_ahead_numeric.shape[0]
+        print(f"Debug: jpld_forecast_unnormalized.shape {jpld_forecast_unnormalized.shape}")
+        timestamps = np.broadcast_to(forecast_mins_ahead_numeric[:, None, None] , (T, H, W)).flatten()
         # Flatten the unnormalized JPLD data
         gt_flat = jpld_original_unnormalized.cpu().numpy().flatten()
         pred_flat = jpld_forecast_unnormalized.cpu().numpy().flatten()
         
-        plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, title=fig_title)
+        plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, timestamps=timestamps, title=fig_title)
 
     if save_numpy:
         # Save the numpy arrays for the main JPLD channel

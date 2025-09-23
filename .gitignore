@@ -180,3 +180,4 @@ cython_debug/
 de421.bsp
 log.txt
 results/
+scripts/wandb/

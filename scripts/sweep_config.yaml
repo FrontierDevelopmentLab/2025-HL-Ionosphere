@@ -1,7 +1,8 @@
 # W&B Sweep Configuration for Ionosphere Forecasting
 program: run_ioncast.py
-method: random  # bayes, grid, random
-metric:
+project: Ionosphere
+method: bayes  # bayes, grid, random
+metric: 
   goal: minimize
   name: valid/loss #valid/jpld_rmse
 
@@ -13,64 +14,52 @@ command:
   - "--data_dir"
   - "/home/jupyter/data"  # Change this to your actual data directory
   - "--target_dir" 
-  - "/home/jupyter/sweep_results/${name}"
+  - "/home/jupyter/halil_debug/sweep_results/${name}/${wandb_run_id}"
   - "--mode"
   - "train"
-  - "--save_no_models"  #NOT TO SAVE SPACE !
+  - "--no_model_checkpoint"  #NOT TO SAVE SPACE !
   - "--no_eval" 
   - ${args}
 
 parameters:
-  # Model Architecture
-  model_type:
-    values: ["IonCastGNN"]
-  
+  # ----------------------------------------------------
+  # Parameters to sweep over
   # Training Parameters
   learning_rate:
     # values: [3e-4]
     values: [0.00001, 0.00003, 0.0001, 0.0003, 0.001, 0.003, 0.01]
   
-  #weight_decay:
-  #  values: [0.0, 1e-6, 1e-5, 1e-4, 1e-3]
-  #  #oldvalues: [0.000001, 0.000003, 0.00001, 0.00003, 0.0001, 0.0003, 0.001]
-  
-  batch_size:
-   values: [1]
-  
-  num_workers:
-    values: [12]
-  
-  #dropout:
-  #  distribution: uniform
-  #  min: 0.1
-  #  max: 0.5
-  
   # Model-specific parameters
   context_window:
     distribution: int_uniform
     min: 1
-    max: 40
+    max: 192
   
   prediction_window:
-   values: [1, 2, 4]
-  
-  # Model architecture parameters
-  #hidden_dim:
-  #  values: [32, 64, 128, 256]
-  
-  #lstm_dim:
-  #  values: [512, 1024, 2048]  # Only used for IonCastLSTM
-  
-  #num_layers:
-  #  values: [1, 2, 3, 4]
-  
-  # Loss weighting
-  #jpld_weight:
-  #  distribution: uniform
-  #  min: 1.0
-  #  max: 50.0
+    values: [1, 2, 3]
 
-  # Data time range - sweep different time periods
+  mesh_level:
+    values: [4, 5, 6]
+
+  weight_decay:
+   values: [0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2] 
+
+  jpld_weight:
+   distribution: uniform
+   min: 1.0
+   max: 20.0
+
+  wandb_residual_target_bool:
+   values: ['True', 'False']
+
+  delta_minutes:
+    values: [15, 30, 60, 180, 360, 1440]
+
+  # ----------------------------------------------------
+  # Fixed parameters (not swept) 
+  model_type:
+    values: ["IonCastGNN"]
+
   date_start:
     values: 
       - "2010-05-13T00:00:00"
@@ -79,18 +68,29 @@ parameters:
     values:
       - "2024-08-01T00:00:00"
 
+  # valid_event_id:
+  #   values: 
+  #   - ["G0H3-201804202100", "G1H12-201704220000", "G2H12-202302261800", "G3H12-201306010000", "G4H12-202304231500"]
+    # values: ["validation_events_1"]
+  
+  valid_event_seen_id:
+    values: ["G0H3-201610140300"]
+
   date_dilation:
-    values: [500]
+    values: [1024]
 
-  # Time resolution fix 15 
-  delta_minutes:
-    values: [15]
+  device:
+    values: ["cuda:1"] # can also be "cuda:1" 
 
-  # Fixed parameters (not swept)
-  mode:
-    value: "train"
   epochs:
-    value: 1  # Reduce for faster sweeps but allow some learning
+    value: 10  # Reduce for faster sweeps but allow some learning
+
+  batch_size:
+   values: [1]
+  
+  num_workers:
+    values: [12]
+
   wandb_mode:
     value: "online"
   
@@ -98,13 +98,20 @@ parameters:
   valid_every_nth_epoch:
     value: 1
 
+  lead_times:
+    values: [120]
+
+  
+
+  # ----------------------------------------------------
+
 # Sweep settings
-name: "ionosphere-hyperparameter-sweep"
-description: "Optimize hyperparameters for ionosphere forecasting model"
+name: "ioncast-gnn-hyperparameter-sweep"
+description: "Optimize hyperparameters for ionosphere forecasting model IonCastGNN"
 
 # Early termination to save compute
-#early_terminate:
-#  type: hyperband
-#  s: 2
-#  eta: 3
-#  max_iter: 10
+early_terminate:
+  type: hyperband
+  s: 2
+  eta: 3
+  max_iter: 10

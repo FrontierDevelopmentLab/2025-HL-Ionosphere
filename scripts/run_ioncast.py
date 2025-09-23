@@ -289,7 +289,7 @@ def main():
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
     parser.add_argument('--quasidipole_dir', type=str, default='quasi_dipole', help='QuasiDipole dataset directory')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "omni", "celestrak", "set", "quasidipole"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "quasidipole", "celestrak", "omni", "set"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -311,7 +311,8 @@ def main():
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    parser.add_argument('--valid_event_id', nargs='*', default=['G0H3-201704230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
+    # parser.add_argument('--valid_event_id', nargs='*', default=['G0H3-201704230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
+    parser.add_argument('--valid_event_id', nargs='*', default=["G0H3-201804202100", "G1H12-201704220000", "G2H12-202302261800", "G3H12-201306010000", "G4H12-202304231500"], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
     parser.add_argument('--max_valid_samples', type=int, default=None, help='Maximum number of validation samples to use for evaluation')
     parser.add_argument('--test_event_id', nargs='*', default=['G0H9-202302160900'], help='Test event IDs to use for evaluation')
@@ -346,10 +347,11 @@ def main():
     parser.add_argument('--wandb_notes', type=str, default=None)
     parser.add_argument('--wandb_tags', nargs='*', default=None)
     parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
+    parser.add_argument('--wandb_residual_target_bool', type=str, choices=['True', 'False'], default=None, help='(For sweeps) Override the residual_target bool value')
 
 
     args = parser.parse_args()
-
+    
     # --- W&B setup ---
     if args.wandb_disabled:
         args.wandb_mode = 'disabled'
@@ -367,6 +369,23 @@ def main():
             mode=args.wandb_mode
         )
 
+        # Handle the sweep override of residual_target
+
+        if "wandb_residual_target_bool" in wandb_config:
+            if args.wandb_residual_target_bool == "True":
+                args.residual_target = True
+            elif args.wandb_residual_target_bool == "False":
+                args.residual_target = False
+            else:
+                raise ValueError(f"wandb_residual_target_bool must be string type 'True' or 'False', got {args.wandb_residual_target_bool} instead")
+
+        if "delta_minutes" in wandb_config:
+            # 2048 for 15 minute cadence -> interval between sequences minutes = 2048 * 15
+            # 2048 for x cadence -> interval between sequences minutes = 2048 * 15 /cadence = new_dilation  
+            target_dilation_at_15_min_cadence = wandb_config["date_dilation"]
+            args.date_dilation = int(target_dilation_at_15_min_cadence * 15 / wandb_config["delta_minutes"])
+            print(f"new args.date_dilation: {args.date_dilation}, from target_dilation_at_15_min_cadence: {target_dilation_at_15_min_cadence} and delta_minutes: {wandb_config["delta_minutes"]} should be now {int(target_dilation_at_15_min_cadence * 15 / wandb_config["delta_minutes"])}")
+    
     args_cache_affecting_keys = {'data_dir', 
                                  'jpld_dir', 
                                  'celestrak_file_name', 
@@ -415,7 +434,10 @@ def main():
     device = torch.device(args.device)
     print('Using device:', device)
 
-    dataset_constructors = { # NOTE: changed the default column value for omniweb. Gunes says to use the default parser arg for args.omniweb_columns
+    # NOTE: changed the default column value for omniweb. Gunes says to use the default parser arg for args.omniweb_columns
+    # NOTE: We investigated on 9/23/25: to change delta_minutes, we only need to worry about the delta_minutes in the Sequences dataset & not the delta_minutes in the aux datasets (hence keep FIXED_CADENCE)
+    #       We checked the values in the aux datasets of the Sequence dataset after changing delta minutes, and values aligned! (Celestrak checked)
+    dataset_constructors = { 
             'sunmoon': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=None: SunMoonGeometry(date_start=date_start_, date_end=date_end_, normalize=True, extra_time_steps=args.sun_moon_extra_time_steps), # Note: no date_exclusions and also extra_time_steps should be 1 for IonCastGNN
             'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=args.omniweb_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             # 'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
@@ -527,8 +549,8 @@ def main():
                 # dataset_omniweb_valid = OMNIWeb(dataset_omniweb_dir, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, column=args.omniweb_columns)
                 dataset_set_train = SET(dataset_set_file_name, date_start=date_start, date_end=date_end, return_as_image_size=FIXED_IMAGE_SIZE)
                 dataset_set_valid = SET(dataset_set_file_name, date_start=dataset_omniweb_valid.date_start, date_end=dataset_omniweb_valid.date_end, return_as_image_size=FIXED_IMAGE_SIZE)
-                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation)
-                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation)
+                dataset_train = Sequences(datasets=[dataset_jpld_train, dataset_sunmoon_train, dataset_celestrak_train, dataset_omniweb_train, dataset_set_train], sequence_length=training_sequence_length, dilation=args.date_dilation, delta_minutes=args.delta_minutes)
+                dataset_valid = Sequences(datasets=[dataset_jpld_valid, dataset_sunmoon_valid, dataset_celestrak_valid, dataset_omniweb_valid, dataset_set_valid], sequence_length=training_sequence_length, dilation=args.date_dilation, delta_minutes=args.delta_minutes)
 
             # Set up datasets for IonCastGNN
             elif args.model_type == 'IonCastGNN':
@@ -757,7 +779,7 @@ def main():
                                 image_size=FIXED_IMAGE_SIZE,
                                 batched=True
                             ) 
-                            
+                            # breakpoint()
                             grid_nodes = grid_nodes.to(device)
                             grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32        
 
@@ -848,15 +870,13 @@ def main():
                                 )
 
                                 grid_nodes = grid_nodes.to(device)
+                                grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32   
 
                                 # Sun-lock features
                                 if args.sunlock_features:
                                     subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
                                     subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
-                                    grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
-
-                                    grid_nodes = grid_nodes.to(device)
-                                    grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
+                                    grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)  
 
                                     grid_nodes = grid_nodes.to(device)
                                     grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
