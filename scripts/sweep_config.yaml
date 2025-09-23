@@ -80,7 +80,7 @@ parameters:
     values: [1024]
 
   device:
-    values: ["cuda:1"] # can also be "cuda:1" 
+    values: ["cuda:0"] # can also be "cuda:1" 
 
   epochs:
     value: 10  # Reduce for faster sweeps but allow some learning
