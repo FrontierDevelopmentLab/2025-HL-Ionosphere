@@ -1041,6 +1041,9 @@ if __name__ == '__main__':
 # Example
 # python run.py --data_dir /disk2-ssd-8tb/data/2025-hl-ionosphere --mode train --target_dir ./train-1 --num_workers 4 --batch_size 4 --model_type IonCastLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00 --wandb_run_name IonCastLSTM
 
+# LSTM example:
+# python run_ioncast.py --data_dir /home/jupyter/data --mode train --target_dir /home/jupyter/linnea_results/ioncastlstm-train-july-2015 --num_workers 12 --model_type IonCastLSTM --batch_size 4 --epochs 10 --learning_rate 3e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 1 --date_start 2015-07-01T00:00:00 --date_end 2015-07-02T00:00:00 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models
+
 # GraphCast examples:
 # Train
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-train-july-2015-2016-quasidipole-cache --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-3 --weight_decay 0.0 --context_window 5 --prediction_window 2 --num_evals 1 --jpld_weight 2.0 --date_start 2015-07-01T00:00:00 --date_end 2016-07-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --cache_dir /home/jupyter/halil_debug/ioncastgnn-train-july-2015-2016-quasidipole-cache/cached_data/ --wandb_run_name IonCastGNN
