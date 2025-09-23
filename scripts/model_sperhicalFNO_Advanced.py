@@ -174,7 +174,7 @@ class SphericalFourierLayer(nn.Module):
     optionally clamp tiny imaginary noise everywhere.
     """
     def __init__(self, in_channels, out_channels, modes_lat, modes_lon,
-                 use_sht: bool = False, force_real_coeffs: bool = True):
+                 use_sht: bool = True, force_real_coeffs: bool = True):
         super().__init__()
         self.in_channels  = int(in_channels)
         self.out_channels = int(out_channels)
@@ -212,13 +212,16 @@ class SphericalFourierLayer(nn.Module):
             self._isht = th.InverseRealSHT(self.H, self.W, grid="equiangular")
 
             # DH exact bandlimit for N×2N grid:
-            dh_Lmax = self.H // 2 - 1
-            Lmax = max(0, min(dh_Lmax, self.modes_lat - 1))
-            Mmax = max(0, min(Lmax,    self.modes_lon - 1))
+            # MW equiangular N×2N bandlimit:
+            Lmax_grid = self.H - 1
+            Lmax = min(self.modes_lat - 1, Lmax_grid)
+            Mmax = min(self.modes_lon - 1, Lmax)  # m ≤ l
+
             self._Ldim = self.H
             self._Mdim = self.H + 1
             self._Ls   = Lmax + 1
             self._Ms   = Mmax + 1
+
 
             # Triangular mask (ℓ >= m) over kept sub-block
             l_idx = torch.arange(self._Ls).view(self._Ls, 1)
@@ -250,7 +253,7 @@ class SphericalFourierLayer(nn.Module):
         B, C, H, W = x.shape
         x_ft = torch.fft.rfft2(x, norm="ortho")  # (B, C, H, W//2+1)
 
-        max_lat = min(self.weight_fft.shape[2], H // 2)
+        max_lat = min(self.weight_fft.shape[2], H)
         max_lon = min(self.weight_fft.shape[3], x_ft.shape[-1])
 
         x_ft_crop = x_ft[:, :, :max_lat, :max_lon]
@@ -284,80 +287,59 @@ class SphericalFourierLayer(nn.Module):
 
 
     # -------- SHT path (no in-place on views) --------
-    # -------- SHT path (no in-place on views) --------
+    
     def _sht_path(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, Cin, H, W] (real). Returns [B, Cout, H, W] (real).
-        SHT/ISHT in float64; mixing in complex64 to save memory.
-
-        Realness rules:
-        - Input maps are real -> SHT coefficients should be consistent with a real field.
-        - Enforce m=0 purely real.
-        - If self.force_real: zero ALL imaginary parts after mixing to avoid complex noise
-          from learned weights (keeps gradients, just removes imag channel).
-        """
         B, Cin, H, W = x.shape
-        assert H == self.H and W == self.W, f"Expected grid {self.H}x{self.W}, got {H}x{W}"
+        assert H == self.H and W == self.W
         dev = x.device
 
-        # Move modules & mask
+        # Modules & mask to device/dtype
         self._sht  = self._sht.to(device=dev,  dtype=torch.float64)
         self._isht = self._isht.to(device=dev, dtype=torch.float64)
         tri_mask   = self._mask_sub_tri.to(device=dev)
-
-        # SHT prefers float64; disable AMP/TF32 just for SHT/ISHT
         from contextlib import nullcontext
         autocast_ctx = torch.autocast(**self._disable_amp) if dev.type == "cuda" else nullcontext()
 
-        # --- forward SHT ---
+        # --- forward SHT (float64, complex128) ---
         with autocast_ctx:
             x64 = x.to(torch.float64)
-            x_flat = x64.reshape(B * Cin, H, W).contiguous()
-            flm_all = self._sht(x_flat)  # [B*Cin, Ldim(=H), Mdim(=H+1)] complex128
-
+            flm_all = self._sht(x64.reshape(B * Cin, H, W))  # [B*Cin, Ldim, Mdim] c128
         flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
-        flm_sub = flm_all[:, :, :self._Ls, :self._Ms]                         # [B,Cin,Ls,Ms] c128
-        flm_sub = flm_sub * tri_mask.view(1, 1, self._Ls, self._Ms)           # mask invalid m>ℓ
+        flm_sub = flm_all[:, :, :self._Ls, :self._Ms]                      # [B,Cin,Ls,Ms] c128
+        flm_sub = flm_sub * tri_mask.view(1,1,self._Ls,self._Ms)
 
-        # Cast to c64 and (optionally) drop any tiny imag residue from SHT numerics
+        # Cast to c64; optional tiny-imag clamp (hygiene only)
         flm_c = flm_sub.to(torch.complex64)
-        if self.force_real:
-            flm_c = torch.complex(flm_c.real, torch.zeros_like(flm_c.real))
+        if self.force_real:  # interpret as: "clamp tiny imag," NOT "make all real"
+            imag = flm_c.imag
+            flm_c = torch.complex(flm_c.real, imag.masked_fill(imag.abs() < 1e-7, 0.0))
 
-        # --- spectral mixing (complex) ---
-        w_cplx = torch.view_as_complex(self.weight_sht)                       # [Cin,Cout,Ls,Ms] c64
+        # --- complex spectral mixing ---
+        w_cplx = torch.view_as_complex(self.weight_sht)  # [Cin,Cout,Ls,Ms] c64
+        # keep weights complex; if you *must* be conservative, you can clamp tiny imag only:
         if self.force_real:
-            w_cplx = torch.complex(w_cplx.real, torch.zeros_like(w_cplx.real))
-        out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)              # [B,Cout,Ls,Ms] c64
+            w_im = w_cplx.imag
+            w_cplx = torch.complex(w_cplx.real, w_im.masked_fill(w_im.abs() < 1e-7, 0.0))
 
-        # Enforce m=0 purely real
-        m0_real = out_sub[..., 0].real                                        # [B,Cout,Ls]
-        m0      = torch.complex(m0_real, torch.zeros_like(m0_real))           # [B,Cout,Ls] c64
+        out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)           # [B,Cout,Ls,Ms] c64
+
+        # Enforce m=0 purely real (this is the *only* strict realness rule)
+        m0_real = out_sub[..., 0].real
+        m0      = torch.complex(m0_real, torch.zeros_like(m0_real))
         if self._Ms > 1:
             out_sub = torch.cat([m0.unsqueeze(-1), out_sub[..., 1:]], dim=-1)
         else:
             out_sub = m0.unsqueeze(-1)
 
-        # Optionally force ALL coefficients to be real (eliminate complex noise)
-        if self.force_real:
-            out_sub = torch.complex(out_sub.real, torch.zeros_like(out_sub.real))
-
-        # Embed into full coefficient grid
+        # Embed kept block via slicing (faster & safer than index_put)
         out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim,
-                               dtype=out_sub.dtype, device=dev)
-        out_full = out_full.index_put(
-            (torch.arange(B, device=dev).view(-1,1,1,1),
-             torch.arange(self.out_channels, device=dev).view(1,-1,1,1),
-             torch.arange(self._Ls, device=dev).view(1,1,-1,1),
-             torch.arange(self._Ms, device=dev).view(1,1,1,-1)),
-            out_sub * tri_mask.view(1,1,self._Ls,self._Ms),
-            accumulate=False
-        )
+                            dtype=out_sub.dtype, device=dev)
+        out_full[:, :, :self._Ls, :self._Ms] = out_sub * tri_mask
 
         # --- inverse SHT ---
         with autocast_ctx:
-            out_full_c128 = out_full.to(torch.complex128)
-            y64_flat = self._isht(out_full_c128.reshape(B * self.out_channels, self._Ldim, self._Mdim))
+            y64_flat = self._isht(out_full.to(torch.complex128).reshape(B * self.out_channels,
+                                                                        self._Ldim, self._Mdim))
         y = y64_flat.reshape(B, self.out_channels, H, W).to(dtype=x.dtype)
         return y
 
@@ -377,7 +359,7 @@ class MCDropout(nn.Dropout):
 
 class SFNOBlock(nn.Module):
     def __init__(self, width, modes_lat, modes_lon, dropout=0.0, mc_dropout=False,
-                 use_sht: bool = False, force_real_coeffs: bool = True):
+                 use_sht: bool = True, force_real_coeffs: bool = True):
         super().__init__()
         self.fourier = SphericalFourierLayer(width, width, modes_lat, modes_lon,
                                              use_sht=use_sht, force_real_coeffs=force_real_coeffs)
@@ -434,7 +416,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         n_sunlocked_heads: int = 360,
         context_window: int = 4,
         prediction_window: int = 1,
-        use_sht: bool = False,                # (6) SHT hook flag
+        use_sht: bool = True,                # (6) SHT hook flag
         area_weighted_loss: bool = False,     # (5) optional spherical area weighting
         sunlocked_chunk_size: int = 64,       # sunlcoked chunks
         force_real_coeffs: bool = True,
@@ -671,23 +653,43 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
             # Forward pass with per-pixel head selection
             out = self.forward(x_in, sl_idx)
             task = self.tasks[0]
-            if self.probabilistic:
-                pred_mu, _pred_logv = out[task]     # (B,1,H,W) each
-                yhat = pred_mu
-            else:
-                pred_mu = out[task]
-                yhat = pred_mu
 
             # Supervise JPLD/VTEC (channel 0) at t = context + step
             y_t = batch[:, self.context_window + step, 0:1, :, :]   # (B,1,H,W)
 
-            if self.area_weighted_loss:
-                # Weighted spatial average per-sample, then batch mean
-                w = self._lat_w.to(device=device)                   # (1,1,H,W)
-                spatial = ((pred_mu - y_t) ** 2 * w).sum(dim=(2,3)) / w.sum()
-                step_loss = spatial.mean()
+            if self.probabilistic:
+                # Heads output (mu, logvar)
+                pred_mu, pred_logvar = out[task]                    # (B,1,H,W) each
+                yhat = pred_mu                                      # use mean for AR update
+
+                # Clamp log-variance for numerical stability
+                pred_logvar = pred_logvar.clamp(
+                    min=float(np.log(1e-6)),
+                    max=float(np.log(1e2)),
+                )
+
+                # Per-pixel Gaussian NLL
+                perpix_nll = self.gaussian_nll_from_logvar(pred_mu, pred_logvar, y_t)  # (B,1,H,W)
+
+                if self.area_weighted_loss:
+                    # Weighted spatial average per-sample, then batch mean
+                    w = self._lat_w.to(device=device)                                   # (1,1,H,W)
+                    spatial = (perpix_nll * w).sum(dim=(2, 3)) / w.sum()
+                    step_loss = spatial.mean()
+                else:
+                    step_loss = perpix_nll.mean()
+
             else:
-                step_loss = torch.mean((pred_mu - y_t) ** 2)
+                # Deterministic path (fallback): MSE
+                pred_mu = out[task]
+                yhat = pred_mu
+
+                if self.area_weighted_loss:
+                    w = self._lat_w.to(device=device)                                   # (1,1,H,W)
+                    spatial = ((pred_mu - y_t) ** 2 * w).sum(dim=(2, 3)) / w.sum()
+                    step_loss = spatial.mean()
+                else:
+                    step_loss = torch.mean((pred_mu - y_t) ** 2)
 
             total = total + step_loss
 
@@ -695,6 +697,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
             next_frame = batch[:, self.context_window + step].clone()  # (B,Ctot,H,W)
             next_frame[:, 0:1] = yhat
             cur = next_frame
+
 
         loss = total / float(P)
         if reduction == "sum":

@@ -345,10 +345,13 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
         modes_lat = modes_lon = None
         if blocks:
             fourier = getattr(blocks[0], 'fourier', None)
+            modes_lat = modes_lon = None
             if fourier is not None:
-                w = getattr(fourier, 'weight', None)
-                if w is not None and hasattr(w, 'shape') and len(w.shape) >= 4:
-                    modes_lat, modes_lon = int(w.shape[2]), int(w.shape[3])
+                wf = getattr(fourier, 'weight_fft', None)
+                ws = getattr(fourier, 'weight_sht', None)
+                if wf is not None: modes_lat, modes_lon = int(wf.shape[2]), int(wf.shape[3])
+                elif ws is not None: modes_lat, modes_lon = int(ws.shape[2]), int(ws.shape[3])
+
         checkpoint = {
             'model': 'SphericalFourierNeuralOperatorModel',
             'epoch': epoch, 'iteration': iteration,
@@ -372,6 +375,10 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_mc_dropout': getattr(model, 'mc_dropout', False),
             'model_context_window': getattr(model, 'context_window', None),
             'model_prediction_window': getattr(model, 'prediction_window', None),
+            'model_use_sht': getattr(model, 'use_sht', True),
+            'model_force_real_coeffs': getattr(model, 'force_real_coeffs', True),
+            'model_n_sunlocked_heads': getattr(model, 'n_sunlocked_heads', 360),
+            'model_area_weighted_loss': getattr(model, 'area_weighted_loss', False),
             'model_name': 'SphericalFourierNeuralOperatorModel'
         }
     else:
@@ -443,29 +450,20 @@ def _quantize_degrees_to_heads(deg_grids: _np.ndarray, n_heads: int) -> _np.ndar
 
 
 def add_fourier_positional_encoding(x, coord_grids, n_harmonics=1, concat_original_coords=True):
-    """
-    x: (B, C, H, W)
-    coord_grids: list of arrays shaped either (H,W) or (B,H,W)
-    returns: (B, C+enc, H, W)
-    """
     B, C, H, W = x.shape
     feats = [x]
     for grid in coord_grids:
         g = torch.as_tensor(grid, dtype=torch.float32, device=x.device)
-        if g.ndim == 2:
-            g = g.unsqueeze(0).expand(B, -1, -1)
-        elif g.ndim == 3 and g.shape[0] != B:
-            g = g.expand(B, -1, -1)
-        # normalize -> angle
-        gmin, gmax = g.amin(dim=(1,2), keepdim=True), g.amax(dim=(1,2), keepdim=True)
-        gnorm = (g - gmin) / (gmax - gmin + 1e-8)
-        theta = gnorm * 2 * np.pi - np.pi
+        if g.ndim == 2: g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3 and g.shape[0] != B: g = g.expand(B, -1, -1)
+        theta = g * (np.pi / 180.0)  # degrees -> radians, stable
         if concat_original_coords:
             feats.append(theta.unsqueeze(1))
-        for k in range(1, n_harmonics + 1):
+        for k in range(1, int(n_harmonics) + 1):
             feats.append(torch.sin(k * theta).unsqueeze(1))
             feats.append(torch.cos(k * theta).unsqueeze(1))
     return torch.cat(feats, dim=1)
+
 
 def _rmse_tecu(pred, target):
     # Unnormalize via JPLD static method if available; else raw RMSE
@@ -579,6 +577,10 @@ def load_model(file_name, device):
             # windows (fallbacks keep old checkpoints working)
             context_window=checkpoint.get('model_context_window', 4),
             prediction_window=checkpoint.get('model_prediction_window', 1),
+            use_sht=checkpoint.get('model_use_sht', True),
+            force_real_coeffs=checkpoint.get('model_force_real_coeffs', True),
+            n_sunlocked_heads=checkpoint.get('model_n_sunlocked_heads', 360),
+            area_weighted_loss=checkpoint.get('model_area_weighted_loss', False),
         )
         model.name = 'SphericalFourierNeuralOperatorModel'
 
@@ -720,7 +722,7 @@ def main():
     # If this run is controlled by a W&B Sweep, let sweep params override CLI args.
     args = _apply_wandb_config_overrides(args)
 
-    # ✅ Recompute after overrides so sweeps can flip it.
+    # Recompute after overrides so sweeps can flip it.
     use_sht = (getattr(args, "spectral_backend", "sht").lower() == "sht")
 
 
