@@ -33,10 +33,10 @@ parameters:
   context_window:
     distribution: int_uniform
     min: 1
-    max: 192
+    max: 96
   
   prediction_window:
-    values: [1, 2, 3]
+    values: [1, 2]
 
   mesh_level:
     values: [4, 5, 6]
@@ -68,19 +68,19 @@ parameters:
     values:
       - "2024-08-01T00:00:00"
 
-  # valid_event_id:
-  #   values: 
-  #   - ["G0H3-201804202100", "G1H12-201704220000", "G2H12-202302261800", "G3H12-201306010000", "G4H12-202304231500"]
-    # values: ["validation_events_1"]
+  valid_event_id:
+    values: ["validation_events_1"]
+    # values: 
+    # - ["G0H3-201804202100", "G1H12-201704220000", "G2H12-202302261800", "G3H12-201306010000", "G4H12-202304231500"]
   
   valid_event_seen_id:
     values: ["G0H3-201610140300"]
 
   date_dilation:
-    values: [1024]
+    values: [2048]
 
-  device:
-    values: ["cuda:0"] # can also be "cuda:1" 
+  device: # maybe we shouldnt be setting device here? cause this way we need to create a new agent each time we sweep on a diff gpu so we cant have them communicate -> may need to talk to frank when hes available abt this
+    values: ["cuda:1"] # can also be "cuda:1" 
 
   epochs:
     value: 10  # Reduce for faster sweeps but allow some learning

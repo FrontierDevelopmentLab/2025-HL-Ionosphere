@@ -785,10 +785,23 @@ def main():
 
                             # Sun-lock features
                             if args.sunlock_features:
+                                breakpoint()
+                                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
+                                ax1.imshow(grid_nodes[0].detach().numpy(), label='geo-locked')
+                                ax1.set_title('Top Plot')
+                                ax1.legend()
+
                                 subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
                                 subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
                                 grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
+                                
+                                ax2.imshow(grid_nodes[0])
+                                ax2.set_title('sunlocked')
+                                ax2.legend()
 
+                                plt.tight_layout()
+                                
+                                plt.imsave("/home/hert7450/2025-HL-Ionosphere/tests/sunlocked.pdf")
                                 grid_nodes = grid_nodes.to(device)
                                 grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
                             

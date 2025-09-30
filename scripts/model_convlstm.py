@@ -128,7 +128,7 @@ class ConvLSTM(nn.Module):
 
 class IonCastConvLSTM(nn.Module):
     """The final model for sequence-to-sequence prediction."""
-    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4, dropout=0.25):
+    def __init__(self, input_channels=17, output_channels=17, hidden_dim=128, num_layers=6, context_window=4, prediction_window=4, dropout=0.25, name=None):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -150,6 +150,10 @@ class IonCastConvLSTM(nn.Module):
         self.final_conv = nn.Conv2d(in_channels=hidden_dim, 
                                   out_channels=output_channels, 
                                   kernel_size=(1, 1))
+
+        if name is None:
+            name = 'IonCastConvLSTM'
+        self.name = name
 
     def forward(self, x, hidden_state=None):
         # x shape: (B, T, C, H, W)

@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# APPLE!
+*.DS_Store
+
 # Distribution / packaging
 .Python
 build/
@@ -181,3 +184,5 @@ de421.bsp
 log.txt
 results/
 scripts/wandb/
+de421.bsp
+.vscode

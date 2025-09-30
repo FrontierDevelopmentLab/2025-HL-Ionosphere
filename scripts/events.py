@@ -3,6 +3,7 @@ import numpy as np
 from warnings import warn
 
 # SDOML-lite: 2010-05-13T00:00:00 - 2024-07-27T00:00:00
+# SDOML: 2010-05-13T00:12:00 - 2018-08-17T04:48:00
 
 # NOAA Space Weather Scales
 # Geomagnetic Storms
@@ -134,6 +135,39 @@ class EventCatalog():
             filtered = {k: v for k, v in filtered.items() if not (pd.to_datetime(v['date_start']) < exclusion_end and pd.to_datetime(v['date_end']) > exclusion_start)}
         return EventCatalog(filtered)
     
+    def exclude_context_overlap(self, date_exclusions, context_window_minutes):
+        """
+        Exclude events whose context window would overlap with any excluded date range.
+        
+        Args:
+            date_exclusions: List of (exclusion_start, exclusion_end) tuples where both are datetime objects
+            context_window_minutes: Number of minutes of context data needed before event start
+            
+        Returns:
+            EventCatalog: New catalog with events filtered out if their context window overlaps with exclusions
+        """
+        import datetime
+        filtered = {}
+        
+        for event_id, event in self.catalog.items():
+            event_start = pd.to_datetime(event['date_start'])
+            event_end = pd.to_datetime(event['date_end'])
+            # Calculate context window start time
+            event_context_start = event_start - datetime.timedelta(minutes=context_window_minutes)
+            
+            # Check if [event_context_start, event_end] overlaps with any excluded range
+            overlaps_with_exclusion = False
+            for exclusion_start, exclusion_end in date_exclusions:
+                # Two ranges [A1, A2] and [B1, B2] overlap if A1 < B2 AND A2 > B1
+                if event_context_start < exclusion_end and event_end > exclusion_start:
+                    overlaps_with_exclusion = True
+                    break
+            
+            if not overlaps_with_exclusion:
+                filtered[event_id] = event
+                
+        return EventCatalog(filtered)
+    
     def ids(self):
         return list(self.catalog.keys())
 
@@ -171,6 +205,23 @@ validation_events_2 = ['G0H3-201804202100',
 
 validation_events_3 = ['G0H3-201804202100',]
 
+validation_events_4 = ['G0H3-201804202100',
+                       'G0H3-201610140300',
+
+                       'G1H12-201507041800',
+                       'G1H12-201704220000',
+                       'G1H12-201310081800',
+
+                       'G2H12-201509071500',
+                       'G2H12-201605081200',
+
+                       'G3H12-201510070300',
+                       'G3H12-201207150300',
+                       'G3H12-201306010000',
+
+                       'G4H12-201203090300',
+                       'G4H12-201506221500',
+                       ]
 
 # Print the event catalog in a readable format
 if __name__ == "__main__":
