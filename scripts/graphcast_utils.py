@@ -40,7 +40,8 @@ def stack_features(
     c = []
     batch_dim = 0
     image_indices = []
-
+    feature_index = 0
+    # breakpoint()
     if batched:
         batch_dim = 1
     for i, f in enumerate(sequence_features):
@@ -71,13 +72,25 @@ def stack_features(
                  f"Current feature shape = {f.shape}") # warning added as this is a somewhat unusual shape to recieve
             f_shape = f.shape
             f = f.view(*f_shape[:-2], 1, *f_shape[-2:])
-
-            image_indices.append(i)
+            
+            image_indices.append(feature_index) # this feature will have 1 channel only as shape will be [(B), T, H, W]
+                                                # so just append the current feature index
         else:
             assert f.ndim == 4 + batch_dim and f.shape[-2:] == image_size
+            curr_f_num_channels = f.shape[1+batch_dim] # [(B), T, C, H, W] (Batch dimension is optional)
+            curr_f_image_indeces = list(range(feature_index, feature_index + curr_f_num_channels)) # all of these channels will be 
+                                                                                                   # image channels if we are in 
+                                                                                                   # this else block and pass the 
+                                                                                                   # assertion.
+            image_indices.extend(curr_f_image_indeces)
         
         c.append(f)
-
+        feature_index += f.shape[1 + batch_dim] # [(B), T, C, H, W] (Batch dimension is optional)
+                                                # add the number of channels / features in this sequence element
+                                                # feature_index essentiall keeps track of the current channel 
+                                                # index we are at. This is used to calculate the image_indices 
+                                                # (that is which channels contain image data as opposed to global 
+                                                # parameters).
     c = torch.cat(c, dim=1 + batch_dim)
     
     if not batched:
@@ -127,7 +140,7 @@ def calc_shapes_for_stack_features(seq_dataset_batch, ordered_datasets, context_
 
     return n_feats, n_channels, forcing_channels
 
-def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole_lat=None, quasidipole_lon=None, image_indices=None, latitude_lock=False):
+def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole_lat=None, quasidipole_lon=None, image_indices=None, latitude_lock=False, reverse_sunlock=False):
     """ 
     Convert stacked_features to be sunlocked. Assumes longitude-locking to the subsolar point, but can
     optionally also latitude-lock to the subsolar point and the quasdipole of the Earth (geomagnetic coordinates).
@@ -143,6 +156,7 @@ def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole
         image_indices: list of indices of image-like features in stacked_features to be sunlocked.
                        If None, all features are assumed to be image-like and will be sunlocked.
         latitude_lock: if True, also latitude-lock to the subsolar latitude
+        reverse_sunlock: if True, convert sunlocked features back to geo-locked frame (difference of a minus sign lat/lon rotations)
     ------------------------------------------------------------------------------
     Outputs:
         stacked_features: sunlocked features of shape (B, T, C, H, W)
@@ -154,9 +168,13 @@ def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole
     
     # Get shifts in pixels (float)
     lon_shifts = (subsolar_lons / 360. * stacked_features.shape[4]) + 60 # shift in pixels, (B, T)
+    if reverse_sunlock:
+        lon_shifts = -lon_shifts    
 
     if latitude_lock:
         lat_shifts = (subsolar_lats / 180. * stacked_features.shape[3]) # shift in pixels, (B, T) # TODO : Double check that the negative sign is correct for lat shift
+        if reverse_sunlock:
+            lat_shifts = -lat_shifts
 
     if image_indices is None:
         image_indices = range(stacked_features.shape[2])
@@ -176,24 +194,26 @@ def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole
             quasidipole_lat = circular_shift(quasidipole_lat, lat_shifts, dim=-2)
 
         # TODO: Map features using the quasidipole maps. notebooks/magnetic_sunlock_testing.ipynb has some code to do this, but it is slow.
-
+    # if latitude_lock:
     return stacked_features
 
 
-def get_subsolar_points(grid_nodes, timestamps, batched=True):
+def get_subsolar_points(timestamps, batched=True):
     """ 
     Calculate the subsolar point (latitude and longitude) for each timestamp in the batch.
     Inputs:
-        grid_nodes: tensor of shape (B, T, C, H, W) to get the batch size and time steps.
         timestamps: list of list of timestamps of shape (T, B) in ISO format strings.
-        batched: if True, grid_nodes has a batch dimension.
+        batched: if True, timestamps has a batch dimension.
     Outputs:
         sub_lats: tensor of shape (B, T) with the latitude of the subsolar point in degrees.
         sub_lons: tensor of shape (B, T) with the longitude of the subsolar point in degrees.
     ------------------------------------------------------------------------------
     """
-    B, T, C, H, W = grid_nodes.shape # note that even if batched=False, grid_nodes will still have a batch dimension of 1 since it is passed through stack_features already
-
+    T = len(timestamps)
+    if batched:
+        B = len(timestamps[0])
+    else:
+        B = 1
     sub_lats = torch.empty((B, T))
     sub_lons = torch.empty((B, T))
     for b_idx in range(B):

@@ -156,7 +156,8 @@ class IonCastGNN(nn.Module):
         device="cpu",
         context_window: int = 2,
         forcing_channels: Optional[Any] = None,
-        residual_target: bool = False
+        residual_target: bool = False,
+        name : Optional[str] = None,
     ):
 
         super().__init__()
@@ -213,6 +214,11 @@ class IonCastGNN(nn.Module):
         self.residual_target = residual_target # Whether the prediction target is the residual of the input grid nodes
         self.partition_size = partition_size
         self.partition_group_name = partition_group_name
+
+        # Add model.name
+        if name is None:
+            name = 'IonCastGNN'
+        self.name = name
 
         # Our parameters
         self.device = device

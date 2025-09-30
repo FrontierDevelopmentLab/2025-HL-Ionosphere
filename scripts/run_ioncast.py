@@ -12,7 +12,6 @@ from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
 import glob
-import imageio
 import shutil
 import random
 
@@ -21,9 +20,11 @@ from util import Tee
 from util import set_random_seed
 from util import md5_hash_str
 # from model_vae import VAE1
-from model_convlstm import IonCastConvLSTM 
+from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
 from model_linear import IonCastLinear
+from model_persistence import IonCastPersistence
+from model_lstmsdo import IonCastLSTMSDO
 from model_graphcast import IonCastGNN
 from graphcast_utils import stack_features, calc_shapes_for_stack_features, sunlock_features, get_subsolar_points
 from dataset_jpld import JPLD
@@ -35,7 +36,7 @@ from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb, omniweb_all_columns
 from dataset_set import SET, set_all_columns
 from dataloader_cached import CachedDataLoader
-from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4
 from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 # Set up wandb if available
@@ -49,6 +50,7 @@ FIXED_CADENCE = 15 # mins
 FIXED_IMAGE_SIZE = (180, 360) # (lat, lon)
 
 matplotlib.use('Agg')
+
 
 def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, valid_losses, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse, file_name):
     print('Saving model to {}'.format(file_name))
@@ -86,6 +88,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_context_window': model.context_window,
             'model_prediction_window': model.prediction_window,
             'model_dropout': model.dropout,
+            'model_name': model.name
         }
     elif isinstance(model, IonCastLSTM):
         checkpoint = {
@@ -109,6 +112,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_num_layers': model.num_layers,
             'model_context_window': model.context_window,
             'model_dropout': model.dropout,
+            'model_name': model.name
         }
     elif isinstance(model, IonCastLinear):
         checkpoint = {
@@ -128,6 +132,53 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_input_channels': model.input_channels,
             'model_output_channels': model.output_channels,
             'model_context_window': model.context_window,
+            'model_name': model.name
+        }
+    elif isinstance(model, IonCastPersistence):
+        checkpoint = {
+            'model': 'IonCastPersistence',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_context_window': model.context_window,
+            'model_name': model.name
+        }
+    elif isinstance(model, IonCastLSTMSDO):
+        checkpoint = {
+            'model': 'IonCastLSTMSDO',
+            'epoch': epoch,
+            'iteration': iteration,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_losses': train_losses,
+            'valid_losses': valid_losses,
+            'train_rmse_losses': train_rmse_losses,
+            'valid_rmse_losses': valid_rmse_losses,
+            'train_jpld_rmse_losses': train_jpld_rmse_losses,
+            'valid_jpld_rmse_losses': valid_jpld_rmse_losses,
+            'best_valid_rmse': best_valid_rmse,
+            'model_input_channels': model.input_channels,
+            'model_output_channels': model.output_channels,
+            'model_base_channels': model.base_channels,
+            'model_lstm_dim': model.lstm_dim,
+            'model_num_layers': model.num_layers,
+            'model_context_window': model.context_window,
+            'model_dropout': model.dropout,
+            'model_sdo_dim': model.sdo_dim,
+            'model_sdo_num_layers': model.sdo_num_layers,
+            'model_name': model.name
         }
     elif isinstance(model, (IonCastGNN, torch.nn.parallel.DistributedDataParallel)):
         if hasattr(model, "module"):
@@ -168,6 +219,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'residual_target': model.residual_target,
             'partition_size': model.partition_size,
             'partition_group_name': model.partition_group_name,
+            'model_name': model.name
         }
     else:
         raise ValueError('Unknown model type: {}'.format(model))
@@ -187,10 +239,11 @@ def load_model(file_name, device):
         model_context_window = checkpoint['model_context_window']
         model_prediction_window = checkpoint['model_prediction_window']
         model_dropout = checkpoint['model_dropout']
+        model_name = checkpoint['model_name']
         model = IonCastConvLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                                 hidden_dim=model_hidden_dim, num_layers=model_num_layers,
                                 context_window=model_context_window, prediction_window=model_prediction_window,
-                                dropout=model_dropout)
+                                dropout=model_dropout, name=model_name)
     elif checkpoint['model'] == 'IonCastLSTM':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
@@ -199,15 +252,39 @@ def load_model(file_name, device):
         model_num_layers = checkpoint['model_num_layers']
         model_context_window = checkpoint['model_context_window']
         model_dropout = checkpoint['model_dropout']
+        model_name = checkpoint['model_name']
         model = IonCastLSTM(input_channels=model_input_channels, output_channels=model_output_channels,
                             base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
-                            context_window=model_context_window, dropout=model_dropout)
+                            context_window=model_context_window, dropout=model_dropout, name=model_name)
     elif checkpoint['model'] == 'IonCastLinear':
         model_input_channels = checkpoint['model_input_channels']
         model_output_channels = checkpoint['model_output_channels']
         model_context_window = checkpoint['model_context_window']
+        model_name = checkpoint['model_name']
         model = IonCastLinear(input_channels=model_input_channels, output_channels=model_output_channels,
-                              context_window=model_context_window)
+                              context_window=model_context_window, name=model_name)
+    elif checkpoint['model'] == 'IonCastPersistence':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_context_window = checkpoint['model_context_window']
+        model_name = checkpoint['model_name']
+        model = IonCastPersistence(input_channels=model_input_channels, output_channels=model_output_channels,
+                                   context_window=model_context_window, name=model_name)
+    elif checkpoint['model'] == 'IonCastLSTMSDO':
+        model_input_channels = checkpoint['model_input_channels']
+        model_output_channels = checkpoint['model_output_channels']
+        model_base_channels = checkpoint['model_base_channels']
+        model_lstm_dim = checkpoint['model_lstm_dim']
+        model_num_layers = checkpoint['model_num_layers']
+        model_context_window = checkpoint['model_context_window']
+        model_dropout = checkpoint['model_dropout']
+        model_sdo_dim = checkpoint['model_sdo_dim']
+        model_sdo_num_layers = checkpoint['model_sdo_num_layers']
+        model_name = checkpoint['model_name']
+        model = IonCastLSTMSDO(input_channels=model_input_channels, output_channels=model_output_channels,
+                                   base_channels=model_base_channels, lstm_dim=model_lstm_dim, num_layers=model_num_layers,
+                                   context_window=model_context_window, dropout=model_dropout, sdo_dim=model_sdo_dim,
+                                   sdo_num_layers=model_sdo_num_layers, name=model_name)
     elif checkpoint["model"] == "IonCastGNN": 
         pprint.pprint(checkpoint.keys())
         mesh_level = checkpoint["mesh_level"]
@@ -232,6 +309,7 @@ def load_model(file_name, device):
                                                                    # checkpoint before residual target implemented)
         partition_size = checkpoint.get("partition_size", 1)
         partition_group_name = checkpoint.get("partition_group_name", None)
+        model_name = checkpoint['model_name'] if 'model_name' in checkpoint else None
 
         model = IonCastGNN(
             mesh_level = mesh_level,
@@ -289,6 +367,7 @@ def main():
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
     parser.add_argument('--quasidipole_dir', type=str, default='quasi_dipole', help='QuasiDipole dataset directory')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
+    parser.add_argument('--sdocore_file_name', type=str, default='sdocore/sdo_core_dataset_21504.h5', help='Name of the SDOCore dataset file')
     parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "quasidipole", "celestrak", "omni", "set"], help="additional datasets to include on top of TEC maps")
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
@@ -304,18 +383,18 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-6, help='Weight decay')
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True, help='Mode of operation: train or test')
     parser.add_argument('--eval_mode', type=str, choices=['long_horizon', 'fixed_lead_time', 'all'], default='all', help='Type of evaluation to run in test mode.')
-    parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 45, 60], help='A list of lead times in minutes for fixed-lead-time evaluation.')
-    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastGNN'], default='IonCastLSTM', help='Type of model to use')
+    parser.add_argument('--lead_times', nargs='+', type=int, default=[15, 30, 60, 90, 120], help='A list of lead times in minutes for fixed-lead-time evaluation.')
+    parser.add_argument('--model_type', type=str, choices=['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD', 'IonCastGNN'], default='IonCastLSTM', help='Type of model to use')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--device', type=str, default='cpu', help='Device')
     parser.add_argument('--num_evals', type=int, default=4, help='Number of samples for evaluation')
     parser.add_argument('--context_window', type=int, default=4, help='Context window size for the model')
     parser.add_argument('--prediction_window', type=int, default=1, help='Evaluation window size for the model')
-    # parser.add_argument('--valid_event_id', nargs='*', default=['G0H3-201704230900'], help='Validation event IDs to use for evaluation at the end of each epoch')
+    # parser.add_argument('--valid_event_id', nargs='*', default=validation_events_4, help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_id', nargs='*', default=["G0H3-201804202100", "G1H12-201704220000", "G2H12-202302261800", "G3H12-201306010000", "G4H12-202304231500"], help='Validation event IDs to use for evaluation at the end of each epoch')
     parser.add_argument('--valid_event_seen_id', nargs='*', default=None, help='Event IDs to use for evaluation at the end of each epoch, where the event was a part of the training set')
-    parser.add_argument('--max_valid_samples', type=int, default=None, help='Maximum number of validation samples to use for evaluation')
-    parser.add_argument('--test_event_id', nargs='*', default=['G0H9-202302160900'], help='Test event IDs to use for evaluation')
+    parser.add_argument('--max_valid_samples', type=int, default=1000, help='Maximum number of validation samples to use for evaluation')
+    parser.add_argument('--test_event_id', nargs='*', default=['G0H6-201706111800', 'G4H9-202303231800'], help='Test event IDs to use for evaluation')
     parser.add_argument('--forecast_max_time_steps', type=int, default=48, help='Maximum number of time steps to evaluate for each test event')
     parser.add_argument('--model_file', type=str, help='Path to the model file to load for testing')
     parser.add_argument('--sun_moon_extra_time_steps', type=int, default=0, help='Number of extra time steps ahead to include in the dataset for Sun and Moon geometry')
@@ -340,6 +419,7 @@ def main():
     parser.add_argument('--train_on_predicted_forcings', action='store_true', help='Train on predicted forcings for IonCastGNN model')
     parser.add_argument('--residual_target', action='store_true', help='Train on predicted forcings for IonCastGNN model')
     parser.add_argument('--sunlock_features', action='store_true', help='Use sun-locked features (aka shift every image by the subsolar point longitude) for IonCastGNN model')
+    parser.add_argument('--geolock_videos', action='store_true', help='Use sun-locked features (aka shift every image by the subsolar point longitude) for IonCastGNN model, but output videos in the geolocked format')
     # Weights & Biases options
     parser.add_argument('--wandb_mode', choices=['online', 'offline', 'disabled'], default='online')
     parser.add_argument('--wandb_project', type=str, default='Ionosphere')
@@ -348,7 +428,6 @@ def main():
     parser.add_argument('--wandb_tags', nargs='*', default=None)
     parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
     parser.add_argument('--wandb_residual_target_bool', type=str, choices=['True', 'False'], default=None, help='(For sweeps) Override the residual_target bool value')
-
 
     args = parser.parse_args()
     
@@ -371,7 +450,8 @@ def main():
 
         # Handle the sweep override of residual_target
 
-        if "wandb_residual_target_bool" in wandb_config:
+        # if "wandb_residual_target_bool" in wandb_config:
+        if wandb_config["wandb_residual_target_bool"] is not None:
             if args.wandb_residual_target_bool == "True":
                 args.residual_target = True
             elif args.wandb_residual_target_bool == "False":
@@ -391,7 +471,8 @@ def main():
                                  'celestrak_file_name', 
                                  'omniweb_dir', 
                                  'omniweb_columns', 
-                                 'set_file_name', 
+                                 'set_file_name',
+                                 'sdocore_file_name',
                                  'date_start', 
                                  'date_end', 
                                  'date_dilation',
@@ -426,9 +507,8 @@ def main():
 
     # Set up the target directory and log.txt (name after datetime to avoid overwriting)
     os.makedirs(args.target_dir, exist_ok=True)
-    log_file = os.path.join(args.target_dir, 'log.txt')
-    current_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    log_file = os.path.join(args.target_dir, f'log_{current_time}.txt')
+    timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    log_file = os.path.join(args.target_dir, f'log-{timestamp}.txt')
 
     set_random_seed(args.seed)
     device = torch.device(args.device)
@@ -463,6 +543,7 @@ def main():
         dataset_omniweb_dir = os.path.join(args.data_dir, args.omniweb_dir)
         dataset_qd_dir = os.path.join(args.data_dir, args.quasidipole_dir)
         dataset_set_file_name = os.path.join(args.data_dir, args.set_file_name)
+        dataset_sdocore_file_name = os.path.join(args.data_dir, args.sdocore_file_name)
 
         if args.mode == 'train':
             print('\n*** Training mode\n')
@@ -480,6 +561,7 @@ def main():
             training_sequence_length = args.context_window + args.prediction_window
             print(f'Training sequence length {training_sequence_length} = context_window {args.context_window} + prediction_window {args.prediction_window})')
             
+            datasets_sunmoon_valid = []
             datasets_jpld_valid = []
             datasets_omniweb_valid = []
 
@@ -507,6 +589,9 @@ def main():
 
                     datasets_omniweb_valid.append(OMNIWeb(dataset_omniweb_dir, date_start=exclusion_start, date_end=exclusion_end, column=args.omniweb_columns, return_as_image_size=FIXED_IMAGE_SIZE))
                     datasets_jpld_valid.append(JPLD(dataset_jpld_dir, date_start=exclusion_start, date_end=exclusion_end))
+                    datasets_sunmoon_valid.append(SunMoonGeometry(date_start=exclusion_start, date_end=exclusion_end, extra_time_steps=args.sun_moon_extra_time_steps))
+
+                    # TODO: 9/30 up to where Linnea edited IonCast
 
                     # Set up the auxiliary dataset lists (same as datasets_jpld_valid list, but for all datasets in aux_datasets)
                     for name in args.aux_datasets:
@@ -693,7 +778,8 @@ def main():
                         context_window=args.context_window,
                         forcing_channels=forcing_channels, # Forcing channels to use in the model
                         residual_target=args.residual_target,
-                        device=device
+                        device=device,
+                        name='IonCastGNN',
                     )
 
                 else:
@@ -785,23 +871,23 @@ def main():
 
                             # Sun-lock features
                             if args.sunlock_features:
-                                breakpoint()
                                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
-                                ax1.imshow(grid_nodes[0].detach().numpy(), label='geo-locked')
-                                ax1.set_title('Top Plot')
+                                ax1.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
+                                ax1.set_title('geo-locked')
                                 ax1.legend()
 
-                                subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
+                                subsolar_lats, subsolar_lons = get_subsolar_points(batch[-1], batched=True)
                                 subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
                                 grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
                                 
-                                ax2.imshow(grid_nodes[0])
+                                ax2.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
                                 ax2.set_title('sunlocked')
                                 ax2.legend()
 
-                                plt.tight_layout()
-                                
-                                plt.imsave("/home/hert7450/2025-HL-Ionosphere/tests/sunlocked.pdf")
+                                # plt.tight_layout()
+                                plt.savefig("/home/hert7450/2025-HL-Ionosphere/tests/sunlocked.pdf", bbox_inches='tight')
+
+
                                 grid_nodes = grid_nodes.to(device)
                                 grid_nodes = grid_nodes.float() # Ensure the grid nodes are in float32     
                             
@@ -887,7 +973,7 @@ def main():
 
                                 # Sun-lock features
                                 if args.sunlock_features:
-                                    subsolar_lats, subsolar_lons = get_subsolar_points(grid_nodes, batch[-1])
+                                    subsolar_lats, subsolar_lons = get_subsolar_points(batch[-1], batched=True)
                                     subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
                                     grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)  
 
@@ -1313,8 +1399,17 @@ if __name__ == '__main__':
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode test --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-dilation256_Aug22_context96_test --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:0 --model_file /home/jupyter/halil_debug/ioncastgnn-fulldataset-dilation256_Aug22_context96/epoch-06-model.pth --lead_times 60 120 --residual_target --wandb_run_name IonCastGNN --test_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500
 
 # Sun locked run (add --sunlock_features flag)
-# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock-dilation256 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target -max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked --sunlock_features --date_dilation 256
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 4 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 4 --device cuda:0 --valid_event_id G0H3-201704230900 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 64000 --wandb_run_name IonCastGNN_sunlocked --sunlock_features
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 4 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 4 --device cuda:0 --valid_event_id G0H3-201704230900 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 512 --wandb_run_name IonCastGNN_sunlocked --sunlock_features
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-bigdilation-residual --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500 --valid_every_nth_epoch 2 --save_all_models --wandb_run_name IonCastGNN --date_dilation 64 --residual_target --valid_event_seen_id G0H3-201704230900 --lead_times 60 120
 
 # Most recent run for neurips (also did residual run, changing lr to 3e-4 for that one)
 # python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/linnea_results/ioncastgnn-train-fulldataset-bigdilation-residual --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 5 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 5 --device cuda:0 --valid_event_id G0H3-201804202100 G2H12-201509071500 G4H12-202304231500 G2H12-201509071500 --valid_every_nth_epoch 2 --save_all_models --wandb_run_name IonCastGNN --date_dilation 64 --residual_target --valid_event_seen_id G0H3-201704230900 --lead_times 60 120
+
+
+# October 1st 00:38 UK time
+# sunlocked train (redidual) + (non-geolocked plots)
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock-dilation256-nogeolock-Oct-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:1 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --residual_target --max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked --sunlock_features --date_dilation 256 --lead_times 180
+
+# sunlocked train (non-redidual) + (geolocked plots)
+# python run_ioncast.py --data_dir /home/jupyter/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /home/jupyter/halil_debug/ioncastgnn-fulldataset-sunlock-dilation256-nonresidual-geolock-Oct-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 96 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --device cuda:0 --valid_event_id validation_events_1 --valid_every_nth_epoch 1 --save_all_models --max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked --sunlock_features --date_dilation 256 --lead_times 180 --geolock_videos

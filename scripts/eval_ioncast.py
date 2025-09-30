@@ -21,6 +21,7 @@ except ImportError:
 from dataset_jpld import JPLD
 from model_convlstm import IonCastConvLSTM
 from model_lstm import IonCastLSTM
+from model_lstmsdo import IonCastLSTMSDO
 from model_graphcast import IonCastGNN
 from graphcast_utils import stack_features, sunlock_features, get_subsolar_points
 
@@ -196,24 +197,21 @@ def save_gim_video_comparison(gim_sequence_top, gim_sequence_bottom, file_name, 
 
 
 def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verbose, args):
-    if hasattr(model, "module"):
+    if not isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        if not model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLSTMSDO', 'IonCastLSTM-ablation-JPLD', 'IonCastLSTM-ablation-JPLDSunMoon', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD', 'IonCastGNN']:
+            raise ValueError('Model must be one of IonCastConvLSTM, IonCastLSTM or IonCastLSTMSDO or IonCastLSTM-ablation-JPLD or IonCastLSTM-ablation-JPLDSunMoon or IonCastLinear-ablation-JPLD or IonCastPersistence-ablation-JPLD or IonCastGNN or torch.nn.parallel.DistributedDataParallel')
+    else:
         model = model.module
-        
-    if not isinstance(model, (IonCastConvLSTM)) and not isinstance(model, IonCastLSTM) and not isinstance(model, IonCastGNN) and not isinstance(model, torch.nn.parallel.DistributedDataParallel):
-        raise ValueError('Model must be an instance of IonCastConvLSTM or IonCastLSTM or IonCastGNN')
+        model.name = 'IonCastGNN'
     if date_start > date_end:
-        raise ValueError('date_start must be before date_end')
-    # if hasattr(model, "module"):
-    #     if date_forecast_start - datetime.timedelta(minutes=model.module.context_window * args.delta_minutes) < date_start:
-    #         raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
-    # else:
+        raise ValueError(f'date_start ({date_start}) must be before date_end ({date_end})')
     if date_forecast_start - datetime.timedelta(minutes=model.context_window * args.delta_minutes) < date_start:
-        raise ValueError('date_forecast_start must be at least context_window * delta_minutes after date_start')
+        raise ValueError(f'date_forecast_start ({date_forecast_start}) must be at least context_window ({args.context_window}) * delta_minutes ({args.delta_minutes}) after date_start ({date_start})')
     if date_forecast_start >= date_end:
-        raise ValueError('date_forecast_start must be before date_end')
+        raise ValueError(f'date_forecast_start ({date_forecast_start}) must be before date_end ({date_end})')
     # date_forecast_start must be an integer multiple of args.delta_minutes from date_start
     if (date_forecast_start - date_start).total_seconds() % (args.delta_minutes * 60) != 0:
-        raise ValueError('date_forecast_start must be an integer multiple of args.delta_minutes from date_start')
+        raise ValueError(f'date_forecast_start ({date_forecast_start}) must be an integer multiple of args.delta_minutes ({args.delta_minutes}) from date_start ({date_start})')
 
     if verbose:
         print('Context start date : {}'.format(date_start))
@@ -238,14 +236,21 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
     if verbose:
         print(f'Sequence length    : {sequence_length} ({sequence_forecast_start_index} context + {sequence_prediction_window} forecast)')
 
-    sequence_data = dataset.get_sequence_data(sequence_dates)
-
-    if isinstance(model, (IonCastConvLSTM)) or isinstance(model, IonCastLSTM):
-        device = next(model.parameters()).device
-        # The lines up until the concat is handled directly through graphcast_utils.stack_features
+    if model.name in ['IonCastLSTM', 'IonCastConvLSTM', 'IonCastLinear']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
         jpld_seq_data = sequence_data[0]  # Original data
         sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
         celestrak_seq_data = sequence_data[2]  # CelesTrak data
+        
+        # Handle device detection for models with no parameters (like persistence)
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            # Model has no parameters, try buffers or default to CPU
+            try:
+                device = next(model.buffers()).device
+            except StopIteration:
+                device = torch.device('cpu')
         jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
         sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
         celestrak_seq_data = celestrak_seq_data.to(device) # sequence_length, channels, 180, 360
@@ -259,9 +264,81 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
         combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
         combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        
+        # Handle device detection for models with no parameters (like persistence)
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            # Model has no parameters, try buffers or default to CPU
+            try:
+                device = next(model.buffers()).device
+            except StopIteration:
+                device = torch.device('cpu')
+        
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+
+        combined_seq_data = jpld_seq_data
+
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
+    elif model.name in ['IonCastLSTM-ablation-JPLDSunMoon']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        
+        # Handle device detection for models with no parameters (like persistence)
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            # Model has no parameters, try buffers or default to CPU
+            try:
+                device = next(model.buffers()).device
+            except StopIteration:
+                device = torch.device('cpu')
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
+
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)        
+    
+    elif model.name in ['IonCastLSTMSDO']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+        jpld_seq_data = sequence_data[0]  # Original data
+        sunmoon_seq_data = sequence_data[1]  # Sun and Moon geometry data
+        sdo_seq_data = sequence_data[2]  # SDO context data
+        
+        # Handle device detection for models with no parameters (like persistence)
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            # Model has no parameters, try buffers or default to CPU
+            try:
+                device = next(model.buffers()).device
+            except StopIteration:
+                device = torch.device('cpu')
+        jpld_seq_data = jpld_seq_data.to(device) # sequence_length, channels, 180, 360
+        sunmoon_seq_data = sunmoon_seq_data.to(device) # sequence_length, channels, 180, 360
+        sdo_seq_data = sdo_seq_data.to(device) # sequence_length, sdo_latent_dim
+
+        combined_seq_data = torch.cat((jpld_seq_data, sunmoon_seq_data), dim=1)  # Combine along the channel dimension
+        combined_seq_data_context = combined_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+        combined_seq_data_original = combined_seq_data[sequence_forecast_start_index:]  # Original data for forecast
+
+        sdo_seq_data_context = sdo_seq_data[:sequence_forecast_start_index]  # Context data for forecast
+
+        combined_seq_data_forecast = model.predict(combined_seq_data_context.unsqueeze(0), sdo_seq_data_context.unsqueeze(0), prediction_window=sequence_prediction_window).squeeze(0)
    
     
-    if isinstance(model, IonCastGNN):
+    elif model.name in ['IonCastGNN']:
+        sequence_data = dataset.get_sequence_data(sequence_dates)
+
         # Stack features will convert the sequence_dataset to output shape (B, T, C, H, W)
         timestamps = sequence_data[-1] # Get the timestamp list
         sequence_data = sequence_data[:-1] # Remove timestamp list from sequence_data
@@ -271,7 +348,7 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32 
 
         if args.sunlock_features:
-            subsolar_lats, subsolar_lons = get_subsolar_points(combined_seq_batch, timestamps, batched=False)
+            subsolar_lats, subsolar_lons = get_subsolar_points(timestamps, batched=False)
             subsolar_lats, subsolar_lons = subsolar_lats.to(model.device), subsolar_lons.to(model.device)
             combined_seq_batch = sunlock_features(combined_seq_batch, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
 
@@ -296,18 +373,44 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
                 train=False # Use ground truth forcings for t+1
             )
 
+        # Reverse sunlock if args.geolocked_videos
+        if args.sunlock_features and args.geolock_videos:
+            combined_seq_batch = sunlock_features(
+                combined_seq_batch,
+                subsolar_lats, 
+                subsolar_lons, 
+                image_indices=image_indices, 
+                latitude_lock=False, 
+                reverse_sunlock=True
+                )
+            
+            combined_forecast = sunlock_features(
+                combined_forecast,
+                subsolar_lats, 
+                subsolar_lons, 
+                image_indices=image_indices, 
+                latitude_lock=False, 
+                reverse_sunlock=True
+                )
+
+            combined_seq_batch = combined_seq_batch.to(model.device)
+            combined_seq_batch = combined_seq_batch.float() # Ensure the grid nodes are in float32
+            
         combined_seq_data_original = combined_seq_batch[0, sequence_forecast_start_index:, :, :, :]  # Original data for forecast
         combined_seq_data_forecast = combined_forecast[0, sequence_forecast_start_index:, :, :, :]  # Forecast data for forecast
         combined_seq_data = combined_seq_batch[0, :, :, :, :]  # All data for the sequence
 
+    else:
+        raise ValueError(f'Model not supported for forecasting: {model.name}')
 
     jpld_forecast = combined_seq_data_forecast[:, 0]  # Extract JPLD channels from the forecast
     jpld_original = combined_seq_data_original[:, 0]
 
     jpld_original_unnormalized = JPLD.unnormalize(jpld_original) # [T, H, W]
-    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 140)
+    jpld_forecast_unnormalized = JPLD.unnormalize(jpld_forecast).clamp(0, 300)
 
     return jpld_forecast, jpld_original, jpld_forecast_unnormalized, jpld_original_unnormalized, combined_seq_data_original, combined_seq_data_forecast, sequence_start_date, sequence_forecast_dates, sequence_prediction_window
+
 
 def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
     """
@@ -367,6 +470,7 @@ def plot_scatter_with_hist(gt, pred, file_name, max_points=3000, title=None):
     plt.savefig(file_name, dpi=150, bbox_inches='tight')
     plt.close()
 
+
 def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_scatter, args):
     if event_id not in event_catalog:
         raise ValueError('Event ID {} not found in EventCatalog'.format(event_id))
@@ -378,7 +482,6 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
     print('\n* Forecasting (Long Horizon)')
     print('Event ID           : {}'.format(event_id))
     date_start = event_start - datetime.timedelta(minutes=args.context_window * args.delta_minutes)
-
     date_forecast_start = event_start
     date_end = event_end
     file_name = f'{file_name_prefix}-long-horizon-event-{event_id}.mp4'
@@ -472,7 +575,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
         pred_flat = jpld_forecast_unnormalized.cpu().numpy().flatten()
         
         plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, title=fig_title)
-
+    
     if save_numpy:
         # Save the numpy arrays for the main JPLD channel
         numpy_file_original = file_name.replace('.mp4', '-original.npy')
@@ -483,6 +586,7 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
         
         print(f'Saved original frames to {numpy_file_original}')
         print(f'Saved forecast frames to {numpy_file_forecast}')
+    
     return jpld_rmse, jpld_mae, jpld_unnormalized_rmse, jpld_unnormalized_mae, jpld_unnormalized_rmse_low_lat, jpld_unnormalized_rmse_mid_lat, jpld_unnormalized_rmse_high_lat
 
 
@@ -648,6 +752,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
     #     writer = csv.writer(f)
     #     writer.writerow(['lead_time_minutes', 'mean_rmse_tecu', 'std_rmse_tecu', 'mean_mae_tecu', 'std_mae_tecu', 'num_samples'])
     #     writer.writerows(csv_data)
+
     # Per-event plot generation disabled - metrics will be aggregated across all events
     
     # --- Save Videos if Requested ---
@@ -670,7 +775,7 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
             #fig_title = title + f' - RMSE: {jpld_unnormalized_rmse:.2f} TECU - MAE: {jpld_unnormalized_mae:.2f} TECU'
             mean_rmse = np.mean(lead_time_errors[lt]['rmse'])
             mean_mae = np.mean(lead_time_errors[lt]['mae'])
-            fig_title = f"Event: {event_id} - Kp={max_kp} - RMSE: {mean_rmse:.2f} TECU - MAE: {mean_mae:.2f} TECU"
+            fig_title = f"Event: {event_id} - Kp={max_kp:.2f} - RMSE: {mean_rmse:.2f} TECU - MAE: {mean_mae:.2f} TECU"
 
             save_gim_video_comparison(
                 gim_sequence_top=np.array(original_frames),
@@ -691,7 +796,6 @@ def eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, lead_
                 pred_flat = np.array(forecast_frames).flatten()
                 
                 plot_scatter_with_hist(gt_flat, pred_flat, scatter_file_name, title=fig_title)
-
     
     # --- Save NumPy arrays if Requested ---
     if save_numpy:
@@ -1071,7 +1175,7 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
     
     ax1.set_xlabel('Lead Time (minutes)')
     ax1.set_ylabel('RMSE (TECU)')
-    ax1.legend()
+    # ax1.legend()
     ax1.grid(True, alpha=0.3)
     
     # Plot MAE
@@ -1082,7 +1186,7 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
     
     ax2.set_xlabel('Lead Time (minutes)')
     ax2.set_ylabel('MAE (TECU)')
-    ax2.legend()
+    # ax2.legend()
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -1104,7 +1208,6 @@ def aggregate_and_plot_fixed_lead_time_metrics(all_lead_time_errors, all_event_i
             print(f"Warning: Could not upload plot {plot_name}: {e}")
     
     plt.close()
-
     # Save aggregated metrics to CSV file
     csv_file_name = file_name_prefix + '-fixed-lead-time-metrics.csv'
     print(f'Saving aggregated fixed-lead-time metrics to {csv_file_name}')
