@@ -178,9 +178,12 @@ def sunlock_features(stacked_features, subsolar_lats, subsolar_lons, quasidipole
 
     if image_indices is None:
         image_indices = range(stacked_features.shape[2])
-
-    # Shift each image feature by the subsolar longitude
-    stacked_features[:, :, image_indices] = circular_shift(stacked_features[:, :, image_indices], lon_shifts, dim=-1)
+    try:
+        # Shift each image feature by the subsolar longitude
+        stacked_features[:, :, image_indices] = circular_shift(stacked_features[:, :, image_indices], lon_shifts, dim=-1)
+    except IndexError:
+        print("Re-Entering sunlock_features")
+        breakpoint()
     # If latitude_lock is True, shift each image feature by the subsolar latitude
     if latitude_lock:
         stacked_features[:, :, image_indices] = circular_shift(stacked_features[:, :, image_indices], lat_shifts, dim=-2)
@@ -264,13 +267,24 @@ def circular_shift(batch, shift, dim=-1):
     # Broadcast shift to shape [B, T, 1, 1, 1] (or appropriate)
     shift_shape = [B, T] + [1] * (batch.ndim - 2)
     shift = shift.view(*shift_shape)
-    shifted_indices = (indices + shift) % n  # shape [B, T, 1, 1, n] (if dim=-1)
+    shifted_indices = ((indices + shift) % n)  # shape [B, T, 1, 1, n] (if dim=-1) 
     
     # as the shifts can and will be floats (subpixel shifting), i0 and i1 are the floor and ciel fo the shift 
     # eg if shift = 3.2, i0 = 3, i1 = 4
-    i0 = torch.floor(shifted_indices).long()
+    i0 = torch.floor(shifted_indices.clamp(0, n-1)).long() # NOTE: This final clamp is necessary since shfited_indices is torch.float32 type, 
+                                                           # so in very rare cases (for a very small negative value) the %n operation in the 
+                                                           # shifted_indcices calculation leads to a 360. value present in shifted_indices which 
+                                                           # when you take the floor and convert to long here, stays as 360 (n=360) so we get an
+                                                           # out of bounds error. This bug occured when (indices + shift) contained the value 
+                                                           # (-1.5259e-05, device='cuda:0') which then got mapped to 360. after the %n operation.
+                                                           # in reality, -1.5259e-05 % n = 359.999984741 which should map to 359 when floored
     i1 = (i0 + 1) % n
     frac = shifted_indices - i0 # frac is the subpixel amount to shift so if shift = 3.2, frac = 0.2
+
+    if (i0.min() < 0 or i0.max() >= n or i1.min() < 0 or i1.max() >= n):
+        print("Invalid indices", i0.min().item(), i0.max().item(), "n =", n)
+        breakpoint()
+        raise IndexError("Index Error")
 
     # Prepare gather indices
     # Expand i0/i1 to match batch shape
@@ -281,9 +295,12 @@ def circular_shift(batch, shift, dim=-1):
     frac = frac.expand(*expand_shape)
 
     # Gather along the shifting dimension
-    img_i0 = torch.gather(batch, dim, i0) # the image(s) shifted by i0 pixels
-    img_i1 = torch.gather(batch, dim, i1) # the image(s) shifted by i1 pixels
-
+    try:
+        img_i0 = torch.gather(batch, dim, i0) # the image(s) shifted by i0 pixels
+        img_i1 = torch.gather(batch, dim, i1) # the image(s) shifted by i1 pixels
+    except:
+        print("Reached Runtime Error enterring breakpoint")
+        breakpoint()
     # this produces a weighted average between the two integer shifts weighted by the subpixel shift (frac)
     # so its a linear interpolation between the two integer shifts to get the subpixel shift.
     shifted = (1 - frac) * img_i0 + frac * img_i1 
