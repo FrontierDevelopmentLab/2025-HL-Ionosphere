@@ -80,37 +80,23 @@ def _to_batched_grid(grid, B, device):
         g = g.expand(B, -1, -1)                     # broadcast batch if needed
     return g                                         # (B,H,W)
 
-def add_fourier_positional_encoding(
-    x,                       # (B, C, H, W)
-    coord_grids,             # list of (H,W) or (B,H,W) arrays/tensors
-    n_harmonics: int = 1,
-    concat_original_coords: bool = True,
-):
-    """
-    Robust PE builder that supports batched grids.
-    For each grid 'g', we map it to angle theta in [-pi, pi], then append:
-      - (optional) theta
-      - sin(k*theta), cos(k*theta) for k = 1..n_harmonics
-    Returns: (B, C + added, H, W)
-    """
+def add_fourier_positional_encoding(x, coord_grids, n_harmonics: int = 1, concat_original_coords: bool = True):
     B, C, H, W = x.shape
     device = x.device
     feats = [x]
-
     for grid in coord_grids:
-        g = _to_batched_grid(grid, B=B, device=device)          # (B,H,W)
-        # normalize each batch sample to [-pi, pi]
-        gmin = g.amin(dim=(1, 2), keepdim=True)
-        gmax = g.amax(dim=(1, 2), keepdim=True)
-        theta = (g - gmin) / (gmax - gmin + 1e-8)
-        theta = theta * (2 * np.pi) - np.pi                      # (B,H,W) in [-pi,pi]
+        g = torch.as_tensor(grid, dtype=torch.float32, device=device)
+        if g.ndim == 2:
+            g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3 and g.shape[0] != B:
+            g = g.expand(B, -1, -1)
+        theta = g * (np.pi / 180.0)  # degrees -> radians (fixed)
         if concat_original_coords:
-            feats.append(theta.unsqueeze(1))                     # (B,1,H,W)
+            feats.append(theta.unsqueeze(1))
         for k in range(1, int(n_harmonics) + 1):
-            feats.append(torch.sin(k * theta).unsqueeze(1))      # (B,1,H,W)
-            feats.append(torch.cos(k * theta).unsqueeze(1))      # (B,1,H,W)
-
-    return torch.cat(feats, dim=1)                               # (B, C+enc, H, W)
+            feats.append(torch.sin(k * theta).unsqueeze(1))
+            feats.append(torch.cos(k * theta).unsqueeze(1))
+    return torch.cat(feats, dim=1)
 
 def _build_step_coord_grids(B, H, W, step_times, n_heads: int):
     """

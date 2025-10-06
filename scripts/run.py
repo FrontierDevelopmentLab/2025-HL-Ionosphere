@@ -1236,6 +1236,8 @@ def main():
                 if (not args.no_valid) and ((epoch + 1) % args.valid_every_nth_epoch == 0):
                     print('*** Validation')
                     model.eval()
+                    if hasattr(model, "set_mc_dropout"):
+                        model.set_mc_dropout(False)
                     valid_loss = 0.0
                     valid_rmse_loss = 0.0
                     valid_jpld_rmse_loss = 0.0
