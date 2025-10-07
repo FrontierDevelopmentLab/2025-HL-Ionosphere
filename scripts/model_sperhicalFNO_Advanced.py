@@ -80,23 +80,47 @@ def _to_batched_grid(grid, B, device):
         g = g.expand(B, -1, -1)                     # broadcast batch if needed
     return g                                         # (B,H,W)
 
-def add_fourier_positional_encoding(x, coord_grids, n_harmonics: int = 1, concat_original_coords: bool = True):
+def add_fourier_positional_encoding(
+    x,
+    coord_grids,
+    n_harmonics: int = 1,
+    concat_original_coords: bool = False,
+    concat_flags=None,
+):
+    """
+    Seam-safe PE:
+      - Use sin/cos for periodic angles (lon, QD lon, sun-locked deg) -> NO raw channel
+      - Optionally keep raw for non-periodic coords (lat, QD lat)
+    Args:
+      x: (B,C,H,W)
+      coord_grids: list of (B,H,W) or (H,W) arrays in *degrees*
+      concat_flags: list[bool] same length as coord_grids; True -> also append raw angle (radians)
+    """
+    import numpy as _np
     B, C, H, W = x.shape
-    device = x.device
+    dev = x.device
     feats = [x]
-    for grid in coord_grids:
-        g = torch.as_tensor(grid, dtype=torch.float32, device=device)
-        if g.ndim == 2:
-            g = g.unsqueeze(0).expand(B, -1, -1)
-        elif g.ndim == 3 and g.shape[0] != B:
-            g = g.expand(B, -1, -1)
-        theta = g * (np.pi / 180.0)  # degrees -> radians (fixed)
-        if concat_original_coords:
+
+    if concat_flags is None:
+        concat_flags = [concat_original_coords] * len(coord_grids)
+
+    for grid, use_raw in zip(coord_grids, concat_flags):
+        g = torch.as_tensor(grid, dtype=torch.float32, device=dev)
+        if g.ndim == 2: g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3 and g.shape[0] != B: g = g.expand(B, -1, -1)
+        theta = g * (_np.pi / 180.0)  # degrees -> radians
+
+        # Append raw only if requested (avoid seams for periodic coords!)
+        if use_raw:
             feats.append(theta.unsqueeze(1))
+
+        # Always append harmonics
         for k in range(1, int(n_harmonics) + 1):
             feats.append(torch.sin(k * theta).unsqueeze(1))
             feats.append(torch.cos(k * theta).unsqueeze(1))
+
     return torch.cat(feats, dim=1)
+
 
 def _build_step_coord_grids(B, H, W, step_times, n_heads: int):
     """
@@ -406,6 +430,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         area_weighted_loss: bool = False,     # (5) optional spherical area weighting
         sunlocked_chunk_size: int = 64,       # sunlcoked chunks
         force_real_coeffs: bool = True,
+        
     ):
         super().__init__()
         self.trunk_width = trunk_width
@@ -420,6 +445,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.area_weighted_loss = bool(area_weighted_loss)
         self.sunlocked_chunk_size = int(max(1, min(n_sunlocked_heads, sunlocked_chunk_size)))
         self.force_real_coeffs = bool(force_real_coeffs)
+        self.output_blur_sigma = 0.0
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)
@@ -457,14 +483,33 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         for b in self.blocks:
             b.set_mc_dropout(mc)
 
-    def forward(self, x, sunlocked_lon_grid, aux=None):
+    def _circular_delta(self, a, b, n):
+        # minimal signed distance on circle of size n
+        d = (a - b + n / 2) % n - n / 2
+        return d
+
+    def _blur_mu(self, t):
+        # depthwise 3x3 Gaussian (sigma≈0.85) on μ only; disabled if sigma==0
+        if not (self.output_blur_sigma and self.output_blur_sigma > 0):
+            return t
+        import math, torch.nn.functional as F
+        s = float(self.output_blur_sigma)
+        # isotropic 3x3 gaussian kernel parametrized by sigma s
+        xs = torch.tensor([-1.0, 0.0, 1.0], device=t.device, dtype=t.dtype)
+        g1d = torch.exp(-0.5 * (xs / s)**2)
+        g1d = g1d / g1d.sum()
+        k2d = (g1d[:, None] * g1d[None, :]).unsqueeze(0).unsqueeze(0)  # (1,1,3,3)
+        ch = t.shape[1]
+        k = k2d.repeat(ch, 1, 1, 1)
+        return F.conv2d(t, k, padding=1, groups=ch)
+
+
+    def forward(self, x: torch.Tensor, sunlocked_lon_grid, aux=None, sunlocked_deg=None, head_blend_sigma: float = 0.5):
         """
-        x: (B, in_channels, H, W)  [one frame + PE]
-        sunlocked_lon_grid: (B,H,W) long indices in [0, n_sunlocked_heads-1]
-        Vectorized sun-locked head selection:
-        - compute 1×1 conv for many heads at once (chunked),
-        - gather the correct head per pixel,
-        - no Python loops over heads or batch.
+        sunlocked_lon_grid: (B,H,W) integer indices [0..n_heads-1]
+        sunlocked_deg: (B,H,W) degrees in [0,360); used for soft circular blending.
+                    If None, integer indices are used as centers.
+        head_blend_sigma: gaussian sigma in *head-index* units (0.5 ~ blend nearest 2-3 heads)
         """
         import torch.nn.functional as F
 
@@ -473,76 +518,77 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         for block in self.blocks:
             x = block(x)
 
-        # optional aux
         if self.aux_proj is not None and aux is not None:
-            aux_emb = self.aux_proj(aux).unsqueeze(-1).unsqueeze(-1)  # (B,Wc,1,1)
+            aux_emb = self.aux_proj(aux).unsqueeze(-1).unsqueeze(-1)
             x = x + aux_emb
 
         B, Wc, H, W = x.shape
         device, dtype = x.device, x.dtype
 
-        # normalize/expand indices
+        # indices / centers
         if not torch.is_tensor(sunlocked_lon_grid):
             sunlocked_lon_grid = torch.tensor(sunlocked_lon_grid, device=device)
         if sunlocked_lon_grid.dim() == 2:
             sunlocked_lon_grid = sunlocked_lon_grid.unsqueeze(0).expand(B, -1, -1)
         sl_idx = sunlocked_lon_grid.to(dtype=torch.long).clamp_(0, self.n_sunlocked_heads - 1)  # (B,H,W)
 
+        if sunlocked_deg is not None:
+            if not torch.is_tensor(sunlocked_deg):
+                sunlocked_deg = torch.tensor(sunlocked_deg, dtype=torch.float32, device=device)
+            if sunlocked_deg.dim() == 2:
+                sunlocked_deg = sunlocked_deg.unsqueeze(0).expand(B, -1, -1)
+            head_center = (sunlocked_deg * (self.n_sunlocked_heads / 360.0)).to(dtype=torch.float32)  # (B,H,W)
+        else:
+            head_center = sl_idx.to(torch.float32)
+
         outs = {}
+        eps = 1e-12
+
         for task in self.tasks:
             out_dim_per_step = self.frame_channels[task]
             out_channels = out_dim_per_step * (2 if self.probabilistic else 1)
 
-            # ---- stack all head params for this task (keeps grads) ----
-            heads = self.heads[task]  # ModuleList of Conv2d (1×1)
-            # weights: (n_heads, out_ch, in_ch, 1, 1) -> (n_heads*out_ch, in_ch, 1,1)
+            heads = self.heads[task]
             w_full = torch.stack([h.weight for h in heads], dim=0).to(device=device, dtype=dtype)
             w_full = w_full.view(self.n_sunlocked_heads * out_channels, Wc, 1, 1)
-            # bias: (n_heads*out_ch,)
-            if heads[0].bias is None:
-                b_full = torch.zeros(self.n_sunlocked_heads * out_channels, device=device, dtype=dtype)
-            else:
-                b_full = torch.cat([h.bias.to(device=device, dtype=dtype) for h in heads], dim=0)
+            b_full = (torch.cat([h.bias.to(device=device, dtype=dtype) for h in heads], dim=0)
+                    if heads[0].bias is not None else torch.zeros(self.n_sunlocked_heads * out_channels, device=device, dtype=dtype))
 
-            # output buffer
+            # accumulate weighted sum across chunks
             selected = torch.zeros(B, out_channels, H, W, device=device, dtype=dtype)
+            wsum     = torch.zeros(B, 1,          H, W, device=device, dtype=dtype)
 
-            # chunk over heads to cap memory
             csz = int(self.sunlocked_chunk_size)
             for h0 in range(0, self.n_sunlocked_heads, csz):
                 h1 = min(self.n_sunlocked_heads, h0 + csz)
-                c = h1 - h0  # heads in this chunk
+                c  = h1 - h0
 
-                # slice weights/bias for this chunk and convolve once
-                w_chunk = w_full[h0 * out_channels : h1 * out_channels]                 # (c*out_ch, Wc, 1, 1)
-                b_chunk = b_full[h0 * out_channels : h1 * out_channels]                 # (c*out_ch,)
-                y_chunk = F.conv2d(x, w_chunk, b_chunk)                                 # (B, c*out_ch, H, W)
-                y_chunk = y_chunk.view(B, c, out_channels, H, W)                        # (B, c, out_ch, H, W)
+                # conv for this chunk of heads -> (B, c*out_ch, H, W) -> (B, c, out_ch, H, W)
+                w_chunk = w_full[h0 * out_channels : h1 * out_channels]
+                b_chunk = b_full[h0 * out_channels : h1 * out_channels]
+                y_chunk = F.conv2d(x, w_chunk, b_chunk).view(B, c, out_channels, H, W)
 
-                # for this chunk, where do indices land?
-                idx_rel = sl_idx - h0                                                   # (B,H,W), in [-, c-1]
-                mask = (idx_rel >= 0) & (idx_rel < c)                                   # (B,H,W) for positions owned by this chunk
-                if not mask.any().item():
-                    continue
+                # circular gaussian weights per-pixel for these head ids
+                head_ids = torch.arange(h0, h1, device=device, dtype=torch.float32).view(1, c, 1, 1)
+                d = self._circular_delta(head_ids, head_center.unsqueeze(1), self.n_sunlocked_heads)  # (B,c,H,W)
+                sigma = float(max(1e-6, head_blend_sigma))
+                w_chunk_pix = torch.exp(-0.5 * (d / sigma) ** 2).unsqueeze(2)  # (B,c,1,H,W)
 
-                # gather the chosen head within this chunk
-                # index shape must match input except for dim=1 (head dim)
-                idx_rel_clamped = idx_rel.clamp_(0, c - 1)
-                idx_g = idx_rel_clamped.unsqueeze(1).unsqueeze(2).expand(B, 1, out_channels, H, W)
-                picked = y_chunk.gather(dim=1, index=idx_g).squeeze(1)                  # (B, out_ch, H, W)
+                # weighted accumulation
+                selected = selected + (y_chunk * w_chunk_pix).sum(dim=1)        # sum over heads in chunk
+                wsum     = wsum     + w_chunk_pix.sum(dim=1)                    # (B,1,H,W)
 
-                # write only where this chunk owns the pixel
-                m = mask.unsqueeze(1)                                                   # (B,1,H,W) -> broadcast over channels
-                selected = torch.where(m, picked, selected)
+            selected = selected / (wsum + eps)
 
-            # package result
             if self.probabilistic:
                 mu, logvar = torch.split(selected, out_dim_per_step, dim=1)
+                mu = self._blur_mu(mu)  # optional tiny smooth on μ only
                 outs[task] = (mu, logvar)
             else:
-                outs[task] = selected
+                outs[task] = self._blur_mu(selected)
 
         return outs
+
 
 
     @staticmethod
@@ -634,10 +680,15 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
                 ]
 
             # Build one-frame input + PE
-            x_in = add_fourier_positional_encoding(cur, coord_grids, n_harmonics=n_harmonics, concat_original_coords=True)  # (B,in_channels,H,W)
+            # coord_grids = [lat, lon, qd_lat, qd_lon, sunlocked_deg]
+            concat_flags = [True,  False,  True,    False,  False]  # raw only for non-periodic
+            x_in = add_fourier_positional_encoding(
+                cur, coord_grids, n_harmonics=n_harmonics, concat_original_coords=False, concat_flags=concat_flags
+)
+
 
             # Forward pass with per-pixel head selection
-            out = self.forward(x_in, sl_idx)
+            out = self.forward(x_in, sl_idx, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=0.5)
             task = self.tasks[0]
 
             # Supervise JPLD/VTEC (channel 0) at t = context + step
@@ -758,9 +809,14 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
                 ]
 
             # One-frame + PE, constant channel count
-            x_in = add_fourier_positional_encoding(cur, coord_grids, n_harmonics=n_harmonics, concat_original_coords=True)
+            # coord_grids = [lat, lon, qd_lat, qd_lon, sunlocked_deg]
+            concat_flags = [True,  False,  True,    False,  False]  # raw only for non-periodic
+            x_in = add_fourier_positional_encoding(
+                cur, coord_grids, n_harmonics=n_harmonics, concat_original_coords=False, concat_flags=concat_flags
+            )
 
-            out = self.forward(x_in, sl_idx, aux=aux)
+
+            out = self.forward(x_in, sl_idx, aux=aux, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=0.5)
             task = self.tasks[0]
             if self.probabilistic:
                 yhat = out[task][0]                           # (B,1,H,W)

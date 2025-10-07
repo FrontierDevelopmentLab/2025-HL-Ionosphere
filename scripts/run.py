@@ -449,20 +449,47 @@ def _quantize_degrees_to_heads(deg_grids: _np.ndarray, n_heads: int) -> _np.ndar
 
 
 
-def add_fourier_positional_encoding(x, coord_grids, n_harmonics=1, concat_original_coords=True):
+def add_fourier_positional_encoding(
+    x,
+    coord_grids,
+    n_harmonics: int = 1,
+    concat_original_coords: bool = False,
+    concat_flags=None,
+):
+    """
+    Seam-safe PE:
+      - Use sin/cos for periodic angles (lon, QD lon, sun-locked deg) -> NO raw channel
+      - Optionally keep raw for non-periodic coords (lat, QD lat)
+    Args:
+      x: (B,C,H,W)
+      coord_grids: list of (B,H,W) or (H,W) arrays in *degrees*
+      concat_flags: list[bool] same length as coord_grids; True -> also append raw angle (radians)
+    """
+    import numpy as _np
     B, C, H, W = x.shape
+    dev = x.device
     feats = [x]
-    for grid in coord_grids:
-        g = torch.as_tensor(grid, dtype=torch.float32, device=x.device)
+
+    if concat_flags is None:
+        concat_flags = [concat_original_coords] * len(coord_grids)
+
+    for grid, use_raw in zip(coord_grids, concat_flags):
+        g = torch.as_tensor(grid, dtype=torch.float32, device=dev)
         if g.ndim == 2: g = g.unsqueeze(0).expand(B, -1, -1)
         elif g.ndim == 3 and g.shape[0] != B: g = g.expand(B, -1, -1)
-        theta = g * (np.pi / 180.0)  # degrees -> radians, stable
-        if concat_original_coords:
+        theta = g * (_np.pi / 180.0)  # degrees -> radians
+
+        # Append raw only if requested (avoid seams for periodic coords!)
+        if use_raw:
             feats.append(theta.unsqueeze(1))
+
+        # Always append harmonics
         for k in range(1, int(n_harmonics) + 1):
             feats.append(torch.sin(k * theta).unsqueeze(1))
             feats.append(torch.cos(k * theta).unsqueeze(1))
+
     return torch.cat(feats, dim=1)
+
 
 
 def _rmse_tecu(pred, target):
@@ -923,6 +950,8 @@ def main():
                 model_file = model_files[-1]
                 print('Resuming training from model file: {}'.format(model_file))
                 model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse = load_model(model_file, device)
+                if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
+                    model.output_blur_sigma = 0.85
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
@@ -1027,6 +1056,8 @@ def main():
                         area_weighted_loss=getattr(args, "area_weighted_loss", False),
                     )
                     model.name = "SphericalFourierNeuralOperatorModel"
+                    #below adds a little smoothing of μ (3×3 Gaussian)
+                    model.output_blur_sigma = 0.85
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -1154,7 +1185,13 @@ def main():
                                 sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
 
 
-                                out = model(x_input, sunlocked_idx)
+                                out = model(
+                                    x_input,
+                                    sunlocked_idx,
+                                    sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
+                                    head_blend_sigma=0.5,  # try 0.35–0.6; 0.5 is a good start
+                                )
+
                                 if isinstance(out, dict) and 'vtec' in out:
                                     pred, logvar = out['vtec']             # (B,1,H,W) each
                                     yhat = pred
@@ -1316,7 +1353,13 @@ def main():
                                     sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
                                     sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
 
-                                    out = model(x_input, sunlocked_idx)
+                                    out = model(
+                                        x_input,
+                                        sunlocked_idx,
+                                        sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
+                                        head_blend_sigma=0.5,  # try 0.35–0.6; 0.5 is a good start
+                                    )
+
                                     if isinstance(out, dict) and 'vtec' in out:
                                         pred, logvar = out['vtec']
                                         yhat = pred
@@ -1625,6 +1668,8 @@ def main():
                 
                 print(f'Loading model from {args.model_file}')
                 model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
+                if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
+                    model.output_blur_sigma = 0.85
                 model.eval()
                 model = model.to(device)
             
