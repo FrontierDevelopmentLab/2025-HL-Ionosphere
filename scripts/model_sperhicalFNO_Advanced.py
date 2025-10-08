@@ -2,6 +2,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 import numpy as np
 import datetime as _dt
 
@@ -430,6 +431,10 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         area_weighted_loss: bool = False,     # (5) optional spherical area weighting
         sunlocked_chunk_size: int = 64,       # sunlcoked chunks
         force_real_coeffs: bool = True,
+        head_smooth_reg: float = 0.0,        # L2 between neighboring heads
+        lon_tv_reg: float = 0.0,             # TV/L2 in longitude on μ
+        lon_highfreq_reg: float = 0.0,       # RFFT high-k penalty on μ
+        lon_highfreq_kmin: int = 72,         # start damping from this k (W=360 => ~5°)
         
     ):
         super().__init__()
@@ -446,6 +451,10 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.sunlocked_chunk_size = int(max(1, min(n_sunlocked_heads, sunlocked_chunk_size)))
         self.force_real_coeffs = bool(force_real_coeffs)
         self.output_blur_sigma = 0.0
+        self.head_smooth_reg   = float(head_smooth_reg)
+        self.lon_tv_reg        = float(lon_tv_reg)
+        self.lon_highfreq_reg  = float(lon_highfreq_reg)
+        self.lon_highfreq_kmin = int(lon_highfreq_kmin)
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)
@@ -502,6 +511,44 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         ch = t.shape[1]
         k = k2d.repeat(ch, 1, 1, 1)
         return F.conv2d(t, k, padding=1, groups=ch)
+
+    def _head_smoothness_penalty(self):
+        pen = xcount = 0.0
+        for t in self.tasks:
+            hs = self.heads[t]
+            n  = len(hs)
+            if n <= 1:
+                continue
+            for j in range(n):
+                a = hs[j]; b = hs[(j + 1) % n]
+                pen += F.mse_loss(a.weight, b.weight)
+                if (a.bias is not None) and (b.bias is not None):
+                    pen += F.mse_loss(a.bias, b.bias)
+                xcount += 1.0
+        return pen / (xcount + 1e-12)
+    
+    def _lon_tv_penalty(self, mu):
+        # mu: (B,1,H,W) or (B,C,H,W); circular L2 TV along W (longitude)
+        if mu is None or self.lon_tv_reg <= 0:
+            return mu.new_zeros(())
+        dif_main = mu[..., 1:] - mu[..., :-1]            # (..., W-1)
+        dif_wrap = mu[..., :1] - mu[..., -1:]            # (..., 1) wrap W-1 -> 0
+        dif = torch.cat([dif_main, dif_wrap], dim=-1)    # (..., W)
+        return dif.pow(2).mean()
+
+    def _lon_highfreq_penalty(self, mu):
+        # penalize energy in RFFT bins >= kmin (along W axis)
+        if mu is None or self.lon_highfreq_reg <= 0:
+            return mu.new_zeros(())
+        x = mu.float()
+        ft = torch.fft.rfft(mu, dim=-1)     # (..., W//2+1) complex
+        kmin = max(0, min(self.lon_highfreq_kmin, ft.shape[-1]-1))
+        if kmin == 0:
+            hi = ft
+        else:
+            hi = ft[..., kmin:]
+        return (hi.abs().pow(2).mean())
+
 
 
     def forward(self, x: torch.Tensor, sunlocked_lon_grid, aux=None, sunlocked_deg=None, head_blend_sigma: float = 0.5):
@@ -715,6 +762,15 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
                     step_loss = spatial.mean()
                 else:
                     step_loss = perpix_nll.mean()
+
+                 # --- anti-stripe regularizers ---
+                if self.head_smooth_reg > 0.0:
+                    step_loss = step_loss + self.head_smooth_reg * self._head_smoothness_penalty()
+                if self.lon_tv_reg > 0.0:
+                    step_loss = step_loss + self.lon_tv_reg * self._lon_tv_penalty(pred_mu)
+                if self.lon_highfreq_reg > 0.0:
+                    step_loss = step_loss + self.lon_highfreq_reg * self._lon_highfreq_penalty(pred_mu)
+
 
             else:
                 # Deterministic path (fallback): MSE

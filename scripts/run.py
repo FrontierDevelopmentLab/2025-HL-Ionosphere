@@ -391,6 +391,11 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_force_real_coeffs': getattr(model, 'force_real_coeffs', True),
             'model_n_sunlocked_heads': getattr(model, 'n_sunlocked_heads', 360),
             'model_area_weighted_loss': getattr(model, 'area_weighted_loss', False),
+            'model_head_smooth_reg': getattr(model, 'head_smooth_reg', 0.0),
+            'model_lon_tv_reg': getattr(model, 'lon_tv_reg', 0.0),
+            'model_lon_highfreq_reg': getattr(model, 'lon_highfreq_reg', 0.0),
+            'model_lon_highfreq_kmin': getattr(model, 'lon_highfreq_kmin', 72),
+
             'model_name': 'SphericalFourierNeuralOperatorModel'
         }
     else:
@@ -685,6 +690,10 @@ def load_model(file_name, device):
             force_real_coeffs=checkpoint.get('model_force_real_coeffs', True),
             n_sunlocked_heads=checkpoint.get('model_n_sunlocked_heads', 360),
             area_weighted_loss=checkpoint.get('model_area_weighted_loss', False),
+            head_smooth_reg=checkpoint.get('model_head_smooth_reg', 0.0),
+            lon_tv_reg=checkpoint.get('model_lon_tv_reg', 0.0),
+            lon_highfreq_reg=checkpoint.get('model_lon_highfreq_reg', 0.0),
+            lon_highfreq_kmin=checkpoint.get('model_lon_highfreq_kmin', 72),            
         )
         model.name = 'SphericalFourierNeuralOperatorModel'
 
@@ -771,6 +780,13 @@ def main():
     parser.add_argument('--sfno_modes_lon', type=int, default=64)
     parser.add_argument('--n_sunlocked_heads', type=int, default=360)
     parser.add_argument('--area_weighted_loss', action='store_true', help='Enable area-weighted loss in SFNO')
+
+    parser.add_argument('--head_blend_sigma', type=float, default=2.0,
+                    help='Gaussian sigma in head-index units for sun-locked blending')
+    parser.add_argument('--head_smooth_reg', type=float, default=1e-4)
+    parser.add_argument('--lon_tv_reg', type=float, default=5e-6)
+    parser.add_argument('--lon_highfreq_reg', type=float, default=0.0)
+    parser.add_argument('--lon_highfreq_kmin', type=int, default=72)
 
     # --- Spectral backend selection ---
     parser.add_argument(
@@ -1168,10 +1184,14 @@ def main():
                         prediction_window=args.prediction_window,
                         use_sht=use_sht,                              # <-- IMPORTANT: rFFT vs SHT
                         area_weighted_loss=getattr(args, "area_weighted_loss", False),
+                        head_smooth_reg=args.head_smooth_reg,
+                        lon_tv_reg=args.lon_tv_reg,
+                        lon_highfreq_reg=args.lon_highfreq_reg,
+                        lon_highfreq_kmin=args.lon_highfreq_kmin,
                     )
                     model.name = "SphericalFourierNeuralOperatorModel"
                     #below adds a little smoothing of μ (3×3 Gaussian)
-                    model.output_blur_sigma = 0.85
+                    model.output_blur_sigma = 1.2
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -1293,7 +1313,7 @@ def main():
                                         x_input,
                                         sunlocked_idx,
                                         sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
-                                        head_blend_sigma=0.5,
+                                        head_blend_sigma=args.head_blend_sigma,
                                     )
 
                                     if isinstance(out, dict) and 'vtec' in out:
@@ -1318,6 +1338,15 @@ def main():
                                         )
                                     else:
                                         loss_step = torch.mean((pred - y_t) ** 2)
+
+                                    # --- anti-stripe / vertical-noise regularizers ---
+                                    if getattr(model, 'head_smooth_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.head_smooth_reg * model._head_smoothness_penalty()
+                                    if getattr(model, 'lon_tv_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.lon_tv_reg * model._lon_tv_penalty(pred)
+                                    if getattr(model, 'lon_highfreq_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.lon_highfreq_reg * model._lon_highfreq_penalty(pred)
+
 
                                     total_loss = total_loss + loss_step
                                     rmse_steps.append(_rmse_tecu(
@@ -1464,7 +1493,7 @@ def main():
                                         x_input,
                                         sunlocked_idx,
                                         sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
-                                        head_blend_sigma=0.5,  # try 0.35–0.6; 0.5 is a good start
+                                        head_blend_sigma=args.head_blend_sigma,
                                     )
 
                                     if isinstance(out, dict) and 'vtec' in out:
@@ -1489,6 +1518,15 @@ def main():
                                         )
                                     else:
                                         loss_step = torch.mean((pred - y_t) ** 2)
+
+                                    # --- anti-stripe / vertical-noise regularizers ---
+                                    if getattr(model, 'head_smooth_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.head_smooth_reg * model._head_smoothness_penalty()
+                                    if getattr(model, 'lon_tv_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.lon_tv_reg * model._lon_tv_penalty(pred)
+                                    if getattr(model, 'lon_highfreq_reg', 0.0) > 0.0:
+                                        loss_step = loss_step + model.lon_highfreq_reg * model._lon_highfreq_penalty(pred)
+
 
                                     total_loss = total_loss + loss_step
                                     rmse_steps.append(_rmse_tecu(pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t))
