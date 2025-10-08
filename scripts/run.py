@@ -5,7 +5,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, SubsetRandomSampler
 import contextlib
-from torch import amp
+from torch import amp as torch_amp
 
 # --- GPU fast-math + autotune (A100) ---
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -875,6 +875,9 @@ def main():
     device = torch.device(args.device)
 
     use_amp = bool(getattr(args, "amp", False)) and (device.type == "cuda")
+    # before the training loop, after you compute use_amp
+    dcast = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
     use_channels_last = bool(getattr(args, "channels_last", False)) and (device.type == "cuda")
 
     print(f"AMP enabled: {use_amp}")
@@ -1208,7 +1211,8 @@ def main():
                         batch = _move_batch_to_device(batch, device, channels_last=use_channels_last)
 
                         # STEP 5: choose AMP context (bfloat16 on CUDA) or a no-op context
-                        amp_ctx = amp.autocast(dtype=torch.bfloat16) if use_amp else contextlib.nullcontext()
+                        amp_ctx = torch_amp.autocast('cuda', dtype=dcast) if use_amp else contextlib.nullcontext()
+
 
                         with amp_ctx:
                             # ---- compute loss exactly once (no duplicate branch) ----
