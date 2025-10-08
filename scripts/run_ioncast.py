@@ -726,6 +726,7 @@ def main():
 
             # check if a previous training run exists in the target directory, if so, find the latest model file saved, resume training from there by loading the model instead of creating a new one
             model_files = glob.glob(f'{args.target_dir}/epoch-*-model.pth')
+            # breakpoint()
             if len(model_files) > 0:
                 model_files.sort()
                 model_file = model_files[-1]
@@ -785,6 +786,19 @@ def main():
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
                 
+                # Set up optimizer and initialize loss # (This was previously outsidfe of this else block, overwriting everything we were loading when resuming training, )
+                optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
+                iteration = 0
+                epoch_start = 0
+                train_losses = []
+                valid_losses = []
+                train_rmse_losses = []
+                valid_rmse_losses = []
+                train_jpld_rmse_losses = []
+                valid_jpld_rmse_losses = []
+                best_valid_rmse = float('inf')
+                
             print(f"model device: {next(model.parameters()).device}")
             model = model.to(device)
 
@@ -802,18 +816,6 @@ def main():
                         static_graph=True,
                     )
 
-            # Set up optimizer and initialize loss
-            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
-            iteration = 0
-            epoch_start = 0
-            train_losses = []
-            valid_losses = []
-            train_rmse_losses = []
-            valid_rmse_losses = []
-            train_jpld_rmse_losses = []
-            valid_jpld_rmse_losses = []
-            best_valid_rmse = float('inf')
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -871,21 +873,21 @@ def main():
 
                             # Sun-lock features
                             if args.sunlock_features:
-                                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
-                                ax1.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
-                                ax1.set_title('geo-locked')
-                                ax1.legend()
+                                # fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
+                                # ax1.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
+                                # ax1.set_title('geo-locked')
+                                # ax1.legend()
 
                                 subsolar_lats, subsolar_lons = get_subsolar_points(batch[-1], batched=True)
                                 subsolar_lats, subsolar_lons = subsolar_lats.to(device), subsolar_lons.to(device)
                                 grid_nodes = sunlock_features(grid_nodes, subsolar_lats, subsolar_lons, image_indices=image_indices, latitude_lock=False)
                                 
-                                ax2.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
-                                ax2.set_title('sunlocked')
-                                ax2.legend()
+                                # ax2.imshow(grid_nodes[0,0,0].cpu().detach().numpy())
+                                # ax2.set_title('sunlocked')
+                                # ax2.legend()
 
                                 # plt.tight_layout()
-                                plt.savefig("/home/hert7450/2025-HL-Ionosphere/tests/sunlocked.pdf", bbox_inches='tight')
+                                # plt.savefig("/home/hert7450/2025-HL-Ionosphere/tests/sunlocked.pdf", bbox_inches='tight')
 
 
                                 grid_nodes = grid_nodes.to(device)

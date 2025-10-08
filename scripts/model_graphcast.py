@@ -267,7 +267,7 @@ class IonCastGNN(nn.Module):
         output_grid = self.graph_cast(input_grid) # shape of output_grid is [B, C, H, W]
 
         B, C, H, W = output_grid.shape
-        output_grid = output_grid.permute(0, 2, 3, 1).reshape(-1, C)  # shape: [B*H*W, C] (done to pass through final linnear layer)
+        output_grid = output_grid.permute(0, 2, 3, 1).reshape(-1, C)  # shape: [B*H*W, C] (done to pass through final linear layer)
 
         # Pass through the final linear layer to allow negative values
         output_grid = self.final_linear(output_grid)  # shape: [B*H*W, C_out]
