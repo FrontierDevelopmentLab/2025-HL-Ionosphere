@@ -4,6 +4,18 @@ import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, SubsetRandomSampler
+import contextlib
+from torch import amp
+
+# --- GPU fast-math + autotune (A100) ---
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+try:
+    torch.set_float32_matmul_precision('high')
+except Exception:
+    pass
+
 
 from tqdm import tqdm
 
@@ -385,48 +397,113 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
         raise ValueError('Unknown model type: {}'.format(model))
     torch.save(checkpoint, file_name)
 
+def _move_batch_to_device(batch, device, channels_last=False):
+    def _cast(t):
+        if not torch.is_tensor(t):
+            return t
+        t = t.to(device, non_blocking=True)
+        if channels_last and t.dim() == 4:
+            t = t.contiguous(memory_format=torch.channels_last)
+        return t
+    if isinstance(batch, (list, tuple)):
+        return type(batch)(_cast(x) for x in batch)
+    if isinstance(batch, dict):
+        return {k: _cast(v) for k, v in batch.items()}
+    return _cast(batch)
 
 
 # ================= SFNO helper utilities =================
 
 def _safe_time_at(times_obj, b, idx):
-    """Get a datetime for sample b at sequence idx from a batch-provided time container."""
-    def _to_dt(x):
-        if isinstance(x, datetime.datetime):
-            return x
-        if isinstance(x, str):
-            return datetime.datetime.fromisoformat(x)
-        return datetime.datetime.fromisoformat(str(x))
+    """
+    Robustly fetch a datetime for sample b at sequence idx from a batch 'times' container.
+    Handles shapes like [B][T], [T][B], [B], [T], tensors/ndarrays, and even stringified lists.
+    """
+    import datetime as _dt
     try:
-        tb = times_obj[b]
+        import numpy as _np, torch as _torch
     except Exception:
-        tb = times_obj
+        _np = None; _torch = None
+
+    def _to_dt(x):
+        # already a datetime
+        if isinstance(x, _dt.datetime):
+            return x
+
+        # bytes -> str
+        if isinstance(x, (bytes, bytearray)):
+            x = x.decode("utf-8")
+
+        # tensors / ndarrays
+        if (_torch is not None and isinstance(x, _torch.Tensor)) or (_np is not None and isinstance(x, _np.ndarray)):
+            # scalar
+            if getattr(x, "ndim", 0) == 0:
+                return _to_dt(x.item())
+            # fall back to first element
+            return _to_dt(x.tolist())
+
+        # lists / tuples -> prefer idx if available, else first
+        if isinstance(x, (list, tuple)):
+            if not x:
+                raise ValueError("empty time container")
+            j = 0 if not isinstance(idx, int) else min(idx, len(x) - 1)
+            return _to_dt(x[j])
+
+        # strings (possibly a stringified list)
+        s = str(x)
+        if s.startswith("[") and s.endswith("]"):
+            # pick the first item inside the list representation
+            inner = s[1:-1].strip()
+            if inner:
+                first = inner.split(",")[0].strip().strip("'").strip('"')
+                return _dt.datetime.fromisoformat(first)
+        return _dt.datetime.fromisoformat(s)
+
+    # Try common container layouts in order of likelihood
     try:
-        import torch as _torch, numpy as _np
-        if isinstance(tb, (_torch.Tensor, _np.ndarray)):
-            if tb.ndim == 0: return _to_dt(tb.item())
-            if tb.ndim == 1: return _to_dt(tb[min(idx, tb.shape[0]-1)])
-            if tb.ndim == 2: return _to_dt(tb[0, min(idx, tb.shape[1]-1)])
+        return _to_dt(times_obj[b][min(idx, len(times_obj[b]) - 1)])
     except Exception:
         pass
-    if isinstance(tb, (list, tuple)):
-        return _to_dt(tb[min(idx, len(tb)-1)])
-    return _to_dt(tb)
+    try:
+        return _to_dt(times_obj[min(idx, len(times_obj) - 1)][b])
+    except Exception:
+        pass
+    try:
+        return _to_dt(times_obj[b])
+    except Exception:
+        pass
+    return _to_dt(times_obj)
+
 
 def ensure_grid(tensor, target_channels, H=180, W=360):
-    """Reshape/expand (B,S,C[,H,W]) to (B,S,target_channels,H,W) if needed."""
     while tensor.dim() > 3 and tensor.shape[-1] == 1 and tensor.shape[-2] == 1:
         tensor = tensor.squeeze(-1).squeeze(-1)
     if tensor.dim() == 3:
         tensor = tensor.unsqueeze(-1).unsqueeze(-1)
-    if tensor.shape[2] != target_channels:
-        assert tensor.shape[2] >= target_channels, f"Input channels {tensor.shape[2]} < target {target_channels}"
+
+    C = tensor.shape[2]
+    if C < target_channels:
+        pad = torch.zeros(tensor.shape[0], tensor.shape[1],
+                          target_channels - C, tensor.shape[-2], tensor.shape[-1],
+                          dtype=tensor.dtype, device=tensor.device)
+        tensor = torch.cat([tensor, pad], dim=2)
+    elif C > target_channels:
         tensor = tensor[:, :, :target_channels, :, :]
-    return tensor.expand(-1, -1, target_channels, H, W)
+
+    # expand H/W if they’re singleton
+    if tensor.shape[-2] == 1 and H != 1: tensor = tensor.expand(-1, -1, -1, H, tensor.shape[-1])
+    if tensor.shape[-1] == 1 and W != 1: tensor = tensor.expand(-1, -1, -1, -1, W)
+    return tensor
 
 # Grids and positional encodings
-_lat_grid = np.load('lat_grid.npy')   # (180, 360)
-_lon_grid = np.load('lon_grid.npy')   # (180, 360)
+_lat_grid = _lon_grid = None
+
+def _get_latlon_grids():
+    global _lat_grid, _lon_grid
+    if _lat_grid is None or _lon_grid is None:
+        _lat_grid = np.load('lat_grid.npy')   # (180, 360)
+        _lon_grid = np.load('lon_grid.npy')
+    return _lat_grid, _lon_grid
 
 def _load_qd_grid_for_year(year):
     """Return QD grids if available, else gracefully fall back to geographic lat/lon."""
@@ -616,6 +693,8 @@ def load_model(file_name, device):
 
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
+
+
     optimizer = optim.Adam(model.parameters())
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']
@@ -709,6 +788,15 @@ def main():
     parser.add_argument('--mc_dropout', action=argparse.BooleanOptionalAction, default=True,
                         help='Enable/disable MC dropout in SFNO (default: enabled)')
 
+    # Mixed-precision + memory format
+    parser.add_argument('--amp', action=argparse.BooleanOptionalAction, default=True,
+                        help='Enable bfloat16 autocast on CUDA (safe with A100)')
+    parser.add_argument('--channels_last', action=argparse.BooleanOptionalAction, default=True,
+                        help='Use NHWC (channels_last) tensors for faster convs')
+
+    # Throttle per-iteration logging to reduce CPU/IPC overhead
+    parser.add_argument('--log_every', type=int, default=50,
+                        help='Log/refresh rate (iterations). Higher -> less overhead')
 
 
 
@@ -786,11 +874,22 @@ def main():
     set_random_seed(args.seed)
     device = torch.device(args.device)
 
+    use_amp = bool(getattr(args, "amp", False)) and (device.type == "cuda")
+    use_channels_last = bool(getattr(args, "channels_last", False)) and (device.type == "cuda")
+
+    print(f"AMP enabled: {use_amp}")
+    print(f"Channels-last enabled: {use_channels_last}")
+
+    global _lat_grid, _lon_grid
+    _lat_grid, _lon_grid = _get_latlon_grids()
+
     with Tee(log_file):
         print(description)
         print('Log file:', log_file)
         print('Arguments:\n{}'.format(' '.join(sys.argv[1:])))
         print('Config:')
+        print(f"AMP enabled: {use_amp}")
+        print(f"Channels-last enabled: {use_channels_last}")
         pprint.pprint(vars(args), depth=2, width=50)
 
         start_time = datetime.datetime.now()
@@ -924,9 +1023,17 @@ def main():
                                                 name='valid_loader')
             else:
                 # No on-disk caching
-                common_kwargs = dict(batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True)
+                common_kwargs = dict(batch_size=args.batch_size,
+                                    num_workers=args.num_workers,
+                                    pin_memory=True)
                 if args.num_workers > 0:
                     common_kwargs.update(persistent_workers=True, prefetch_factor=4)
+                # Prefer GPU-pinned page tables when available (PyTorch 2.1+)
+                if torch.cuda.is_available() and args.device.startswith('cuda'):
+                    try:
+                        common_kwargs['pin_memory_device'] = 'cuda'
+                    except TypeError:
+                        pass  # older torch
 
                 train_loader = DataLoader(dataset_train, shuffle=True, **common_kwargs)
 
@@ -940,6 +1047,7 @@ def main():
                     valid_loader = DataLoader(dataset_valid, sampler=sampler, **vl_kwargs)
                 else:
                     valid_loader = DataLoader(dataset_valid, shuffle=False, **common_kwargs)
+
 
             print()
 
@@ -1033,7 +1141,10 @@ def main():
                         np.stack(qd_lon_list, axis=0),
                         sunlocked_grids,
                     ]
-                    x_input = add_fourier_positional_encoding(x_last, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+                    PE_FLAGS = [True, False, True, False, False]   # lat, lon, qd_lat, qd_lon, sunlocked
+                    x_input = add_fourier_positional_encoding(
+                        x_last, coord_grids, n_harmonics=args.n_harmonics, concat_flags=PE_FLAGS
+                    )
                     in_channels = x_input.shape[1]
                     print(f"[SFNO] Derived in_channels={in_channels}")
                     # Instantiate SFNO (tweak hyperparams as you like)
@@ -1075,6 +1186,8 @@ def main():
                 best_valid_rmse = float('inf')
 
                 model = model.to(device)
+
+
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             if wandb is not None and args.wandb_mode != 'disabled':
                 wandb.watch(model, log="all", log_freq=100)
@@ -1086,166 +1199,150 @@ def main():
                 # Training
                 model.train()
                 with tqdm(total=len(train_loader)) as pbar:
+
                     for i, batch in enumerate(train_loader):
-                        # a = 1/0
-                        optimizer.zero_grad()
+                        # Zero grads up-front (slightly faster with set_to_none)
+                        optimizer.zero_grad(set_to_none=True)
 
-                        # if args.model_type == 'VAE1':
-                        #     jpld, _ = batch
-                        #     jpld = jpld.to(device)
+                        # STEP 6: move the whole batch to device once (and set channels_last on 4D tensors)
+                        batch = _move_batch_to_device(batch, device, channels_last=use_channels_last)
 
-                        #     loss = model.loss(jpld)
-                        if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
-                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
-                            jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
-                            celestrak_seq = celestrak_seq.to(device)
-                            omniweb_seq = omniweb_seq.to(device)
-                            set_seq = set_seq.to(device)
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
-                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                        # STEP 5: choose AMP context (bfloat16 on CUDA) or a no-op context
+                        amp_ctx = amp.autocast(dtype=torch.bfloat16) if use_amp else contextlib.nullcontext()
 
-                        elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
-                            jpld_seq, _ = batch
-                            jpld_seq = jpld_seq.to(device)
-                            loss, rmse_t, jpld_rmse_t = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
+                        with amp_ctx:
+                            # ---- compute loss exactly once (no duplicate branch) ----
+                            if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear']:
+                                jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, _ = batch
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
-                        elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
-                            jpld_seq, sunmoon_seq, _ = batch
-                            jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
-                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
+                            elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
+                                jpld_seq, _ = batch
+                                loss, rmse_t, jpld_rmse_t = model.loss(jpld_seq, jpld_weight=args.jpld_weight)
 
-                        elif model.name == 'IonCastLSTMSDO':
-                            jpld_seq, sunmoon_seq, sdo_seq, _ = batch
-                            jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)  
-                            sdo_seq = sdo_seq.to(device)
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
-                            sdo_context = sdo_seq[:, :args.context_window, :]
-                            loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
+                            elif model.name == 'IonCastLSTM-ablation-JPLDSunMoon':
+                                jpld_seq, sunmoon_seq, _ = batch
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, jpld_weight=args.jpld_weight)
 
-                        elif args.model_type == 'SphericalFourierNeuralOperatorModel':
-                            jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
-                            jpld_seq = jpld_seq.to(device)
-                            sunmoon_seq = sunmoon_seq.to(device)
-                            celestrak_seq = celestrak_seq.to(device)
-                            omniweb_seq = omniweb_seq.to(device)
-                            set_seq = set_seq.to(device)
+                            elif model.name == 'IonCastLSTMSDO':
+                                jpld_seq, sunmoon_seq, sdo_seq, _ = batch
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq), dim=2)
+                                sdo_context = sdo_seq[:, :args.context_window, :]
+                                loss, rmse_t, jpld_rmse_t = model.loss(combined_seq, sdo_context, jpld_weight=args.jpld_weight)
 
-                            H, W = 180, 360
-                            celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
-                            omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
-                            set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
+                            elif args.model_type == 'SphericalFourierNeuralOperatorModel':
+                                # ---- true multi-step AR rollout in AMP context ----
+                                jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq, times = batch
 
-                            combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
-                            B, T, Ctot, H, W = combined_seq.shape
-                            assert T >= args.context_window + args.prediction_window, \
-                                "Sequence too short for context+prediction"
+                                H, W = 180, 360
+                                celestrak_seq = ensure_grid(celestrak_seq, target_channels=2, H=H, W=W)
+                                omniweb_seq   = ensure_grid(omniweb_seq,   target_channels=len(args.omniweb_columns), H=H, W=W)
+                                set_seq       = ensure_grid(set_seq,       target_channels=9, H=H, W=W)
 
-                            # ---- true multi-step AR rollout over P steps ----
-                            P = args.prediction_window
-                            cur = combined_seq[:, args.context_window - 1].clone()     # (B, Ctot, H, W)
-                            total_loss = 0.0
-                            rmse_steps = []
+                                combined_seq = torch.cat((jpld_seq, sunmoon_seq, celestrak_seq, omniweb_seq, set_seq), dim=2)
+                                B, T, Ctot, H, W = combined_seq.shape
+                                assert T >= args.context_window + args.prediction_window, "Sequence too short for context+prediction"
 
-                            # constants used by physics loss if present
-                            slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
+                                P = args.prediction_window
+                                cur = combined_seq[:, args.context_window - 1].clone()     # (B, Ctot, H, W)
+                                total_loss = 0.0
+                                rmse_steps = []
+                                slots_per_day = max(1, int(round(1440.0 / float(args.delta_minutes))))
 
-                            for step in range(P):
-                                step_idx = args.context_window - 1 + step
+                                for step in range(P):
+                                    step_idx = args.context_window - 1 + step
 
-                                # per-sample sun-locked & QD grids for THIS step
-                                sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
-                                for b in range(B):
-                                    dtb = _safe_time_at(times, b, step_idx)
-                                    subsolar_lon = _get_subsolar_longitude(dtb)
-                                    sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
-                                    qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
-                                    sunlocked_grids.append(sunlocked_lon_grid)
-                                    qd_lat_list.append(qd_lat_f)
-                                    qd_lon_list.append(qd_lon_f)
-                                sunlocked_grids = np.stack(sunlocked_grids, axis=0)
+                                    # Build sun-locked & QD grids for THIS step
+                                    sunlocked_grids, qd_lat_list, qd_lon_list = [], [], []
+                                    for b in range(B):
+                                        dtb = _safe_time_at(times, b, step_idx)
+                                        subsolar_lon = _get_subsolar_longitude(dtb)
+                                        sunlocked_lon_grid = ((_lon_grid - subsolar_lon + 360) % 360)
+                                        qd_lat_f, qd_lon_f = _load_qd_grid_for_year(dtb.year)
+                                        sunlocked_grids.append(sunlocked_lon_grid)
+                                        qd_lat_list.append(qd_lat_f)
+                                        qd_lon_list.append(qd_lon_f)
+                                    sunlocked_grids = np.stack(sunlocked_grids, axis=0)
 
-                                coord_grids = [
-                                    np.repeat(_lat_grid[None, ...], B, axis=0),
-                                    np.repeat(_lon_grid[None, ...], B, axis=0),
-                                    np.stack(qd_lat_list, axis=0),
-                                    np.stack(qd_lon_list, axis=0),
-                                    sunlocked_grids,
-                                ]
+                                    coord_grids = [
+                                        np.repeat(_lat_grid[None, ...], B, axis=0),
+                                        np.repeat(_lon_grid[None, ...], B, axis=0),
+                                        np.stack(qd_lat_list, axis=0),
+                                        np.stack(qd_lon_list, axis=0),
+                                        sunlocked_grids,
+                                    ]
 
-                                # re-append PE every step; input is ONE FRAME (+PE) -> channel count stays constant
-                                x_input = add_fourier_positional_encoding(cur, coord_grids,
-                                                                        n_harmonics=args.n_harmonics,
-                                                                        concat_original_coords=True)
-                                n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
-                                sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
-                                sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
-
-
-                                out = model(
-                                    x_input,
-                                    sunlocked_idx,
-                                    sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
-                                    head_blend_sigma=0.5,  # try 0.35–0.6; 0.5 is a good start
-                                )
-
-                                if isinstance(out, dict) and 'vtec' in out:
-                                    pred, logvar = out['vtec']             # (B,1,H,W) each
-                                    yhat = pred
-                                else:
-                                    pred = out
-                                    logvar = None
-                                    yhat = pred
-
-                                # target at t = context + step
-                                y_t = jpld_seq[:, args.context_window + step, 0:1, :, :]
-
-                                # step loss (physics-aware if available)
-                                if isinstance(out, dict) and 'vtec' in out:
-                                    times_target = [_safe_time_at(times, b, args.context_window + step) for b in range(B)]
-                                    loss_step, _, _, _ = _sfno_weighted_loss(
-                                        pred, logvar, y_t, iteration,
-                                        jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
-                                        times=times_target, slots_per_day=slots_per_day,
-                                        delta_minutes=args.delta_minutes, tol_slots=1
+                                    # Append Fourier PE each step (input is one frame + PE)
+                                    x_input = add_fourier_positional_encoding(
+                                        cur, coord_grids, n_harmonics=args.n_harmonics,
+                                        concat_flags=[True, False, True, False, False]
                                     )
-                                else:
-                                    loss_step = torch.mean((pred - y_t) ** 2)
 
-                                total_loss = total_loss + loss_step
-                                rmse_steps.append(_rmse_tecu(pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t))
+                                    # Sun-locked head indices for attention routing
+                                    n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
+                                    sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
+                                    sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
 
-                                # build next-step frame:
-                                # - keep exogenous channels from ground truth at t = context+step
-                                # - replace VTEC (channel 0) with our prediction -> true autoregression
-                                next_frame = combined_seq[:, args.context_window + step].clone()   # (B, Ctot, H, W)
-                                next_frame[:, 0:1] = yhat
-                                cur = next_frame
+                                    out = model(
+                                        x_input,
+                                        sunlocked_idx,
+                                        sunlocked_deg=torch.tensor(sunlocked_grids, dtype=torch.float32, device=device),
+                                        head_blend_sigma=0.5,
+                                    )
 
-                            loss = total_loss / float(P)
-                            rmse_t = torch.stack(rmse_steps).mean()
-                            jpld_rmse_t = rmse_t
+                                    if isinstance(out, dict) and 'vtec' in out:
+                                        pred, logvar = out['vtec']             # (B,1,H,W) each
+                                        yhat = pred
+                                    else:
+                                        pred = out
+                                        logvar = None
+                                        yhat = pred
 
+                                    # Target frame at t = context + step
+                                    y_t = jpld_seq[:, args.context_window + step, 0:1, :, :]
 
-                        else:
-                            raise ValueError('Unknown model type: {}'.format(model.name if hasattr(model, "name") else args.model_type))
+                                    # Physics-informed loss if available, else plain MSE
+                                    if isinstance(out, dict) and 'vtec' in out:
+                                        times_target = [_safe_time_at(times, b, args.context_window + step) for b in range(B)]
+                                        loss_step, _, _, _ = _sfno_weighted_loss(
+                                            pred, logvar, y_t, iteration,
+                                            jpld_weight=args.jpld_weight, aux_weight=args.aux_weight,
+                                            times=times_target, slots_per_day=slots_per_day,
+                                            delta_minutes=args.delta_minutes, tol_slots=1
+                                        )
+                                    else:
+                                        loss_step = torch.mean((pred - y_t) ** 2)
 
-                        
+                                    total_loss = total_loss + loss_step
+                                    rmse_steps.append(_rmse_tecu(
+                                        pred[:, 0:1] if pred.dim() == 4 and pred.shape[1] > 1 else pred, y_t
+                                    ))
+
+                                    # Build next-step frame (AR): keep exogenous truth, replace VTEC with our prediction
+                                    next_frame = combined_seq[:, args.context_window + step].clone()
+                                    next_frame[:, 0:1] = yhat
+                                    cur = next_frame
+
+                                loss = total_loss / float(P)
+                                rmse_t = torch.stack(rmse_steps).mean()
+                                jpld_rmse_t = rmse_t
+
+                            else:
+                                raise ValueError('Unknown model type: {}'.format(model.name if hasattr(model, "name") else args.model_type))
+
+                        # Standard backward + step (bfloat16 AMP does not need a GradScaler)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         optimizer.step()
                         iteration += 1
 
-                        # Standardize metrics to floats exactly once
-                        loss_val = float(loss.detach().item())
-
+                        # Convert to plain floats exactly once for logging
                         def _to_float(x):
-                            import torch as _torch
-                            return float(x.detach().item()) if isinstance(x, _torch.Tensor) else float(x)
+                            return float(x.detach().item()) if torch.is_tensor(x) else float(x)
 
+                        loss_val = _to_float(loss)
                         rmse_val = _to_float(rmse_t)
                         jpld_rmse_val = _to_float(jpld_rmse_t)
 
@@ -1253,7 +1350,6 @@ def main():
                         train_rmse_losses.append((iteration, rmse_val))
                         train_jpld_rmse_losses.append((iteration, jpld_rmse_val))
 
-                        # W&B
                         if wandb is not None and args.wandb_mode != 'disabled':
                             wandb.log({
                                 'train/loss': loss_val,
@@ -1267,6 +1363,7 @@ def main():
                         pbar.set_description(
                             f'Epoch {epoch + 1}/{args.epochs}, MSE: {loss_val:.4f}, RMSE: {rmse_val:.4f}, JPLD RMSE: {jpld_rmse_val:.4f}'
                         )
+
                         pbar.update(1)
 
                 # Validation
@@ -1348,7 +1445,13 @@ def main():
                                         np.stack(qd_lon_list, axis=0),
                                         sunlocked_grids,
                                     ]
-                                    x_input = add_fourier_positional_encoding(cur, coord_grids, n_harmonics=args.n_harmonics, concat_original_coords=True)
+
+                                    # better (lat, lon, qd_lat, qd_lon, sunlocked):
+                                    x_input = add_fourier_positional_encoding(
+                                        cur, coord_grids, n_harmonics=args.n_harmonics,
+                                        concat_flags=[True, False, True, False, False]
+                                    )
+
                                     n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
                                     sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
                                     sunlocked_idx = torch.tensor(sunlocked_idx_np, dtype=torch.long, device=device)
@@ -1672,6 +1775,8 @@ def main():
                     model.output_blur_sigma = 0.85
                 model.eval()
                 model = model.to(device)
+                if use_channels_last:
+                    model = model.to(memory_format=torch.channels_last)
             
             if not args.test_event_id:
                 print("No --test_event_id provided. Exiting test mode.")
