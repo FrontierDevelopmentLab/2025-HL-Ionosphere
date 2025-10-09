@@ -541,7 +541,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         if mu is None or self.lon_highfreq_reg <= 0:
             return mu.new_zeros(())
         x = mu.float()
-        ft = torch.fft.rfft(mu, dim=-1)     # (..., W//2+1) complex
+        ft = torch.fft.rfft(x, dim=-1)     # (..., W//2+1) complex
         kmin = max(0, min(self.lon_highfreq_kmin, ft.shape[-1]-1))
         if kmin == 0:
             hi = ft
@@ -658,6 +658,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         sunlocked_lon_grid=None,     # OPTIONAL (B,H,W) or (B,P,H,W) indices; used if times is None
         n_harmonics: int = 1,
         reduction: str = "mean",
+        head_blend_sigma: float = None,
     ):
         """
         Uses the last `context_window` frame as input (plus PE) and rolls out
@@ -681,6 +682,9 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         # (5) prepare area weights lazily
         if self.area_weighted_loss and (self._lat_w is None or self._lat_w.device != device):
             self._lat_w = _build_area_weights_tensor(device)     # (1,1,H,W) fixed to your grid
+
+        if head_blend_sigma is None:
+            head_blend_sigma = getattr(self, "head_blend_sigma", 2.0)
 
         for step in range(P):
             step_idx = self.context_window - 1 + step
@@ -735,7 +739,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
 
 
             # Forward pass with per-pixel head selection
-            out = self.forward(x_in, sl_idx, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=0.5)
+            out = self.forward(x_in, sl_idx, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=head_blend_sigma)
             task = self.tasks[0]
 
             # Supervise JPLD/VTEC (channel 0) at t = context + step
@@ -808,6 +812,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         aux=None,
         times=None,                   # OPTIONAL: will be used to derive sun-locked/QD if provided
         n_harmonics: int = 1,
+        head_blend_sigma: float = None,
     ):
         """
         Returns predictions for VTEC channel: (B, P, 1, H, W)
@@ -822,6 +827,9 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         P = int(prediction_window) if prediction_window is not None else int(self.prediction_window)
         preds = []
         device = data_context.device
+
+        if head_blend_sigma is None:
+            head_blend_sigma = getattr(self, "head_blend_sigma", 2.0)
 
         # Seed with the last available context frame
         cur = data_context[:, Tc - 1].clone()                   # (B,Ctot,H,W)
@@ -872,7 +880,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
             )
 
 
-            out = self.forward(x_in, sl_idx, aux=aux, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=0.5)
+            out = self.forward(x_in, sl_idx, aux=aux, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=head_blend_sigma)
             task = self.tasks[0]
             if self.probabilistic:
                 yhat = out[task][0]                           # (B,1,H,W)

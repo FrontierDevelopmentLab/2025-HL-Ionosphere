@@ -395,6 +395,7 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_lon_tv_reg': getattr(model, 'lon_tv_reg', 0.0),
             'model_lon_highfreq_reg': getattr(model, 'lon_highfreq_reg', 0.0),
             'model_lon_highfreq_kmin': getattr(model, 'lon_highfreq_kmin', 72),
+            'model_head_blend_sigma': getattr(model, 'head_blend_sigma', None),
 
             'model_name': 'SphericalFourierNeuralOperatorModel'
         }
@@ -693,8 +694,11 @@ def load_model(file_name, device):
             head_smooth_reg=checkpoint.get('model_head_smooth_reg', 0.0),
             lon_tv_reg=checkpoint.get('model_lon_tv_reg', 0.0),
             lon_highfreq_reg=checkpoint.get('model_lon_highfreq_reg', 0.0),
-            lon_highfreq_kmin=checkpoint.get('model_lon_highfreq_kmin', 72),            
+            lon_highfreq_kmin=checkpoint.get('model_lon_highfreq_kmin', 72), 
+
         )
+        if 'model_head_blend_sigma' in checkpoint and checkpoint['model_head_blend_sigma'] is not None:
+            model.head_blend_sigma = checkpoint['model_head_blend_sigma']
         model.name = 'SphericalFourierNeuralOperatorModel'
 
     else:
@@ -1079,6 +1083,7 @@ def main():
                 model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse = load_model(model_file, device)
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
                     model.output_blur_sigma = 0.85
+                    model.head_blend_sigma = args.head_blend_sigma
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
@@ -1192,6 +1197,8 @@ def main():
                     model.name = "SphericalFourierNeuralOperatorModel"
                     #below adds a little smoothing of μ (3×3 Gaussian)
                     model.output_blur_sigma = 1.2
+                    model.head_blend_sigma = args.head_blend_sigma
+
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
 
@@ -1815,6 +1822,7 @@ def main():
                 model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
                     model.output_blur_sigma = 0.85
+                    model.head_blend_sigma = args.head_blend_sigma
                 model.eval()
                 model = model.to(device)
                 if use_channels_last:
