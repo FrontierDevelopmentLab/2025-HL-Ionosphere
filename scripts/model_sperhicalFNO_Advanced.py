@@ -574,12 +574,12 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
 
 
 
-    def forward(self, x: torch.Tensor, sunlocked_lon_grid, aux=None, sunlocked_deg=None, head_blend_sigma: float = 0.5):
+    def forward(self, x: torch.Tensor, sunlocked_lon_grid, aux=None, sunlocked_deg=None, head_blend_sigma: float = 2.0):
         """
         sunlocked_lon_grid: (B,H,W) integer indices [0..n_heads-1]
         sunlocked_deg: (B,H,W) degrees in [0,360); used for soft circular blending.
                     If None, integer indices are used as centers.
-        head_blend_sigma: gaussian sigma in *head-index* units (0.5 ~ blend nearest 2-3 heads)
+        head_blend_sigma: gaussian sigma in *head-index* units (2 ~ blend nearest 2-3 heads)
         """
         import torch.nn.functional as F
 
@@ -929,90 +929,131 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         return torch.cat(preds, dim=1)                        # (B,P,1,H,W)
 
 ########################################
-# 3. Latitude Band Ensemble (smooth blend)
+# 3. Latitude Band Ensemble (smooth blend) 
 ########################################
 
 class LatBandSFNOEnsemble(nn.Module):
     """
-    Smoothly blends per-latitude-band SFNO models.
-    Expects x = one-frame + PE, (B,C,H,W), and returns the same dict structure as the base model.
+    Smoothly blends per-latitude-band SFNO models using Gaussian (RBF) gates.
+    - No "dead zones" at band boundaries.
+    - Probabilistic heads are blended in variance space (correct), not logvar.
+    - Returns the same dict structure as SphericalFourierNeuralOperatorModel.forward.
     """
-    def __init__(self, band_edges, base_model_args):
+    def __init__(
+        self,
+        band_edges,                 # list of (lat_min, lat_max) in degrees
+        base_model_args,            # kwargs for SphericalFourierNeuralOperatorModel
+        gate_sigma_scale: float = 0.6,   # σ = gate_sigma_scale * (band_width/2)
+        eps: float = 1e-6
+    ):
         super().__init__()
-        self.bands = band_edges
+        assert len(band_edges) >= 1, "Need at least one band."
+        self.bands = [(float(a), float(b)) for (a, b) in band_edges]
+        self.band_centers = [0.5 * (a + b) for (a, b) in self.bands]
+        self.band_sigmas  = [max(eps, gate_sigma_scale * (abs(b - a) * 0.5)) for (a, b) in self.bands]
+        self.eps = float(eps)
+
+        # One SFNO per band (specialization happens via gradients through the gates)
         self.models = nn.ModuleList([
             SphericalFourierNeuralOperatorModel(**base_model_args) for _ in self.bands
         ])
-        self.band_centers = [(b[0] + b[1]) / 2. for b in band_edges]
 
-    def forward(self, x, lat_grid, sunlocked_lon_grid, aux=None):
+    @torch.no_grad()
+    def _rbf_weights(self, lat: torch.Tensor) -> torch.Tensor:
         """
-        x: (B,C,H,W) one-frame + PE
-        lat_grid: (H,W) or (B,H,W) degrees
-        sunlocked_lon_grid: (B,H,W) long indices
+        lat: (B,H,W) in degrees
+        returns w_norm: (B, Nb, H, W) nonnegative, sum over bands = 1 per pixel
         """
+        B, H, W = lat.shape
+        device, dtype = lat.device, lat.dtype
+        Nb = len(self.bands)
+
+        # Stack centers/sigmas to tensors for vectorized compute
+        centers = torch.tensor(self.band_centers, device=device, dtype=dtype).view(1, Nb, 1, 1)
+        sigmas  = torch.tensor(self.band_sigmas,  device=device, dtype=dtype).view(1, Nb, 1, 1)
+
+        d = lat.unsqueeze(1) - centers            # (B, Nb, H, W)
+        w = torch.exp(-0.5 * (d / sigmas).pow(2)) # RBF per band
+        # Normalize across bands; avoid 0/0 with eps
+        wsum = w.sum(dim=1, keepdim=True)         # (B,1,H,W)
+        w_norm = w / (wsum + self.eps)
+        return w_norm
+
+    def forward(
+        self,
+        x: torch.Tensor,                   # (B,C,H,W) one-frame + PE
+        lat_grid,                          # (H,W) or (B,H,W) in degrees
+        sunlocked_lon_grid,                # (B,H,W) long indices
+        aux=None,
+        *,
+        sunlocked_deg=None,                # optional: pass degrees grid if you already have it
+        head_blend_sigma: float = 2      # forwarded to sub-models
+    ):
         B, _, H, W = x.shape
-        device = x.device
-        lat = torch.as_tensor(lat_grid, dtype=torch.float32, device=device)
+        device, dtype = x.device, x.dtype
+
+        # Broadcast latitude grid
+        lat = torch.as_tensor(lat_grid, dtype=dtype, device=device)
         if lat.ndim == 2:
-            lat = lat.unsqueeze(0).expand(B, -1, -1)  # (B,H,W)
+            lat = lat.unsqueeze(0).expand(B, -1, -1)      # (B,H,W)
+        elif lat.ndim == 3 and lat.shape[0] != B:
+            lat = lat.expand(B, -1, -1)
 
-        # Prepare accumulators based on the first model's config
+        # Per-pixel normalized gates over bands
+        w_norm = self._rbf_weights(lat)                   # (B, Nb, H, W)
+
+        # Prepare accumulators from the first model's config
         m0 = self.models[0]
-        prob = bool(m0.probabilistic)
-        tasks = m0.tasks
-        frame_ch = m0.frame_channels
+        tasks   = m0.tasks
+        prob    = bool(m0.probabilistic)
+        ch_per  = {t: m0.frame_channels[t] for t in tasks}
 
-        acc = {}
-        for t in tasks:
-            ch = frame_ch[t]
-            if prob:
-                acc[t] = (
-                    torch.zeros(B, ch, H, W, device=device, dtype=x.dtype),  # mu
-                    torch.zeros(B, ch, H, W, device=device, dtype=x.dtype),  # logvar
-                )
-            else:
-                acc[t] = torch.zeros(B, ch, H, W, device=device, dtype=x.dtype)
-        weight_sum = torch.zeros(B, H, W, device=device, dtype=x.dtype)
+        if prob:
+            # We accumulate Σ w*μ  and  Σ w*(σ² + μ²)  then recover logvar
+            acc_mu  = {t: torch.zeros(B, ch_per[t], H, W, device=device, dtype=dtype) for t in tasks}
+            acc_m2p = {t: torch.zeros(B, ch_per[t], H, W, device=device, dtype=dtype) for t in tasks}
+        else:
+            acc_det = {t: torch.zeros(B, ch_per[t], H, W, device=device, dtype=dtype) for t in tasks}
 
-        # Blend
-        for i, (lat_min, lat_max) in enumerate(self.bands):
-            center = (lat_min + lat_max) / 2.0
-            width = (lat_max - lat_min)
-            band_weight = 1.0 - torch.abs(lat - center) / (max(width, 1e-6) / 2.0)  # (B,H,W)
-            band_weight = torch.clamp(band_weight, min=0.0)
-            mask = (lat >= lat_min) & (lat < lat_max)
-            band_weight = band_weight * mask
+        Nb = len(self.models)
+        # (Optional speed-up) Skip bands whose global max weight is ~zero
+        # but keep logic simple and robust by evaluating all bands.
 
-            if band_weight.sum().item() == 0:
-                continue
+        for i in range(Nb):
+            out_i = self.models[i](
+                x,
+                sunlocked_lon_grid,
+                aux=aux,
+                sunlocked_deg=sunlocked_deg,
+                head_blend_sigma=head_blend_sigma
+            )
 
-            # Optionally weight inputs; also weight outputs
-            out_i = self.models[i](x, sunlocked_lon_grid, aux=aux)
-
+            w_i = w_norm[:, i, :, :].unsqueeze(1)   # (B,1,H,W)
             for t in tasks:
-                bw = band_weight.unsqueeze(1)  # (B,1,H,W)
                 if prob:
                     mu_i, logv_i = out_i[t]
-                    acc_mu, acc_lv = acc[t]
-                    acc[t] = (acc_mu + mu_i * bw, acc_lv + logv_i * bw)
+                    # variance domain blending (correct):
+                    var_i = torch.exp(logv_i).clamp_min(self.eps)  # (B,ch,H,W)
+                    acc_mu[t]  = acc_mu[t]  + w_i * mu_i
+                    acc_m2p[t] = acc_m2p[t] + w_i * (var_i + mu_i * mu_i)
                 else:
-                    acc[t] = acc[t] + out_i[t] * bw
+                    mu_i = out_i[t][0]
+                    acc_det[t] = acc_det[t] + w_i * mu_i
 
-            weight_sum = weight_sum + band_weight
+        # Finalize mixture
+        outs = {}
+        if prob:
+            for t in tasks:
+                mu_mix = acc_mu[t]
+                var_mix = (acc_m2p[t] - mu_mix * mu_mix).clamp_min(self.eps)
+                logvar_mix = torch.log(var_mix)
+                outs[t] = (mu_mix, logvar_mix)
+        else:
+            for t in tasks:
+                outs[t] = acc_det[t]  # already normalized via w_norm
 
-        # Normalize by total weights
-        eps = 1e-6
-        for t in tasks:
-            if prob:
-                mu, lv = acc[t]
-                mu = mu / (weight_sum.unsqueeze(1) + eps)
-                lv = lv / (weight_sum.unsqueeze(1) + eps)
-                acc[t] = (mu, lv)
-            else:
-                acc[t] = acc[t] / (weight_sum.unsqueeze(1) + eps)
+        return outs
 
-        return acc
 
 ########################################
 # 4. Deep Ensemble Wrapper

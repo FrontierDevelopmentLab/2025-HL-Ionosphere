@@ -193,7 +193,7 @@ def _add_fourier_pe(x_last, lat_np, lon_np, n_harmonics: int):
     feats = [x_last]
     # optionally include the raw angles
     feats.append(lat_a.unsqueeze(1))
-    feats.append(lon_a.unsqueeze(1))
+    
     # harmonics
     for k in range(1, max(1, int(n_harmonics)) + 1):
         feats.append(_torch.sin(k * lat_a).unsqueeze(1))
@@ -1226,6 +1226,8 @@ def main():
                 best_valid_rmse = float('inf')
 
                 model = model.to(device)
+                if use_channels_last:
+                    model = model.to(memory_format=torch.channels_last)
 
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
