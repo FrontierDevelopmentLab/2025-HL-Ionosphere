@@ -484,23 +484,38 @@ def _safe_time_at(times_obj, b, idx):
 
 
 def ensure_grid(tensor, target_channels, H=180, W=360):
+    """Ensure tensor has correct grid dimensions with validation."""
+    assert tensor.dim() >= 3, f"Tensor must have at least 3 dimensions, got {tensor.dim()}"
+    
+    # Remove trailing singleton dimensions
     while tensor.dim() > 3 and tensor.shape[-1] == 1 and tensor.shape[-2] == 1:
         tensor = tensor.squeeze(-1).squeeze(-1)
+    
+    # Add spatial dimensions if needed
     if tensor.dim() == 3:
         tensor = tensor.unsqueeze(-1).unsqueeze(-1)
-
-    C = tensor.shape[2]
+    
+    assert tensor.dim() == 5, f"Expected 5D tensor after reshaping, got {tensor.dim()}D"
+    
+    B, T, C = tensor.shape[:3]
+    
+    # Adjust channels
     if C < target_channels:
-        pad = torch.zeros(tensor.shape[0], tensor.shape[1],
-                          target_channels - C, tensor.shape[-2], tensor.shape[-1],
+        pad = torch.zeros(B, T, target_channels - C, tensor.shape[-2], tensor.shape[-1],
                           dtype=tensor.dtype, device=tensor.device)
         tensor = torch.cat([tensor, pad], dim=2)
     elif C > target_channels:
         tensor = tensor[:, :, :target_channels, :, :]
 
-    # expand H/W if they’re singleton
-    if tensor.shape[-2] == 1 and H != 1: tensor = tensor.expand(-1, -1, -1, H, tensor.shape[-1])
-    if tensor.shape[-1] == 1 and W != 1: tensor = tensor.expand(-1, -1, -1, -1, W)
+    # Expand H/W if they're singleton
+    if tensor.shape[-2] == 1 and H != 1: 
+        tensor = tensor.expand(-1, -1, -1, H, tensor.shape[-1])
+    if tensor.shape[-1] == 1 and W != 1: 
+        tensor = tensor.expand(-1, -1, -1, -1, W)
+    
+    # Final validation
+    assert tensor.shape[-2:] == (H, W), f"Final spatial dims {tensor.shape[-2:]} don't match target ({H},{W})"
+    
     return tensor
 
 # Grids and positional encodings
@@ -527,12 +542,15 @@ def _quantize_degrees_to_heads(deg_grids: _np.ndarray, n_heads: int) -> _np.ndar
     """
     Map sun-locked longitude degrees in [0,360) to head indices [0, n_heads-1].
     Works for any n_heads (not only 360).
+    Handles edge cases at 360° boundary.
     """
+    # Ensure degrees are in [0, 360) range
+    deg_normalized = deg_grids % 360.0
     mul = float(n_heads) / 360.0
-    idx = _np.floor(deg_grids * mul).astype(_np.int64)
+    idx = _np.floor(deg_normalized * mul).astype(_np.int64)
+    # The floor operation should already keep indices in [0, n_heads-1]
+    # but clamp for safety against floating point edge cases
     return _np.clip(idx, 0, n_heads - 1)
-
-
 
 def add_fourier_positional_encoding(
     x,
@@ -542,7 +560,7 @@ def add_fourier_positional_encoding(
     concat_flags=None,
 ):
     """
-    Seam-safe PE:
+    Seam-safe PE with validation:
       - Use sin/cos for periodic angles (lon, QD lon, sun-locked deg) -> NO raw channel
       - Optionally keep raw for non-periodic coords (lat, QD lat)
     Args:
@@ -551,17 +569,32 @@ def add_fourier_positional_encoding(
       concat_flags: list[bool] same length as coord_grids; True -> also append raw angle (radians)
     """
     import numpy as _np
+    
+    assert x.dim() == 4, f"Expected 4D tensor, got {x.dim()}D"
     B, C, H, W = x.shape
     dev = x.device
     feats = [x]
 
     if concat_flags is None:
         concat_flags = [concat_original_coords] * len(coord_grids)
+    
+    assert len(concat_flags) == len(coord_grids), \
+        f"concat_flags length {len(concat_flags)} doesn't match coord_grids length {len(coord_grids)}"
 
     for grid, use_raw in zip(coord_grids, concat_flags):
         g = torch.as_tensor(grid, dtype=torch.float32, device=dev)
-        if g.ndim == 2: g = g.unsqueeze(0).expand(B, -1, -1)
-        elif g.ndim == 3 and g.shape[0] != B: g = g.expand(B, -1, -1)
+        
+        # Handle different grid dimensions
+        if g.ndim == 2: 
+            assert g.shape == (H, W), f"Grid shape {g.shape} doesn't match input spatial dims ({H},{W})"
+            g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3:
+            if g.shape[0] != B:
+                g = g.expand(B, -1, -1)
+            assert g.shape == (B, H, W), f"Grid shape {g.shape} doesn't match expected ({B},{H},{W})"
+        else:
+            raise ValueError(f"Unsupported grid dimensionality: {g.ndim}")
+            
         theta = g * (_np.pi / 180.0)  # degrees -> radians
 
         # Append raw only if requested (avoid seams for periodic coords!)
@@ -569,12 +602,11 @@ def add_fourier_positional_encoding(
             feats.append(theta.unsqueeze(1))
 
         # Always append harmonics
-        for k in range(1, int(n_harmonics) + 1):
+        for k in range(1, max(1, int(n_harmonics)) + 1):
             feats.append(torch.sin(k * theta).unsqueeze(1))
             feats.append(torch.cos(k * theta).unsqueeze(1))
 
     return torch.cat(feats, dim=1)
-
 
 
 def _rmse_tecu(pred, target):

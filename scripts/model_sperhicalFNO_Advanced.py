@@ -89,7 +89,7 @@ def add_fourier_positional_encoding(
     concat_flags=None,
 ):
     """
-    Seam-safe PE:
+    Seam-safe PE with validation:
       - Use sin/cos for periodic angles (lon, QD lon, sun-locked deg) -> NO raw channel
       - Optionally keep raw for non-periodic coords (lat, QD lat)
     Args:
@@ -98,17 +98,32 @@ def add_fourier_positional_encoding(
       concat_flags: list[bool] same length as coord_grids; True -> also append raw angle (radians)
     """
     import numpy as _np
+    
+    assert x.dim() == 4, f"Expected 4D tensor, got {x.dim()}D"
     B, C, H, W = x.shape
     dev = x.device
     feats = [x]
 
     if concat_flags is None:
         concat_flags = [concat_original_coords] * len(coord_grids)
+    
+    assert len(concat_flags) == len(coord_grids), \
+        f"concat_flags length {len(concat_flags)} doesn't match coord_grids length {len(coord_grids)}"
 
     for grid, use_raw in zip(coord_grids, concat_flags):
         g = torch.as_tensor(grid, dtype=torch.float32, device=dev)
-        if g.ndim == 2: g = g.unsqueeze(0).expand(B, -1, -1)
-        elif g.ndim == 3 and g.shape[0] != B: g = g.expand(B, -1, -1)
+        
+        # Handle different grid dimensions
+        if g.ndim == 2: 
+            assert g.shape == (H, W), f"Grid shape {g.shape} doesn't match input spatial dims ({H},{W})"
+            g = g.unsqueeze(0).expand(B, -1, -1)
+        elif g.ndim == 3:
+            if g.shape[0] != B:
+                g = g.expand(B, -1, -1)
+            assert g.shape == (B, H, W), f"Grid shape {g.shape} doesn't match expected ({B},{H},{W})"
+        else:
+            raise ValueError(f"Unsupported grid dimensionality: {g.ndim}")
+            
         theta = g * (_np.pi / 180.0)  # degrees -> radians
 
         # Append raw only if requested (avoid seams for periodic coords!)
@@ -116,7 +131,7 @@ def add_fourier_positional_encoding(
             feats.append(theta.unsqueeze(1))
 
         # Always append harmonics
-        for k in range(1, int(n_harmonics) + 1):
+        for k in range(1, max(1, int(n_harmonics)) + 1):
             feats.append(torch.sin(k * theta).unsqueeze(1))
             feats.append(torch.cos(k * theta).unsqueeze(1))
 
@@ -125,47 +140,56 @@ def add_fourier_positional_encoding(
 
 def _build_step_coord_grids(B, H, W, step_times, n_heads: int):
     """
-    Build per-step coordinate grids:
-      lat, lon, qd_lat, qd_lon, sunlocked_degrees
-    and the integer head indices (0..n_heads-1) per-pixel.
-    Returns:
-      coord_grids (list of np/torch arrays of shape (B,H,W))
-      sunlocked_idx (torch.LongTensor, B,H,W)
+    Build per-step coordinate grids with validation.
     """
-    lat_np, lon_np = _load_latlon()                              # (H,W)
+    assert B > 0 and H > 0 and W > 0, f"Invalid dimensions: B={B}, H={H}, W={W}"
+    assert n_heads > 0, f"Invalid n_heads: {n_heads}"
+    assert len(step_times) == B, f"step_times length {len(step_times)} doesn't match batch size {B}"
+    
+    lat_np, lon_np = _load_latlon()  # (H,W)
+    
+    # Validate grid dimensions
+    if lat_np.shape != (H, W) or lon_np.shape != (H, W):
+        raise ValueError(f"Grid dimension mismatch: expected ({H},{W}), got lat={lat_np.shape}, lon={lon_np.shape}")
+    
     sunlocked_deg = []
     qd_lat_list, qd_lon_list = [], []
 
     for dt in step_times:
         subsolar = _subsolar_lon(dt)
-        # degrees in [0,360)
+        # degrees in [0,360) - ensure proper wrapping
         deg_grid = ((lon_np - subsolar + 360.0) % 360.0).astype(np.float32)  # (H,W)
         sunlocked_deg.append(deg_grid)
         qd_lat_np, qd_lon_np = _load_qd_for_year(dt.year)
+        
+        # Validate QD grid dimensions
+        if qd_lat_np.shape != (H, W) or qd_lon_np.shape != (H, W):
+            warnings.warn(f"QD grid mismatch for year {dt.year}, falling back to geographic coords")
+            qd_lat_np, qd_lon_np = lat_np, lon_np
+            
         qd_lat_list.append(qd_lat_np.astype(np.float32))
         qd_lon_list.append(qd_lon_np.astype(np.float32))
 
     # Stack to (B,H,W)
-    sunlocked_deg = np.stack(sunlocked_deg, axis=0)              # (B,H,W)
-    qd_lat_list   = np.stack(qd_lat_list,   axis=0)              # (B,H,W)
-    qd_lon_list   = np.stack(qd_lon_list,   axis=0)              # (B,H,W)
+    sunlocked_deg = np.stack(sunlocked_deg, axis=0)  # (B,H,W)
+    qd_lat_list   = np.stack(qd_lat_list,   axis=0)  # (B,H,W)
+    qd_lon_list   = np.stack(qd_lon_list,   axis=0)  # (B,H,W)
 
-    # Quantize degrees -> head indices 0..n_heads-1 (generalized for arbitrary n_heads)
-    # Map [0,360) -> [0,n_heads) then floor and clamp
+    # Safer quantization with proper boundary handling
     mul = float(n_heads) / 360.0
-    idx = np.floor(sunlocked_deg * mul).astype(np.int64)
+    deg_normalized = sunlocked_deg % 360.0  # ensure [0, 360)
+    idx = np.floor(deg_normalized * mul).astype(np.int64)
     idx = np.clip(idx, 0, n_heads - 1)
     sunlocked_idx = torch.tensor(idx, dtype=torch.long)
 
     coord_grids = [
-        np.repeat(lat_np[None, ...], B, axis=0),                 # (B,H,W)
-        np.repeat(lon_np[None, ...], B, axis=0),                 # (B,H,W)
-        qd_lat_list,                                             # (B,H,W)
-        qd_lon_list,                                             # (B,H,W)
-        sunlocked_deg,                                           # (B,H,W) as a PE channel too
+        np.repeat(lat_np[None, ...], B, axis=0),  # (B,H,W)
+        np.repeat(lon_np[None, ...], B, axis=0),  # (B,H,W)
+        qd_lat_list,                               # (B,H,W)
+        qd_lon_list,                               # (B,H,W)
+        sunlocked_deg,                             # (B,H,W) as a PE channel too
     ]
     return coord_grids, sunlocked_idx
-
 
 ########################################
 # 1. SFNO Core  (safer bandlimits + SHT hook)
@@ -302,7 +326,7 @@ class SphericalFourierLayer(nn.Module):
     
     def _sht_path(self, x: torch.Tensor) -> torch.Tensor:
         B, Cin, H, W = x.shape
-        assert H == self.H and W == self.W
+        assert H == self.H and W == self.W, f"Expected grid {self.H}x{self.W}, got {H}x{W}"
         dev = x.device
 
         # Modules & mask to device; SHT prefers float64/complex128 numerics
@@ -318,7 +342,8 @@ class SphericalFourierLayer(nn.Module):
             flm_all = self._sht(x64.reshape(B * Cin, H, W))  # [B*Cin, Ldim, Mdim] c128
 
         flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
-        flm_sub = flm_all[:, :, :self._Ls, :self._Ms] * tri_mask  # [B,Cin,Ls,Ms] c128
+        # Apply mask only once when extracting the sub-block
+        flm_sub = flm_all[:, :, :self._Ls, :self._Ms]  # [B,Cin,Ls,Ms] c128
 
         # Cast to c64; zero out tiny imaginary noise if requested
         flm_c = flm_sub.to(torch.complex64)
@@ -327,6 +352,9 @@ class SphericalFourierLayer(nn.Module):
             flm_c = torch.complex(flm_c.real, imag.masked_fill(imag.abs() < 1e-7, 0.0))
 
         w_cplx = torch.view_as_complex(self.weight_sht)  # [Cin,Cout,Ls,Ms] c64
+        # Apply mask to weights before multiplication
+        w_cplx = w_cplx * tri_mask.unsqueeze(0).unsqueeze(0)
+        
         if self.force_real:
             w_im = w_cplx.imag
             w_cplx = torch.complex(w_cplx.real, w_im.masked_fill(w_im.abs() < 1e-7, 0.0))
@@ -341,9 +369,9 @@ class SphericalFourierLayer(nn.Module):
         else:
             out_sub = m0.unsqueeze(-1)
 
-        # Embed back into full grid with the triangular mask
+        # Embed back into full grid (mask already applied to weights)
         out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim, dtype=out_sub.dtype, device=dev)
-        out_full[:, :, :self._Ls, :self._Ms] = out_sub * tri_mask
+        out_full[:, :, :self._Ls, :self._Ms] = out_sub
 
         with autocast_ctx:
             y64_flat = self._isht(out_full.to(torch.complex128).reshape(B * self.out_channels, self._Ldim, self._Mdim))
@@ -705,9 +733,10 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         cur = batch[:, self.context_window - 1].clone()          # (B,Ctot,H,W)
         total = 0.0
 
-        # (5) prepare area weights lazily
-        if self.area_weighted_loss and (self._lat_w is None or self._lat_w.device != device):
-            self._lat_w = _build_area_weights_tensor(device)     # (1,1,H,W) fixed to your grid
+        # (5) prepare area weights - check both existence and device match
+        if self.area_weighted_loss:
+            if self._lat_w is None or self._lat_w.device != device:
+                self._lat_w = _build_area_weights_tensor(device)  # (1,1,H,W) fixed to your grid
 
         if head_blend_sigma is None:
             head_blend_sigma = getattr(self, "head_blend_sigma", 2.0)
@@ -985,7 +1014,7 @@ class LatBandSFNOEnsemble(nn.Module):
         aux=None,
         *,
         sunlocked_deg=None,                # optional: pass degrees grid if you already have it
-        head_blend_sigma: float = 2      # forwarded to sub-models
+        head_blend_sigma: float = 2.0      # forwarded to sub-models
     ):
         B, _, H, W = x.shape
         device, dtype = x.device, x.dtype
