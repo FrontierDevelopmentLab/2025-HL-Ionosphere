@@ -254,7 +254,6 @@ class SphericalFourierLayer(nn.Module):
         self._disable_amp = dict(device_type="cuda", enabled=False)
 
     # -------- rFFT path --------
-    # -------- rFFT path --------
     def _fourier2_path(self, x: torch.Tensor) -> torch.Tensor:
         """
         Correct realness handling for 2D rFFT:
@@ -306,37 +305,35 @@ class SphericalFourierLayer(nn.Module):
         assert H == self.H and W == self.W
         dev = x.device
 
-        # Modules & mask to device/dtype
-        self._sht  = self._sht.to(device=dev,  dtype=torch.float64)
+        # Modules & mask to device; SHT prefers float64/complex128 numerics
+        self._sht  = self._sht.to(device=dev, dtype=torch.float64)
         self._isht = self._isht.to(device=dev, dtype=torch.float64)
         tri_mask   = self._mask_sub_tri.to(device=dev)
-        from contextlib import nullcontext
-        autocast_ctx = torch.autocast(**self._disable_amp) if dev.type == "cuda" else nullcontext()
 
-        # --- forward SHT (float64, complex128) ---
+        from contextlib import nullcontext
+        autocast_ctx = torch.autocast(device_type="cuda", enabled=False) if dev.type == "cuda" else nullcontext()
+
         with autocast_ctx:
             x64 = x.to(torch.float64)
             flm_all = self._sht(x64.reshape(B * Cin, H, W))  # [B*Cin, Ldim, Mdim] c128
-        flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
-        flm_sub = flm_all[:, :, :self._Ls, :self._Ms]                      # [B,Cin,Ls,Ms] c128
-        flm_sub = flm_sub * tri_mask.view(1,1,self._Ls,self._Ms)
 
-        # Cast to c64; optional tiny-imag clamp (hygiene only)
+        flm_all = flm_all.reshape(B, Cin, self._Ldim, self._Mdim)
+        flm_sub = flm_all[:, :, :self._Ls, :self._Ms] * tri_mask  # [B,Cin,Ls,Ms] c128
+
+        # Cast to c64; zero out tiny imaginary noise if requested
         flm_c = flm_sub.to(torch.complex64)
-        if self.force_real:  # interpret as: "clamp tiny imag," NOT "make all real"
+        if self.force_real:
             imag = flm_c.imag
             flm_c = torch.complex(flm_c.real, imag.masked_fill(imag.abs() < 1e-7, 0.0))
 
-        # --- complex spectral mixing ---
         w_cplx = torch.view_as_complex(self.weight_sht)  # [Cin,Cout,Ls,Ms] c64
-        # keep weights complex; if you *must* be conservative, you can clamp tiny imag only:
         if self.force_real:
             w_im = w_cplx.imag
             w_cplx = torch.complex(w_cplx.real, w_im.masked_fill(w_im.abs() < 1e-7, 0.0))
 
-        out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)           # [B,Cout,Ls,Ms] c64
+        out_sub = torch.einsum("bclm,colm->bolm", flm_c, w_cplx)  # [B,Cout,Ls,Ms] c64
 
-        # Enforce m=0 purely real (this is the *only* strict realness rule)
+        # Enforce m=0 real
         m0_real = out_sub[..., 0].real
         m0      = torch.complex(m0_real, torch.zeros_like(m0_real))
         if self._Ms > 1:
@@ -344,18 +341,14 @@ class SphericalFourierLayer(nn.Module):
         else:
             out_sub = m0.unsqueeze(-1)
 
-        # Embed kept block via slicing (faster & safer than index_put)
-        out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim,
-                            dtype=out_sub.dtype, device=dev)
+        # Embed back into full grid with the triangular mask
+        out_full = torch.zeros(B, self.out_channels, self._Ldim, self._Mdim, dtype=out_sub.dtype, device=dev)
         out_full[:, :, :self._Ls, :self._Ms] = out_sub * tri_mask
 
-        # --- inverse SHT ---
         with autocast_ctx:
-            y64_flat = self._isht(out_full.to(torch.complex128).reshape(B * self.out_channels,
-                                                                        self._Ldim, self._Mdim))
+            y64_flat = self._isht(out_full.to(torch.complex128).reshape(B * self.out_channels, self._Ldim, self._Mdim))
         y = y64_flat.reshape(B, self.out_channels, H, W).to(dtype=x.dtype)
         return y
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self._sht_path(x) if self.use_sht else self._fourier2_path(x)
@@ -438,6 +431,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         lon_highfreq_reg: float = 0.0,       # RFFT high-k penalty on μ
         lon_highfreq_kmin: int = 72,         # start damping from this k (W=360 => ~5°)
         lon_blur_sigma_deg: float = 0.0,     # depthwise 1d gaussian blur along longitude circular wrap
+        head_blend_sigma: float = 2.0,
         
     ):
         super().__init__()
@@ -459,6 +453,10 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.lon_highfreq_reg  = float(lon_highfreq_reg)
         self.lon_highfreq_kmin = int(lon_highfreq_kmin)
         self.lon_blur_sigma_deg = float(lon_blur_sigma_deg)
+        # default head blending sharpness (used when loss()/predict() receives None)
+        self.head_blend_sigma   = float(head_blend_sigma)
+
+        
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)

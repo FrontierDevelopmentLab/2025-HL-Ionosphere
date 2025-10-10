@@ -697,7 +697,7 @@ def load_model(file_name, device):
             lon_tv_reg=checkpoint.get('model_lon_tv_reg', 0.0),
             lon_highfreq_reg=checkpoint.get('model_lon_highfreq_reg', 0.0),
             lon_highfreq_kmin=checkpoint.get('model_lon_highfreq_kmin', 72), 
-            lon_blur_sigma_deg=checkpoint.get("model_lon_blur_sigma_deg", 0.0),
+            lon_blur_sigma_deg=checkpoint.get("model_lon_blur_sigma_deg", 5.0),
 
         )
         if 'model_head_blend_sigma' in checkpoint and checkpoint['model_head_blend_sigma'] is not None:
@@ -1322,6 +1322,8 @@ def main():
                                         cur, coord_grids, n_harmonics=args.n_harmonics,
                                         concat_flags=[True, False, True, False, False]
                                     )
+                                    if use_channels_last:
+                                        x_input = x_input.to(memory_format=torch.channels_last)
 
                                     # Sun-locked head indices for attention routing
                                     n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
@@ -1503,6 +1505,8 @@ def main():
                                         cur, coord_grids, n_harmonics=args.n_harmonics,
                                         concat_flags=[True, False, True, False, False]
                                     )
+                                    if use_channels_last:
+                                        x_input = x_input.to(memory_format=torch.channels_last)
 
                                     n_heads = int(getattr(model, 'n_sunlocked_heads', 360))
                                     sunlocked_idx_np = _quantize_degrees_to_heads(sunlocked_grids, n_heads)
