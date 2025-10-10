@@ -1859,7 +1859,8 @@ def main():
                 print('Creating IonCastPersistence-ablation-JPLD model for testing')
                 total_channels = 1  # JPLD (1)
                 name = 'IonCastPersistence-ablation-JPLD'
-                model = IonCastPersistence(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, name=name)
+                model = IonCastPersistence(input_channels=total_channels, output_channels=total_channels,
+                                        context_window=args.context_window, name=name)
                 model = model.to(device)
                 model.eval()
             else:
@@ -1881,6 +1882,9 @@ def main():
                 print("No --test_event_id provided. Exiting test mode.")
                 return
 
+            # >>> ADD THIS LINE (use same windowing as train/valid) <<<
+            training_sequence_length = args.context_window + args.prediction_window
+
             with torch.no_grad():
                 # Initialize collections for test metrics
                 test_fixed_lead_time_metrics = []
@@ -1896,27 +1900,43 @@ def main():
                     
                     # Define a data window large enough for all evaluation types
                     max_lead_time = max(args.lead_times) if args.lead_times else 0
-                    buffer_start = event_start - datetime.timedelta(minutes=max_lead_time + model.context_window * args.delta_minutes)
+                    buffer_start = event_start - datetime.timedelta(
+                        minutes=max_lead_time + model.context_window * args.delta_minutes
+                    )
                     
                     print(f'\n--- Preparing data for Event: {event_id} ---')
-                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
-                        # Other models use all 5 datasets
-                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
-                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                        dataset_celestrak = CelesTrak(os.path.join(args.data_dir, args.celestrak_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
-                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir), date_start=buffer_start, date_end=event_end, column=args.omniweb_columns, return_as_image_size=(180, 360))
-                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name), date_start=buffer_start, date_end=event_end, return_as_image_size=(180, 360))
-                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',
+                                    'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir),
+                                            date_start=buffer_start, date_end=event_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end,
+                                                        extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_celestrak = CelesTrak(os.path.join(args.data_dir, args.celestrak_file_name),
+                                                    date_start=buffer_start, date_end=event_end,
+                                                    return_as_image_size=(180, 360))
+                        dataset_omniweb = OMNIWeb(os.path.join(args.data_dir, args.omniweb_dir),
+                                                date_start=buffer_start, date_end=event_end,
+                                                column=args.omniweb_columns, return_as_image_size=(180, 360))
+                        dataset_set = SET(os.path.join(args.data_dir, args.set_file_name),
+                                        date_start=buffer_start, date_end=event_end,
+                                        return_as_image_size=(180, 360))
+                        # >>> CHANGE HERE: remove delta_minutes=..., use dilation like train <<<
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set],
+                                            sequence_length=training_sequence_length, dilation=args.date_dilation)
                     elif model.name == 'IonCastLSTMSDO':
-                        # SDO model uses only JPLD + SunMoonGeometry + SDOCore
-                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
-                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end, extra_time_steps=args.sun_moon_extra_time_steps)
-                        dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name), date_start=buffer_start, date_end=event_end)
-                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir),
+                                            date_start=buffer_start, date_end=event_end)
+                        dataset_sunmoon = SunMoonGeometry(date_start=buffer_start, date_end=event_end,
+                                                        extra_time_steps=args.sun_moon_extra_time_steps)
+                        dataset_sdocore = SDOCore(os.path.join(args.data_dir, args.sdocore_file_name),
+                                                date_start=buffer_start, date_end=event_end)
+                        dataset = Sequences(datasets=[dataset_jpld, dataset_sunmoon, dataset_sdocore],
+                                            sequence_length=training_sequence_length, dilation=args.date_dilation)
                     elif model.name in ['IonCastLSTM-ablation-JPLD', 'IonCastLinear-ablation-JPLD', 'IonCastPersistence-ablation-JPLD']:
-                        # Ablation models use only JPLD dataset
-                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir), date_start=buffer_start, date_end=event_end)
-                        dataset = Sequences(datasets=[dataset_jpld], delta_minutes=args.delta_minutes, sequence_length=1) # sequence_length doesn't matter here
+                        dataset_jpld = JPLD(os.path.join(args.data_dir, args.jpld_dir),
+                                            date_start=buffer_start, date_end=event_end)
+                        dataset = Sequences(datasets=[dataset_jpld],
+                                            sequence_length=training_sequence_length, dilation=args.date_dilation)
                     else:
                         raise ValueError(f'Unsupported model: {model.name}')
 
@@ -1925,18 +1945,23 @@ def main():
                     if args.eval_mode in ['long_horizon', 'all']:
                         save_video = True
                         save_numpy = True
-                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_name_prefix, save_video, save_numpy, save_video, args)
+                        eval_forecast_long_horizon(model, dataset, event_catalog, event_id,
+                                                file_name_prefix, save_video, save_numpy, save_video, args)
 
                     if args.eval_mode in ['fixed_lead_time', 'all']:
                         save_video = True
                         save_numpy = True
-                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(model, dataset, event_catalog, event_id, args.lead_times, file_name_prefix, save_video, save_numpy, save_video, args)
+                        lead_time_errors_test, event_id_returned_test = eval_forecast_fixed_lead_time(
+                            model, dataset, event_catalog, event_id, args.lead_times,
+                            file_name_prefix, save_video, save_numpy, save_video, args
+                        )
                         test_fixed_lead_time_metrics.append(lead_time_errors_test)
                         test_fixed_lead_time_event_ids.append(event_id_returned_test)
 
                     # Force cleanup
                     del dataset_jpld
-                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear', 'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
+                    if model.name in ['IonCastConvLSTM', 'IonCastLSTM', 'IonCastLinear',
+                                    'IonCastLSTM-ablation-JPLDSunMoon', 'SphericalFourierNeuralOperatorModel']:
                         del dataset_sunmoon, dataset_celestrak, dataset_omniweb, dataset_set
                     elif model.name == 'IonCastLSTMSDO':
                         del dataset_sunmoon, dataset_sdocore
@@ -1947,7 +1972,10 @@ def main():
                 # Aggregate and plot fixed-lead-time metrics for test events
                 if test_fixed_lead_time_metrics:
                     plot_file_prefix_test = os.path.join(args.target_dir, 'test')
-                    aggregate_and_plot_fixed_lead_time_metrics(test_fixed_lead_time_metrics, test_fixed_lead_time_event_ids, plot_file_prefix_test)
+                    aggregate_and_plot_fixed_lead_time_metrics(test_fixed_lead_time_metrics,
+                                                            test_fixed_lead_time_event_ids,
+                                                            plot_file_prefix_test)
+
 
         else:
             raise ValueError('Unknown mode: {}'.format(args.mode))
