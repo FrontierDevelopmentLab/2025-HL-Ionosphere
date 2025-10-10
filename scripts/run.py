@@ -396,6 +396,8 @@ def save_model(model, optimizer, scheduler, epoch, iteration, train_losses, vali
             'model_lon_highfreq_reg': getattr(model, 'lon_highfreq_reg', 0.0),
             'model_lon_highfreq_kmin': getattr(model, 'lon_highfreq_kmin', 72),
             'model_head_blend_sigma': getattr(model, 'head_blend_sigma', None),
+            'model_lon_blur_sigma_deg': getattr(model, "lon_blur_sigma_deg", 5.0),
+
 
             'model_name': 'SphericalFourierNeuralOperatorModel'
         }
@@ -695,6 +697,7 @@ def load_model(file_name, device):
             lon_tv_reg=checkpoint.get('model_lon_tv_reg', 0.0),
             lon_highfreq_reg=checkpoint.get('model_lon_highfreq_reg', 0.0),
             lon_highfreq_kmin=checkpoint.get('model_lon_highfreq_kmin', 72), 
+            lon_blur_sigma_deg=checkpoint.get("model_lon_blur_sigma_deg", 0.0),
 
         )
         if 'model_head_blend_sigma' in checkpoint and checkpoint['model_head_blend_sigma'] is not None:
@@ -791,6 +794,10 @@ def main():
     parser.add_argument('--lon_tv_reg', type=float, default=5e-6)
     parser.add_argument('--lon_highfreq_reg', type=float, default=0.0)
     parser.add_argument('--lon_highfreq_kmin', type=int, default=72)
+
+    parser.add_argument('--lon_blur_sigma_deg', type=float, default=5.0,
+        help='Longitude-only Gaussian blur on μ (degrees). 0 disables.')
+
 
     # --- Spectral backend selection ---
     parser.add_argument(
@@ -1193,11 +1200,13 @@ def main():
                         lon_tv_reg=args.lon_tv_reg,
                         lon_highfreq_reg=args.lon_highfreq_reg,
                         lon_highfreq_kmin=args.lon_highfreq_kmin,
+                        lon_blur_sigma_deg=args.lon_blur_sigma_deg,
                     )
                     model.name = "SphericalFourierNeuralOperatorModel"
                     #below adds a little smoothing of μ (3×3 Gaussian)
                     model.output_blur_sigma = 1.2
                     model.head_blend_sigma = args.head_blend_sigma
+                    model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
 
                 else:
                     raise ValueError('Unknown model type: {}'.format(args.model_type))
@@ -1823,6 +1832,7 @@ def main():
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
                     model.output_blur_sigma = 0.85
                     model.head_blend_sigma = args.head_blend_sigma
+                    model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
                 model.eval()
                 model = model.to(device)
                 if use_channels_last:

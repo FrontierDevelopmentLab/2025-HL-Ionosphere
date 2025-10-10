@@ -195,11 +195,13 @@ class SphericalFourierLayer(nn.Module):
         self.force_real   = bool(force_real_coeffs)
 
         # --- Discover grid now and enforce DH shape W = 2H ---
-        lat_np, lon_np = _load_latlon()
-        H, W = lat_np.shape
-        if W != 2 * H:
-            raise ValueError(f"SHT requires equiangular N×2N grid, got {H}×{W}")
-        self.H, self.W = int(H), int(W)
+        self.H = self.W = None
+        if self.use_sht:
+            lat_np, _ = _load_latlon()
+            H, W = lat_np.shape
+            if W != 2 * H:
+                raise ValueError(f"SHT requires equiangular N×2N grid, got {H}×{W}")
+            self.H, self.W = int(H), int(W)
 
         # --- rFFT weights (kept for rFFT backend) ---
         self.weight_fft = nn.Parameter(
@@ -435,6 +437,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         lon_tv_reg: float = 0.0,             # TV/L2 in longitude on μ
         lon_highfreq_reg: float = 0.0,       # RFFT high-k penalty on μ
         lon_highfreq_kmin: int = 72,         # start damping from this k (W=360 => ~5°)
+        lon_blur_sigma_deg: float = 0.0,     # depthwise 1d gaussian blur along longitude circular wrap
         
     ):
         super().__init__()
@@ -455,6 +458,7 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         self.lon_tv_reg        = float(lon_tv_reg)
         self.lon_highfreq_reg  = float(lon_highfreq_reg)
         self.lon_highfreq_kmin = int(lon_highfreq_kmin)
+        self.lon_blur_sigma_deg = float(lon_blur_sigma_deg)
 
         # expose for checkpoint save/load
         self.dropout = float(dropout)
@@ -548,6 +552,25 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
         else:
             hi = ft[..., kmin:]
         return (hi.abs().pow(2).mean())
+    
+    def _lon_blur(self, t: torch.Tensor) -> torch.Tensor:
+        """Depthwise 1D Gaussian blur along longitude (circular wrap). t: (B,C,H,W)"""
+        if not (self.lon_blur_sigma_deg and self.lon_blur_sigma_deg > 0):
+            return t
+        B, C, H, W = t.shape
+        sigma_px = float(self.lon_blur_sigma_deg) * (W / 360.0)
+        if sigma_px < 0.5:
+            return t
+        khalf = int(math.ceil(3.0 * sigma_px))
+        ksize = 2 * khalf + 1
+        xs = torch.arange(-khalf, khalf + 1, device=t.device, dtype=t.dtype)
+        g = torch.exp(-0.5 * (xs / sigma_px) ** 2)
+        g = g / (g.sum() + 1e-12)                     # (K,)
+        k = g.view(1, 1, 1, ksize).repeat(C, 1, 1, 1) # (C,1,1,K)
+
+        # circular pad along width only: pad = (left, right, top, bottom)
+        t_pad = F.pad(t, (khalf, khalf, 0, 0), mode="circular")
+        return F.conv2d(t_pad, k, padding=0, groups=C)
 
 
 
@@ -630,9 +653,14 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
             if self.probabilistic:
                 mu, logvar = torch.split(selected, out_dim_per_step, dim=1)
                 mu = self._blur_mu(mu)  # optional tiny smooth on μ only
+                mu = self._lon_blur(mu) 
                 outs[task] = (mu, logvar)
             else:
-                outs[task] = self._blur_mu(selected)
+                mu = self._blur_mu(selected)
+                mu = self._lon_blur(mu)
+                outs[task] = (mu, None)
+    
+
 
         return outs
 
@@ -746,9 +774,14 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
             y_t = batch[:, self.context_window + step, 0:1, :, :]   # (B,1,H,W)
 
             if self.probabilistic:
+
                 # Heads output (mu, logvar)
-                pred_mu, pred_logvar = out[task]                    # (B,1,H,W) each
-                yhat = pred_mu                                      # use mean for AR update
+                v = out[task]
+                if isinstance(v, (tuple, list)):
+                    pred_mu, pred_logvar = v
+                else:
+                    pred_mu, pred_logvar = v, torch.zeros_like(y_t)
+                yhat = pred_mu
 
                 # Clamp log-variance for numerical stability
                 pred_logvar = pred_logvar.clamp(
@@ -778,7 +811,8 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
 
             else:
                 # Deterministic path (fallback): MSE
-                pred_mu = out[task]
+                v = out[task]
+                pred_mu = v[0] if isinstance(v, (tuple, list)) else v
                 yhat = pred_mu
 
                 if self.area_weighted_loss:
@@ -882,10 +916,8 @@ class SphericalFourierNeuralOperatorModel(nn.Module):
 
             out = self.forward(x_in, sl_idx, aux=aux, sunlocked_deg=torch.as_tensor(coord_grids[-1], dtype=torch.float32, device=x_in.device), head_blend_sigma=head_blend_sigma)
             task = self.tasks[0]
-            if self.probabilistic:
-                yhat = out[task][0]                           # (B,1,H,W)
-            else:
-                yhat = out[task]                              # (B,1,H,W)
+            v = out[task]
+            yhat = v[0] if isinstance(v, (tuple, list)) else v
 
             preds.append(yhat.unsqueeze(1))                   # (B,1,1,H,W)
 
@@ -956,8 +988,7 @@ class LatBandSFNOEnsemble(nn.Module):
                 continue
 
             # Optionally weight inputs; also weight outputs
-            x_in = x * band_weight.unsqueeze(1)  # (B,C,H,W)
-            out_i = self.models[i](x_in, sunlocked_lon_grid, aux=aux)
+            out_i = self.models[i](x, sunlocked_lon_grid, aux=aux)
 
             for t in tasks:
                 bw = band_weight.unsqueeze(1)  # (B,1,H,W)
