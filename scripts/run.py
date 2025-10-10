@@ -1258,8 +1258,8 @@ def main():
                 best_valid_rmse = float('inf')
 
                 model = model.to(device)
-                if use_channels_last:
-                    model = model.to(memory_format=torch.channels_last)
+             #   if use_channels_last:
+             #       model = model.to(memory_format=torch.channels_last)
 
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -1875,8 +1875,8 @@ def main():
                     model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
                 model.eval()
                 model = model.to(device)
-                if use_channels_last:
-                    model = model.to(memory_format=torch.channels_last)
+                #if use_channels_last:
+                #    model = model.to(memory_format=torch.channels_last)
             
             if not args.test_event_id:
                 print("No --test_event_id provided. Exiting test mode.")
