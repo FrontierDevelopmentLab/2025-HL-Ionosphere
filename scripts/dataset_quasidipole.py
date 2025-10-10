@@ -43,7 +43,7 @@ class QuasiDipole(Dataset):
                     np.sin(k * lat_grid),
                     np.cos(k * lat_grid),
                     np.sin(k * lon_grid),
-                    np.sin(k * lon_grid)
+                    np.cos(k * lon_grid)
                     ]))
             self.dataset[year] = feats
 

@@ -581,8 +581,10 @@ def eval_forecast_long_horizon(model, dataset, event_catalog, event_id, file_nam
         numpy_file_original = file_name.replace('.mp4', '-original.npy')
         numpy_file_forecast = file_name.replace('.mp4', '-forecast.npy')
         
-        np.save(numpy_file_original, jpld_original_unnormalized.cpu().numpy())
-        np.save(numpy_file_forecast, jpld_forecast_unnormalized.cpu().numpy())
+        np.save(numpy_file_original, combined_seq_data_original.cpu().numpy())
+        np.save(numpy_file_forecast, combined_seq_data_forecast.cpu().numpy())
+        # np.save(numpy_file_original, jpld_original_unnormalized.cpu().numpy())
+        # np.save(numpy_file_forecast, jpld_forecast_unnormalized.cpu().numpy())
         
         print(f'Saved original frames to {numpy_file_original}')
         print(f'Saved forecast frames to {numpy_file_forecast}')
