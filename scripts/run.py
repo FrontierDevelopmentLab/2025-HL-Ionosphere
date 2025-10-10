@@ -1091,6 +1091,7 @@ def main():
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
                     model.output_blur_sigma = 0.85
                     model.head_blend_sigma = args.head_blend_sigma
+                    model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
                 epoch_start = epoch + 1
                 iteration = iteration + 1
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
