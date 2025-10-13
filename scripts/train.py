@@ -107,7 +107,7 @@ def run_epoch(ts_ionopy_model, dataloader, device, opt, scheduler, optimizer, ep
         historical_ts_numeric = []
         future_ts_numeric = None
         for key in batch:
-            if key not in {'date', 'inputs', 'tec', 'dtec'}:    
+            if key not in {'date', 'inputs', 'tec', 'dtec', 'latitude_classification', 'solar_activity_classification', 'storm_classification'}:    
                 if key in batch:
                     historical_ts_numeric.append(batch[key][:, :-1, :])
             if key == 'jpld':
