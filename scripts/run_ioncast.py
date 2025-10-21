@@ -497,6 +497,8 @@ def main():
         args.valid_event_id = validation_events_2
     elif args.valid_event_id == ['validation_events_3']:
         args.valid_event_id = validation_events_3
+    elif args.valid_event_id == ['validation_events_4']:
+        args.valid_event_id = validation_events_4
 
     if args.test_event_id == ['validation_events_1']:
         args.test_event_id = validation_events_1
@@ -504,6 +506,8 @@ def main():
         args.test_event_id = validation_events_2
     elif args.test_event_id == ['validation_events_3']:
         args.test_event_id = validation_events_3
+    elif args.test_event_id == ['validation_events_4']:
+        args.test_event_id = validation_events_4
 
     # Set up the target directory and log.txt (name after datetime to avoid overwriting)
     os.makedirs(args.target_dir, exist_ok=True)
