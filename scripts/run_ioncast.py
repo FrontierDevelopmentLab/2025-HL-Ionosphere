@@ -365,10 +365,12 @@ def main():
     parser.add_argument('--celestrak_file_name', type=str, default='celestrak/kp_ap_processed_timeseries.csv', help='CelesTrak dataset file name')
     parser.add_argument('--omniweb_dir', type=str, default='omniweb_karman_2025', help='OMNIWeb dataset directory')
     parser.add_argument('--omniweb_columns', nargs='+', default=['omniweb__sym_d__[nT]', 'omniweb__sym_h__[nT]', 'omniweb__asy_d__[nT]', 'omniweb__bx_gse__[nT]', 'omniweb__by_gse__[nT]', 'omniweb__bz_gse__[nT]', 'omniweb__speed__[km/s]', 'omniweb__vx_velocity__[km/s]', 'omniweb__vy_velocity__[km/s]', 'omniweb__vz_velocity__[km/s]'], help='List of OMNIWeb dataset columns to use')
+    parser.add_argument('--set_columns', nargs='+', default=set_all_columns, help='List of SET dataset columns to use')
+
     parser.add_argument('--quasidipole_dir', type=str, default='quasi_dipole', help='QuasiDipole dataset directory')
     parser.add_argument('--set_file_name', type=str, default='set/karman-2025_data_sw_data_set_sw.csv', help='SET dataset file name')
     parser.add_argument('--sdocore_file_name', type=str, default='sdocore/sdo_core_dataset_21504.h5', help='Name of the SDOCore dataset file')
-    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=["sunmoon", "quasidipole", "celestrak", "omni", "set"], help="additional datasets to include on top of TEC maps")
+    parser.add_argument('--aux_datasets', nargs='+', choices=["sunmoon", "omni", "celestrak", "set", "quasidipole"], default=[], help="additional datasets to include on top of TEC maps") # ["sunmoon", "quasidipole", "celestrak", "omni", "set"]
     parser.add_argument('--target_dir', type=str, help='Directory to save the statistics', required=True)
     parser.add_argument('--date_start', type=str, default='2010-05-13T00:00:00', help='Start date')
     parser.add_argument('--date_end', type=str, default='2024-08-01T00:00:00', help='End date')
@@ -526,7 +528,7 @@ def main():
             'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=args.omniweb_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             # 'omni': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=omniweb_all_columns: OMNIWeb(data_dir=dataset_omniweb_dir, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             'celestrak': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=['Kp', 'Ap']: CelesTrak(file_name=dataset_celestrak_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE, column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
-            'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=set_all_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE,column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
+            'set': lambda date_start_=None, date_end_=None, date_exclusions_=None, column_=args.set_columns: SET(file_name=dataset_set_file_name, date_start=date_start_, date_end=date_end_, normalize=True, date_exclusions=date_exclusions_, delta_minutes=FIXED_CADENCE,column=column_, return_as_image_size=FIXED_IMAGE_SIZE),
             'quasidipole': lambda date_start_=None, date_end_=None, date_exclusions_=None: QuasiDipole(data_dir=dataset_qd_dir, date_start=date_start_, date_end=date_end_, delta_minutes=FIXED_CADENCE),
         }
     
