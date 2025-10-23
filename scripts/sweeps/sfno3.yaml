@@ -6,7 +6,13 @@ metric:
   name: valid/rmse
   goal: minimize
 
+# Let Hyperband prune weak configs quickly; "iterations" ≈ your logged train steps.
+early_terminate:
+  type: hyperband
+  min_iter: 400
+  eta: 3
 
+# Keep fixed run context here; sweep overrides come from "parameters" below.
 command:
   - ${env}
   - python
@@ -20,29 +26,31 @@ command:
   - --data_dir
   - /mnt/disks/disk-main-data-1
   - --target_dir
-  - /mnt/disks/disk-main-data-1/sfno_sweep_SHT_2019_2020/{wandb_run_id}
+  - /mnt/disks/disk-main-data-1/sfno_sweep_vertnoisefix/{wandb_run_id}
   - --date_start
-  - '2013-01-01T00:00:00'
+  - '2019-03-01T00:00:00'
   - --date_end
-  - '2023-01-03T00:00:00'
+  - '2020-05-01T00:00:00'
+  - --celestrak_file_name
+  - celestrak/kp_ap_processed_timeseries.csv
+  - --set_file_name
+  - set/karman-2025_data_sw_data_set_sw.csv
   - --delta_minutes
   - "15"
   - --date_dilation
-  - "10"
+  - "8"
   - --epochs
-  - "80"
+  - "3"
   - --batch_size
-  - "2"
-  - --learning_rate
-  - "2e-4"
+  - "4"
   - --weight_decay
-  - "1e-4"
+  - "1e-6"
   - --num_workers
   - "8"
   - --context_window
-  - "24"
+  - "6"
   - --prediction_window
-  - "8"
+  - "2"
   - --spectral_backend
   - sht
   - --jpld_weight
@@ -56,65 +64,75 @@ command:
   - --no_eval
   - --wandb_mode
   - online
-  - --wandb_run_name
-  - shtpostFDL4_sweep
-  - --celestrak_file_name
-  - celestrak/kp_ap_processed_timeseries.csv
-  - --set_file_name
-  - set/karman-2025_data_sw_data_set_sw.csv
-
-
-early_terminate:
-  type: hyperband
-  min_iter: 3
-  s: 2
-  eta: 2
+  # (Tip: omit a fixed --wandb_run_name so each agent gets a unique name)
 
 parameters:
+  # ---------- Core training ----------
   learning_rate:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.003
+    min: 0.000008
+    max: 0.0003
   weight_decay:
-    values: [0.0, 0.000001, 0.00001, 0.0001]
+    distribution: log_uniform_values
+    min: 0.000000005
+    max: 0.00005
   batch_size:
-    values: [1, 2, 4, 8]
-  num_workers:
-    values: [0, 1, 2]
+    values: [2, 4, 8]
   epochs:
-    values: [20]
-
+    values: [3, 4]              # short for fast signal; Hyperband prunes duds
+  num_workers:
+    values: [4, 8]
+  date_dilation:
+    values: [6, 8, 12]          # speed lever with decent sample diversity
   delta_minutes:
-    values: [15, 30, 60] #, 60, 180, 360, 720]
-
+    values: [15, 30]
   dropout:
-    values: [0.1, 0.15, 0.2, 0.3]
-  n_harmonics:
-    values: [1, 2, 3, 6, 8]
+    values: [0.10, 0.20, 0.30]
 
-  jpld_weight:
-    values: [0.8, 1.0, 2.0]
-  aux_weight:
-    values: [0.1, 0.2, 0.3, 0.5]
+  # ---------- Sequence windows (quality vs speed) ----------
   context_window:
-    values: [1, 4, 8, 12]
+    values: [4, 6, 8]
   prediction_window:
-    values: [1, 4, 8]
+    values: [1, 2]
 
+  # ---------- Spectral backend & capacity ----------
   spectral_backend:
-    values: ["sht"]
+    values: ["rfft", "sht"]     # rfft is cheap for exploration; sht for fidelity
   sfno_width:
-    values: [48, 64, 96, 128]
+    values: [64, 80]
   sfno_depth:
-    values: [6, 8, 10, 12]
+    values: [6, 8]
   sfno_modes_lat:
-    values: [24, 32, 48]
+    values: [32, 48]
   sfno_modes_lon:
-    values: [48, 64, 96]
+    values: [64, 96]
   n_sunlocked_heads:
     values: [180, 360]
 
-  date_dilation:
-    values: [1, 5, 10, 20, 50]
+  # ---------- Positional encoding & routing ----------
+  n_harmonics:
+    values: [1, 2]
+  mc_dropout:
+    values: [true, false]
+  head_blend_sigma:
+    values: [1.5, 2.0, 2.5]
+
+  # ---------- Loss scaling & auxiliaries ----------
+  jpld_weight:
+    values: [0.8, 1.0, 2.0]
+  aux_weight:
+    values: [0.1, 0.2, 0.3]
+
+  # ---------- Anti-stripe / smoothing controls ----------
   area_weighted_loss:
     values: [false, true]
+  head_smooth_reg:
+    values: [0.0, 1.0e-4, 3.0e-4]
+  lon_tv_reg:
+    values: [0.0, 5.0e-6, 2.0e-5]
+  lon_highfreq_reg:
+    values: [0.0, 1.0e-6, 5.0e-6]
+  lon_highfreq_kmin:
+    values: [72, 96, 120]
+  lon_blur_sigma_deg:
+    values: [0.0, 3.0, 5.0]

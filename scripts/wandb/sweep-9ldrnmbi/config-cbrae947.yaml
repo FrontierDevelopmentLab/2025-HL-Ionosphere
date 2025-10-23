@@ -1,0 +1,56 @@
+wandb_version: 1
+
+area_weighted_loss:
+  value: false
+aux_weight:
+  value: 0.3
+batch_size:
+  value: 2
+context_window:
+  value: 4
+date_dilation:
+  value: 8
+delta_minutes:
+  value: 15
+dropout:
+  value: 0.1
+epochs:
+  value: 4
+head_blend_sigma:
+  value: 2.5
+head_smooth_reg:
+  value: 0
+jpld_weight:
+  value: 1
+learning_rate:
+  value: 9.147805028293616e-05
+lon_blur_sigma_deg:
+  value: 0
+lon_highfreq_kmin:
+  value: 120
+lon_highfreq_reg:
+  value: 1.0e-06
+lon_tv_reg:
+  value: 2.0e-05
+mc_dropout:
+  value: true
+n_harmonics:
+  value: 1
+n_sunlocked_heads:
+  value: 180
+num_workers:
+  value: 8
+prediction_window:
+  value: 1
+sfno_depth:
+  value: 6
+sfno_modes_lat:
+  value: 32
+sfno_modes_lon:
+  value: 96
+sfno_width:
+  value: 64
+spectral_backend:
+  value: sht
+weight_decay:
+  value: 1.010736962499522e-06

@@ -419,6 +419,20 @@ def _move_batch_to_device(batch, device, channels_last=False):
         return {k: _cast(v) for k, v in batch.items()}
     return _cast(batch)
 
+from torch.utils.data._utils.collate import default_collate
+def _cpuify(x):
+    import torch
+    if torch.is_tensor(x):
+        return x.detach().to('cpu', non_blocking=False).contiguous()
+    if isinstance(x, dict):
+        return {k: _cpuify(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_cpuify(v) for v in x)
+    return x
+
+def cpu_safe_collate(batch):
+    return default_collate([_cpuify(s) for s in batch])
+
 
 # ================= SFNO helper utilities =================
 
@@ -877,6 +891,10 @@ def main():
     parser.add_argument('--wandb_tags', nargs='*', default=None)
     parser.add_argument('--wandb_disabled', action='store_true', help='Disable W&B (same as --wandb_mode disabled)')
 
+    parser.add_argument('--no_pin_memory', action='store_true',
+                    help='Disable DataLoader pinned memory (useful for stability)')
+
+
     args = parser.parse_args()
     # --- W&B setup (unchanged) ---
     if args.wandb_disabled:
@@ -932,6 +950,8 @@ def main():
 
     set_random_seed(args.seed)
     device = torch.device(args.device)
+    if device.type == 'cuda':
+        torch.cuda.set_device(device)
 
     use_amp = bool(getattr(args, "amp", False)) and (device.type == "cuda")
     # before the training loop, after you compute use_amp
@@ -1059,43 +1079,57 @@ def main():
             print('\nTrain size: {:,}'.format(len(dataset_train)))
             print('Valid size: {:,}'.format(len(dataset_valid)))
 
+            use_cuda = (torch.cuda.is_available() and args.device.startswith('cuda'))
+            pin_ok   = (use_cuda and not args.no_pin_memory)
+
+            dl_pin_kwargs = dict(pin_memory=pin_ok)
+            if pin_ok:
+                try:
+                    dl_pin_kwargs['pin_memory_device'] = args.device  # e.g., 'cuda:0'
+                except TypeError:
+                    pass  # older torch; safe to ignore
+
+
             if args.cache_dir:
                 # use the hash of the entire args object as the directory suffix for the cached dataset
                 train_cache_dir = os.path.join(args.cache_dir, 'train-' + args_cache_affecting_hash)
                 _persist_kwargs = {}
                 if args.num_workers > 0:
                     _persist_kwargs = dict(persistent_workers=True, prefetch_factor=4)
-                train_loader = CachedDataLoader(dataset_train, 
-                                                batch_size=args.batch_size, 
-                                                cache_dir=train_cache_dir, 
-                                                num_workers=args.num_workers, 
-                                                shuffle=True,
-                                                pin_memory=True,
-                                                **_persist_kwargs,
-                                                name='train_loader')
+                train_loader = CachedDataLoader(
+                    dataset_train,
+                    batch_size=args.batch_size,
+                    cache_dir=train_cache_dir,
+                    num_workers=args.num_workers,
+                    shuffle=True,
+                    collate_fn=cpu_safe_collate,
+                    **dl_pin_kwargs,
+                    **_persist_kwargs,
+                    name='train_loader'
+                )
 
                 valid_cache_dir = os.path.join(args.cache_dir, 'valid-' + args_cache_affecting_hash)
-                valid_loader = CachedDataLoader(dataset_valid, 
-                                                batch_size=args.batch_size, 
-                                                cache_dir=valid_cache_dir, 
-                                                num_workers=args.num_workers, 
-                                                shuffle=False,
-                                                pin_memory=True,
-                                                **_persist_kwargs,
-                                                name='valid_loader')
+                valid_loader = CachedDataLoader(
+                    dataset_valid,
+                    batch_size=args.batch_size,
+                    cache_dir=valid_cache_dir,
+                    num_workers=args.num_workers,
+                    shuffle=False,
+                    collate_fn=cpu_safe_collate,
+                    **dl_pin_kwargs,
+                    **_persist_kwargs,
+                    name='valid_loader'
+                )
             else:
                 # No on-disk caching
-                common_kwargs = dict(batch_size=args.batch_size,
-                                    num_workers=args.num_workers,
-                                    pin_memory=True)
+                common_kwargs = dict(
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    collate_fn=cpu_safe_collate,
+                    **dl_pin_kwargs,
+                )
                 if args.num_workers > 0:
                     common_kwargs.update(persistent_workers=True, prefetch_factor=4)
-                # Prefer GPU-pinned page tables when available (PyTorch 2.1+)
-                if torch.cuda.is_available() and args.device.startswith('cuda'):
-                    try:
-                        common_kwargs['pin_memory_device'] = 'cuda'
-                    except TypeError:
-                        pass  # older torch
 
                 train_loader = DataLoader(dataset_train, shuffle=True, **common_kwargs)
 
