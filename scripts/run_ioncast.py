@@ -36,7 +36,7 @@ from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb, omniweb_all_columns
 from dataset_set import SET, set_all_columns
 from dataloader_cached import CachedDataLoader
-from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4, validation_events_5
 from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 # Set up wandb if available
@@ -492,7 +492,7 @@ def main():
     args_cache_affecting = {k: v for k, v in vars(args).items() if k in args_cache_affecting_keys}
     args_cache_affecting_hash = md5_hash_str(str(args_cache_affecting))
 
-    # Parse event_ids from validation_events_1, validation_events_2, validation_events_3 if passed
+    # Parse event_ids from validation_events_1, validation_events_2, etc if passed
     if args.valid_event_id == ['validation_events_1']:
         args.valid_event_id = validation_events_1
     elif args.valid_event_id == ['validation_events_2']:
@@ -501,6 +501,8 @@ def main():
         args.valid_event_id = validation_events_3
     elif args.valid_event_id == ['validation_events_4']:
         args.valid_event_id = validation_events_4
+    elif args.valid_event_id == ['validation_events_5']:
+        args.valid_event_id = validation_events_5
 
     if args.test_event_id == ['validation_events_1']:
         args.test_event_id = validation_events_1
@@ -510,6 +512,8 @@ def main():
         args.test_event_id = validation_events_3
     elif args.test_event_id == ['validation_events_4']:
         args.test_event_id = validation_events_4
+    elif args.test_event_id == ['validation_events_5']:
+        args.test_event_id = validation_events_5
 
     # Set up the target directory and log.txt (name after datetime to avoid overwriting)
     os.makedirs(args.target_dir, exist_ok=True)

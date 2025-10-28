@@ -30,7 +30,7 @@ declare -a ABLATIONS=(
 for i in "${!ABLATIONS[@]}"
 do
     echo ">>> Running ablation $((i+1)) / ${#ABLATIONS[@]}: ${ABLATIONS[$i]}"
-    CUDA_VISIBLE_DEVICES=0 python run_ioncast.py ${ABLATIONS[$i]} --data_dir /home/jupyter/data --mode train --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 14 --learning_rate 3e-4 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --mesh_level 6 --device cuda --valid_event_id validation_events_4 --valid_every_nth_epoch 2 --valid_event_seen_id=G0H3-201610140300 --save_all_models --max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked_technical_showcase_ablation_$((i+1)) --lead_times 180
+    CUDA_VISIBLE_DEVICES=0 python run_ioncast.py ${ABLATIONS[$i]} --data_dir /home/jupyter/data --mode train --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 14 --learning_rate 3e-4 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --mesh_level 6 --device cuda --valid_event_id validation_events_5 --valid_every_nth_epoch 2 --valid_event_seen_id=G0H3-201610140300 --save_all_models --max_valid_samples 1400 --wandb_run_name IonCastGNN_sunlocked_technical_showcase_ablation_$((i+1)) --lead_times 180
 done
 
 echo "Ablation study complete"
