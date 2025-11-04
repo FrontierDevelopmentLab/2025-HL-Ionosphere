@@ -36,7 +36,7 @@ from dataset_celestrak import CelesTrak
 from dataset_omniweb import OMNIWeb, omniweb_all_columns
 from dataset_set import SET, set_all_columns
 from dataloader_cached import CachedDataLoader
-from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4, validation_events_5
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4, validation_events_5, validation_events_6
 from eval_ioncast import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 # Set up wandb if available
@@ -503,6 +503,21 @@ def main():
         args.valid_event_id = validation_events_4
     elif args.valid_event_id == ['validation_events_5']:
         args.valid_event_id = validation_events_5
+    elif args.valid_event_id == ['validation_events_6']:
+        args.valid_event_id = validation_events_6
+    elif args.valid_event_id == ['sample_validation_events']:
+        # Extend validation_events_5 with a list of 10% sampled events from each group with max 100 time steps
+        args.valid_event_id = validation_events_5
+        short_event_catalog = event_catalog.filter(time_steps_max = 100)
+
+        prefixes = ["G0", "G1", "G2", "G3", "G4"]
+        for prefix in prefixes:
+            event_catalog_filtered = short_event_catalog.filter(prefix=prefix)
+            num_10percent = max(1, int(0.1 * len(event_catalog_filtered)))
+            sampled_event_catalog = event_catalog_filtered.sample(num_10percent)
+            args.valid_event_id.extend([k.item() for k in sampled_event_catalog.keys()])
+
+    print(args.valid_event_id)
 
     if args.test_event_id == ['validation_events_1']:
         args.test_event_id = validation_events_1
@@ -514,6 +529,9 @@ def main():
         args.test_event_id = validation_events_4
     elif args.test_event_id == ['validation_events_5']:
         args.test_event_id = validation_events_5
+    elif args.test_event_id == ['validation_events_6']:
+        args.test_event_id = validation_events_6
+    print(args.test_event_id)
 
     # Set up the target directory and log.txt (name after datetime to avoid overwriting)
     os.makedirs(args.target_dir, exist_ok=True)
