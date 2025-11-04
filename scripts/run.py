@@ -843,6 +843,9 @@ def main():
 
     parser.add_argument('--lon_blur_sigma_deg', type=float, default=5.0,
         help='Longitude-only Gaussian blur on μ (degrees). 0 disables.')
+    
+    parser.add_argument('--output_blur_sigma', type=float, default=2.0,
+        help='3×3 Gaussian σ on output μ at decode; 0 disables.')
 
 
     # --- Spectral backend selection ---
@@ -1155,7 +1158,7 @@ def main():
                 print('Resuming training from model file: {}'.format(model_file))
                 model, optimizer, epoch, iteration, train_losses, valid_losses, scheduler_state_dict, train_rmse_losses, valid_rmse_losses, train_jpld_rmse_losses, valid_jpld_rmse_losses, best_valid_rmse = load_model(model_file, device)
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
-                    model.output_blur_sigma = 0.85
+                    model.output_blur_sigma = args.output_blur_sigma
                     model.head_blend_sigma = args.head_blend_sigma
                     model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
                 epoch_start = epoch + 1
@@ -1271,7 +1274,8 @@ def main():
                     )
                     model.name = "SphericalFourierNeuralOperatorModel"
                     #below adds a little smoothing of μ (3×3 Gaussian)
-                    model.output_blur_sigma = 1.2
+                    # Test-time / train-time smoothing defaults (all overridable via CLI)
+                    model.output_blur_sigma = args.output_blur_sigma
                     model.head_blend_sigma = args.head_blend_sigma
                     model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
 
@@ -1904,7 +1908,7 @@ def main():
                 print(f'Loading model from {args.model_file}')
                 model, optimizer, _, _, _, _, _, _, _, _, _, _ = load_model(args.model_file, device)
                 if getattr(model, "name", "") == "SphericalFourierNeuralOperatorModel":
-                    model.output_blur_sigma = 0.85
+                    model.output_blur_sigma = args.output_blur_sigma
                     model.head_blend_sigma = args.head_blend_sigma
                     model.lon_blur_sigma_deg = args.lon_blur_sigma_deg
                 model.eval()

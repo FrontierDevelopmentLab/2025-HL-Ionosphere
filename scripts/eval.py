@@ -330,12 +330,35 @@ def run_forecast(model, dataset, date_start, date_end, date_forecast_start, verb
         combined_seq_data_original = jpld_seq_data[sequence_forecast_start_index:, 0:1]  # (P, 1, H, W) – JPLD only
 
         # SFNO predict expects (B, Tc, C, H, W) + times for sun-locked/QD; use sequence_dates
-        preds = model.predict(
-            combined_seq_data_context.unsqueeze(0),                   # (1, Tc, C, H, W)
+        # Propagate smoothing to predict; if predict signature is older, set attrs and retry.
+        _predict_kwargs = dict(
             prediction_window=sequence_prediction_window,
-            times=sequence_dates,                                     # <-- key for sun-locked/QD
-            n_harmonics=getattr(args, 'n_harmonics', 1)
-        )  # (1, P, 1, H, W)
+            times=sequence_dates,
+            n_harmonics=getattr(args, 'n_harmonics', 1),
+            head_blend_sigma=getattr(model, 'head_blend_sigma', None),
+            lon_blur_sigma_deg=getattr(model, 'lon_blur_sigma_deg', None),
+            output_blur_sigma=getattr(model, 'output_blur_sigma', None),
+        )
+        try:
+            preds = model.predict(
+                combined_seq_data_context.unsqueeze(0),
+                **_predict_kwargs
+            )  # (1, P, 1, H, W)
+        except TypeError:
+            # Older predict() that doesn't accept smoothing kwargs: set attributes and call again.
+            if hasattr(model, 'head_blend_sigma'):
+                model.head_blend_sigma = _predict_kwargs['head_blend_sigma']
+            if hasattr(model, 'lon_blur_sigma_deg'):
+                model.lon_blur_sigma_deg = _predict_kwargs['lon_blur_sigma_deg']
+            if hasattr(model, 'output_blur_sigma'):
+                model.output_blur_sigma = _predict_kwargs['output_blur_sigma']
+            preds = model.predict(
+                combined_seq_data_context.unsqueeze(0),
+                prediction_window=sequence_prediction_window,
+                times=sequence_dates,
+                n_harmonics=getattr(args, 'n_harmonics', 1)
+            ) # (1, P, 1, H, W)
+
         combined_seq_data_forecast = preds.squeeze(0)                 # (P, 1, H, W)
 
         jpld_forecast = combined_seq_data_forecast[:, 0]              # (P, H, W)
