@@ -36,7 +36,7 @@ from dataset_omniweb import OMNIWeb
 from dataset_set import SET
 from dataset_sdocore import SDOCore
 from dataloader_cached import CachedDataLoader
-from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4
+from events import EventCatalog, validation_events_1, validation_events_2, validation_events_3, validation_events_4, validation_events_5, validation_events_6
 from eval import eval_forecast_long_horizon, save_metrics, eval_forecast_fixed_lead_time, aggregate_and_plot_fixed_lead_time_metrics
 
 event_catalog = EventCatalog(events_csv_file_name='../data/events.csv')
@@ -357,6 +357,47 @@ def main():
     args_cache_affecting = {k: v for k, v in vars(args).items() if k in args_cache_affecting_keys}
     args_cache_affecting_hash = md5_hash_str(str(args_cache_affecting))
 
+    # Parse event_ids from validation_events_1, validation_events_2, etc if passed
+    if args.valid_event_id == ['validation_events_1']:
+        args.valid_event_id = validation_events_1
+    elif args.valid_event_id == ['validation_events_2']:
+        args.valid_event_id = validation_events_2
+    elif args.valid_event_id == ['validation_events_3']:
+        args.valid_event_id = validation_events_3
+    elif args.valid_event_id == ['validation_events_4']:
+        args.valid_event_id = validation_events_4
+    elif args.valid_event_id == ['validation_events_5']:
+        args.valid_event_id = validation_events_5
+    elif args.valid_event_id == ['validation_events_6']:
+        args.valid_event_id = validation_events_6
+    elif args.valid_event_id == ['sample_validation_events']:
+        # Extend validation_events_5 with a list of 10% sampled events from each group with max 100 time steps
+        args.valid_event_id = validation_events_5
+        short_event_catalog = event_catalog.filter(time_steps_max = 100)
+
+        prefixes = ["G0", "G1", "G2", "G3", "G4"]
+        for prefix in prefixes:
+            event_catalog_filtered = short_event_catalog.filter(prefix=prefix)
+            num_10percent = max(1, int(0.1 * len(event_catalog_filtered)))
+            sampled_event_catalog = event_catalog_filtered.sample(num_10percent)
+            args.valid_event_id.extend([k.item() for k in sampled_event_catalog.keys()])
+
+    print(args.valid_event_id)
+
+    if args.test_event_id == ['validation_events_1']:
+        args.test_event_id = validation_events_1
+    elif args.test_event_id == ['validation_events_2']:
+        args.test_event_id = validation_events_2
+    elif args.test_event_id == ['validation_events_3']:
+        args.test_event_id = validation_events_3
+    elif args.test_event_id == ['validation_events_4']:
+        args.test_event_id = validation_events_4
+    elif args.test_event_id == ['validation_events_5']:
+        args.test_event_id = validation_events_5
+    elif args.test_event_id == ['validation_events_6']:
+        args.test_event_id = validation_events_6
+    print(args.test_event_id)
+
     os.makedirs(args.target_dir, exist_ok=True)
     timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
     log_file = os.path.join(args.target_dir, f'log-{timestamp}.txt')
@@ -533,7 +574,14 @@ def main():
                 if args.model_type == 'IonCastConvLSTM':
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     name = 'IonCastConvLSTM'
-                    model = IonCastConvLSTM(input_channels=total_channels, output_channels=total_channels, context_window=args.context_window, prediction_window=args.prediction_window, dropout=args.dropout, name=name)
+                    model = IonCastConvLSTM(
+                        input_channels=total_channels, 
+                        output_channels=total_channels, 
+                        context_window=args.context_window, 
+                        prediction_window=args.prediction_window, 
+                        dropout=args.dropout,
+                        name=name
+                    )
                 elif args.model_type == 'IonCastLSTM':
                     total_channels = 58  # JPLD + Sun and Moon geometry + CelesTrak + OMNIWeb + SET
                     name = 'IonCastLSTM'
