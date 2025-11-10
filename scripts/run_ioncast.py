@@ -640,9 +640,10 @@ def main():
             if args.valid_event_seen_id is None:
                 num_seen_events = max(2, len(args.valid_event_id))
                 date_start_plus_context = date_start + datetime.timedelta(minutes=args.context_window * args.delta_minutes)
+                # this filter is seemingly causing problems, as it gives events outside of the training set
                 event_catalog_within_training_set = event_catalog.filter(date_start=date_start_plus_context, date_end=date_end).exclude(date_exclusions=date_exclusions)
 
-                if len(event_catalog_within_training_set) > 0:
+                if False and len(event_catalog_within_training_set) > 0:
                     args.valid_event_seen_id = event_catalog_within_training_set.sample(num_seen_events).ids()
                     print('\nUsing validation events seen during training: {}\n'.format(args.valid_event_seen_id))
                 else:
