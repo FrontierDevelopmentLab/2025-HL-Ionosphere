@@ -579,9 +579,7 @@ def main():
                         output_channels=total_channels, 
                         context_window=args.context_window, 
                         prediction_window=args.prediction_window, 
-                        dropout=args.dropout, 
-                        num_layers=5,
-                        hidden_dim=1024,
+                        dropout=args.dropout,
                         name=name
                     )
                 elif args.model_type == 'IonCastLSTM':
