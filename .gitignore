@@ -186,3 +186,6 @@ results/
 scripts/wandb/
 de421.bsp
 .vscode
+/data/gnn-final/
+/data/lstm-final/
+/data/old-model-oct5/
