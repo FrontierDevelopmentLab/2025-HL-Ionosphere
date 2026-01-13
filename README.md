@@ -6,6 +6,11 @@ __Team:__ Linnea Wolniewicz, Halil Kelebek, Simone Mestici, Michael Vergalla
 
 __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczencki, James Walsh, Bala Poduval, Umaa Rebbapragada, Olga Verkhoglyadova
 
+# Branch descriptions
+main: LSTM training and models
+graph-experiment: GNN training and models
+SFNOpostFDL: Spherical FNO training and models
+
 ## How to install
 
 ### Pre-requisites
