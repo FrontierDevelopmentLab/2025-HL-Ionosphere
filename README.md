@@ -8,7 +8,9 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
 
 # Branch descriptions
 main: LSTM training and models
+
 graph-experiment: GNN training and models
+
 SFNOpostFDL: Spherical FNO training and models
 
 ## How to install
