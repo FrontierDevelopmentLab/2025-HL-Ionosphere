@@ -13,53 +13,37 @@ graph-experiment: GNN training and models
 
 SFNOpostFDL: Spherical FNO training and models
 
-## How to install
+# Directories
+/scripts contains all the dataset files (dataset_....py), event files (events.csv), model files (model_....py), train (run_....py) and evaluation (eval_....py) files, and utility files (util_....py).
 
 ### Pre-requisites
-- Install Docker for your platform: [Get Docker](https://docs.docker.com/get-started/get-docker/)
-- Install NVIDIA Container Toolkit for GPU support: [NVIDIA Docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- Clone the repository:
-  ```bash
-  git clone git@github.com:FrontierDevelopmentLab/2025-HL-Ionosphere.git
-  cd 2025-HL-Ionosphere
-  ```
-- Build the Docker image:
-  ```bash
-  docker build -t ioncast .
-  ```
-  This command builds a Docker image with the name `ioncast:latest`.
+- Set up environment using the branch's environment.yml and requirements.txt
+- Have the data available (public link incoming)
 
 ## Usage
+In the main branch, you can run the IonoPy and the IonCast LSTM file. 
 
-TO DO: Add better instructions.
+IonoPy:
+**Code for this model may be out of date, for the most up-to-date code refer to https://github.com/spaceml-org/ionopy)**
+- Code for creating the model is contained in the ionopy/ folder
+- To train the model, run scripts/train_ionopy.py
+
+IonCast LSTM:
+- All relevant datasets, models, events, and utility code are contained in the scripts/ folder
+- To run the model, run scripts/run.py
+- To evaluate the model on test data, run scripts/eval.py
 
 ### Training example
 
-The following command runs the training script using Docker, mounting the current directory as `/mnt` and a data directory as `/mnt/data` inside the container.
+The following command runs the training script, assuming the current directory is `/scripts` and the data is stored in the directory `/mnt/data`. Results will be saved to the `/mnt/experiment-1' directory.
 
 ```bash
-docker run --rm -it \
-    --ipc=host \
-    --gpus all \
-    -v $PWD:/mnt \
-    -v /disk2-ssd-8tb/data/2025-hl-ionosphere:/mnt/data \
-    ioncast python run.py \
-        --data_dir /mnt/data \
-        --mode train \
-        --device cuda:0 \
-        --target_dir /mnt/experiment-1 \
-        --num_workers 12 \
-        --batch_size 4 \
-        --epochs 10
+python run.py --data_dir /mnt/data --mode train --target_dir /mnt/experiment-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 ```
 
-### Help
+Copyright 2025-2026 NASA
+Copyright 2026-2026 Trillium Technologies Inc
 
-To see all available options and configurations, run:
-```bash
-docker run --rm -it ioncast python run.py --help
-```
-
-## Acknowledgements
+Licensed under the Apache License, Version 2.0...
 
 This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
