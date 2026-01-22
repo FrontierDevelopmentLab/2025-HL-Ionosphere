@@ -28,7 +28,7 @@ ioncast-sfno: Spherical FNO training and models
 
 ### Pre-requisites
 - Set up environment using the branch's environment.yml and requirements.txt
-- Have the data available (public link incoming)
+- Download the dataset from this link: https://zenodo.org/records/18343833
 
 ## Usage
 
