@@ -6,26 +6,39 @@ __Team:__ Linnea Wolniewicz, Halil Kelebek, Simone Mestici, Michael Vergalla
 
 __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczencki, James Walsh, Bala Poduval, Umaa Rebbapragada, Olga Verkhoglyadova
 
-## How to install
+# Branch descriptions
+main: LSTM training and models
+
+ioncast-gnn: GNN training and models
+
+ioncast-sfno: Spherical FNO training and models
+
+# Directories
+/scripts contains all the dataset files (dataset_....py), event files (events.csv), model files (model_....py), train (run_....py) and evaluation (eval_....py) files, and utility files (util_....py).
+
+/ionopy contains ionopy files (for the most up-to-date code refer to https://github.com/spaceml-org/ionopy).
+
+/notebooks contains visualization and experimental notebooks.
+
+/tests contains testing and experimental code.
+
+/data contains events.csv.
 
 ### Pre-requisites
-- Install Docker for your platform: [Get Docker](https://docs.docker.com/get-started/get-docker/)
-- Install NVIDIA Container Toolkit for GPU support: [NVIDIA Docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- Clone the repository:
-  ```bash
-  git clone git@github.com:FrontierDevelopmentLab/2025-HL-Ionosphere.git
-  cd 2025-HL-Ionosphere
-  ```
-- Build the Docker image:
-  ```bash
-  docker build -t ioncast .
-  ```
-  This command builds a Docker image with the name `ioncast:latest`.
+- Set up environment using the branch's environment.yml and requirements.txt
+- Have the data available (public link incoming)
 
 ## Usage
 
+IonoPy:
+**Code for this model may be out of date, for the most up-to-date code refer to https://github.com/spaceml-org/ionopy)**
+- Code for creating the model is contained in the ionopy/ folder
+- To train the model, run scripts/train_ionopy.py
+
 This Branch is for Running the NVIDIA Inspired SFNO Model. 
 There are custom run.py additions that vary from the main branch. 
+
+### Training example
 
 Below is an example run command for the Training mode. 
 
@@ -57,33 +70,11 @@ Missed this.
 
 Suggestion for future. Create models per lat band.. And make full model ensemble these.
 
-### Training example
+Copyright 2025-2026 NASA
+Copyright 2026-2026 Trillium Technologies Inc
 
-The following command runs the training script using Docker, mounting the current directory as `/mnt` and a data directory as `/mnt/data` inside the container.
+Licensed under the Apache License, Version 2.0...
 
-```bash
-docker run --rm -it \
-    --ipc=host \
-    --gpus all \
-    -v $PWD:/mnt \
-    -v /disk2-ssd-8tb/data/2025-hl-ionosphere:/mnt/data \
-    ioncast python run.py \
-        --data_dir /mnt/data \
-        --mode train \
-        --device cuda:0 \
-        --target_dir /mnt/experiment-1 \
-        --num_workers 12 \
-        --batch_size 4 \
-        --epochs 10
-```
-
-### Help
-
-To see all available options and configurations, run:
-```bash
-docker run --rm -it ioncast python run.py --help
-```
-
-## Acknowledgements
+This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
 
 This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
