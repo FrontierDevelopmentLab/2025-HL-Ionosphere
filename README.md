@@ -24,6 +24,8 @@ ioncast-sfno: Spherical FNO training and models
 
 /data contains events.csv.
 
+/src deprecated dataset code.
+
 ### Pre-requisites
 - Set up environment using the branch's environment.yml and requirements.txt
 - Have the data available (public link incoming)
