@@ -9,9 +9,9 @@ __Faculty:__ Giacomo Acciarini, Atilim Gunes Baydin, Tom Berger, Frank Soboczenc
 # Branch descriptions
 main: LSTM training and models
 
-graph-experiment: GNN training and models
+ioncast-gnn: GNN training and models
 
-SFNOpostFDL: Spherical FNO training and models
+ioncast-sfno: Spherical FNO training and models
 
 # Directories
 /scripts contains all the dataset files (dataset_....py), event files (events.csv), model files (model_....py), train (run_....py) and evaluation (eval_....py) files, and utility files (util_....py).
