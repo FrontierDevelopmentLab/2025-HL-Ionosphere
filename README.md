@@ -51,15 +51,12 @@ The following command runs the training script, assuming the current directory i
 python run.py --data_dir /mnt/data --mode train --target_dir /mnt/experiment-1 --num_workers 4 --batch_size 4 --model_type IonCastConvLSTM --epochs 2 --learning_rate 1e-3 --weight_decay 0.0 --context_window 4 --prediction_window 4 --num_evals 4 --date_start 2023-07-01T00:00:00 --date_end 2023-08-01T00:00:00
 ```
 
-## Acknowledgements:
-
+# Acknowledgements
 This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
 
 # Licence
 This project is licenced under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
 
 
-Copyright 2025-2026 NASA
+Copyright 2025-2026 NASA  
 Copyright 2026-2026 Trillium Technologies Inc
-
-Licensed under the Apache License, Version 2.0...
