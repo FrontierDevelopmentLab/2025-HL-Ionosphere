@@ -72,11 +72,12 @@ Missed this.
 
 Suggestion for future. Create models per lat band.. And make full model ensemble these.
 
-Copyright 2025-2026 NASA
+# Acknowledgements
+This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
+
+# Licence
+This project is licenced under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+
+
+Copyright 2025-2026 NASA  
 Copyright 2026-2026 Trillium Technologies Inc
-
-Licensed under the Apache License, Version 2.0...
-
-This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
-
-This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
