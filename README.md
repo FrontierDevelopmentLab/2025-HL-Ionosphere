@@ -16,6 +16,12 @@ SFNOpostFDL: Spherical FNO training and models
 # Directories
 /scripts contains all the dataset files (dataset_....py), event files (events.csv), model files (model_....py), train (run_....py) and evaluation (eval_....py) files, and utility files (util_....py).
 
+/ionopy contains ionopy files (for the most up-to-date code refer to https://github.com/spaceml-org/ionopy).
+
+/notebooks contains visualization and experimental notebooks.
+
+/tests contains testing and experimental code.
+
 ### Pre-requisites
 - Set up environment using the branch's environment.yml and requirements.txt
 - Have the data available (public link incoming)
