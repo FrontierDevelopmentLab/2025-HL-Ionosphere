@@ -21,7 +21,9 @@ SFNOpostFDL: Spherical FNO training and models
 - Have the data available (public link incoming)
 
 ## Usage
-In the main branch, you can run the IonoPy and the IonCast LSTM file. 
+In the main branch, you can run the IonoPy and the IonCast LSTM models. 
+
+The necessary environment can be created from requirements.txt.
 
 IonoPy:
 **Code for this model may be out of date, for the most up-to-date code refer to https://github.com/spaceml-org/ionopy)**
@@ -31,7 +33,7 @@ IonoPy:
 IonCast LSTM:
 - All relevant datasets, models, events, and utility code are contained in the scripts/ folder
 - To run the model, run scripts/run.py
-- To evaluate the model on test data, run scripts/eval.py
+- To evaluate the model on test data, run scripts/run.py in test mode.
 
 ### Training example
 
