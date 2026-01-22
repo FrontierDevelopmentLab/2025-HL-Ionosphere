@@ -51,9 +51,12 @@ The following command runs the training script, assuming the current directory i
 python run_ioncast.py --data_dir /mnt/data --aux_dataset sunmoon quasidipole celestrak omni set --mode train --target_dir /mnt/experiment-1 --num_workers 12 --batch_size 1 --model_type IonCastGNN --epochs 1000 --learning_rate 3e-4 --weight_decay 0.0 --context_window 8 --prediction_window 1 --num_evals 1 --jpld_weight 2.0 --date_start 2010-05-13T00:00:00 --date_end 2024-08-01T00:00:00 --mesh_level 6 --valid_every_nth_epoch 1 --save_all_models --residual_target --wandb_run_name IonCastGNN --date_dilation 256 --partition_size 1 --device cuda:1 --valid_event_id validation_events_1
 ```
 
-Copyright 2025-2026 NASA
-Copyright 2026-2026 Trillium Technologies Inc
-
-Licensed under the Apache License, Version 2.0...
-
+# Acknowledgements
 This work is the research product of FDL-X Heliolab a public/private partnership between NASA, Trillium Technologies Inc (trillium.tech) and commercial AI partners Google Cloud, NVIDIA and Pasteur Labs & ISI, developing open science for all Humankind.
+
+# Licence
+This project is licenced under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+
+
+Copyright 2025-2026 NASA  
+Copyright 2026-2026 Trillium Technologies Inc
