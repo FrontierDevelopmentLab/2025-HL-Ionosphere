@@ -22,6 +22,8 @@ SFNOpostFDL: Spherical FNO training and models
 
 /tests contains testing and experimental code.
 
+/data contains events.csv.
+
 ### Pre-requisites
 - Set up environment using the branch's environment.yml and requirements.txt
 - Have the data available (public link incoming)
