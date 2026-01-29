@@ -37,8 +37,11 @@ IonoPy:
 - Code for creating the model is contained in the ionopy/ folder
 - To train the model, run scripts/train_ionopy.py
 
-This Branch is for Running the NVIDIA Inspired SFNO Model. 
-There are custom run.py additions that vary from the main branch. 
+### This Branch is for Running the NVIDIA Inspired SFNO Model. 
+There are  additions that vary from the main branch. 
+physics based losses found in physics_losses.py
+Additional command line control arguments added to run.py
+Merged with main often. Variance is limited. 
 
 ### Training example
 
