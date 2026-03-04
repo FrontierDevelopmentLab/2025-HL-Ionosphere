@@ -29,7 +29,7 @@ SFNOpostFDL: Spherical FNO training and models
 - Download the dataset from this link: https://zenodo.org/records/18343833
 
 ## Usage
-In the graph-experiment branch, you can run the IonoPy and the IonCast GNN models.
+In the ioncast-gnn branch, you can run the IonoPy and the IonCast GNN models.
 
 The necessary environment can be created from environment.yml.
 
