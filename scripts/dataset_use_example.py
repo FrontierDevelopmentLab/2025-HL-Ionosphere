@@ -1,3 +1,18 @@
+"""
+Created by Linnea Wolniewicz in December, 2025
+
+File to load a dataset and set up a train/validation pytorch dataloader pipeline.
+
+Requirements:
+- pytorch
+- numpy
+- pandas
+- tqdm
+- h5py
+- matplotlib
+- relevant scripts
+"""
+
 import torch
 import datetime
 
@@ -82,7 +97,7 @@ Example of setting up a dataset for training and validation using the JPLD and O
 '''
 
 # Initialize variables
-event_catalog = EventCatalog(events_csv_file_name='events.csv')
+event_catalog = EventCatalog(events_csv_file_name='./../data/events.csv')
 valid_event_id = ["G0H3-201804202100"]
 image_size = (180, 360)
 context_window = 2 # Number of time steps of context used in model
